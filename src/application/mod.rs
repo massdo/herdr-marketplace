@@ -5,4 +5,5 @@ pub mod open_fiche;
 pub mod open_sidebar;
 pub mod pane_size;
 pub mod ports;
+pub mod prepare_install;
 pub mod toggle_sidebar;

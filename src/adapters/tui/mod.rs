@@ -1,6 +1,7 @@
 pub mod fiche;
 pub mod fiche_view;
 pub mod markdown;
+pub mod preview;
 pub mod sidebar;
 pub mod sidebar_view;
 pub mod style;
@@ -26,6 +27,7 @@ use crate::application::load_listing::{LoadedListing, load_listing};
 use crate::application::load_readme::{Readme, load_readme};
 use crate::application::open_fiche::{close_fiche, open_fiche};
 use crate::application::ports::HerdrPort;
+use crate::application::prepare_install::{Prepared, prepare_install};
 use crate::domain::compat::Platform;
 use crate::domain::error::AppError;
 use crate::domain::fiche::FicheTarget;
@@ -35,7 +37,12 @@ use self::sidebar::{Intent, SidebarApp};
 
 type Screen = Terminal<CrosstermBackend<io::Stdout>>;
 type Loaded = Result<LoadedListing, String>;
-type ReadmeAnswer = (u64, Result<Readme, String>);
+
+/// Background answers to a fiche, tagged with their request number.
+enum FicheAnswer {
+    Readme(u64, Result<Readme, String>),
+    Install(u64, Prepared),
+}
 
 const POLL: Duration = Duration::from_millis(100);
 
@@ -130,25 +137,40 @@ pub fn run_fiche(process: ProcessEnv, target: FicheTarget) -> Result<(), AppErro
 fn fiche_loop(
     terminal: &mut Screen,
     app: &mut FicheApp,
-    sender: &Sender<ReadmeAnswer>,
-    receiver: &Receiver<ReadmeAnswer>,
+    sender: &Sender<FicheAnswer>,
+    receiver: &Receiver<FicheAnswer>,
 ) -> Result<(), AppError> {
     loop {
         for intent in std::mem::take(&mut app.intents) {
+            let sender = sender.clone();
+            let target = app.target.clone();
             match intent {
                 FicheIntent::LoadReadme(request) => {
-                    let sender = sender.clone();
-                    let target = app.target.clone();
                     thread::spawn(move || {
                         let readme =
                             load_readme(&HttpFetcher::new(), &target.source, &target.commit);
-                        let _ = sender.send((request, readme));
+                        let _ = sender.send(FicheAnswer::Readme(request, readme));
                     });
                 }
+                FicheIntent::PrepareInstall(request) => {
+                    thread::spawn(move || {
+                        let prepared = prepare_install(
+                            &HttpFetcher::new(),
+                            &HerdrCommand::new(env::herdr_bin()),
+                            &target,
+                            Platform::current(),
+                        );
+                        let _ = sender.send(FicheAnswer::Install(request, prepared));
+                    });
+                }
+                FicheIntent::Install(_) => {}
             }
         }
-        while let Ok((request, readme)) = receiver.try_recv() {
-            app.readme_loaded(request, readme);
+        while let Ok(answer) = receiver.try_recv() {
+            match answer {
+                FicheAnswer::Readme(request, readme) => app.readme_loaded(request, readme),
+                FicheAnswer::Install(request, prepared) => app.install_prepared(request, prepared),
+            }
         }
         let size = terminal.size()?;
         let page = fiche_view::page_rows(app, size.width, size.height);

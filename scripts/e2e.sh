@@ -26,6 +26,8 @@ export XDG_STATE_HOME="$TMP/state"
 export HERDR_CONFIG_PATH="$CONFIG"
 # Test catalogues are served from this file; the journey rewrites it.
 export HERDR_MARKETPLACE_INDEX_URL="file://$TMP/index.json"
+# The fixture's build appends a line here; Herdr passes it to builds.
+export HERDR_MARKETPLACE_FIXTURE_LOG="$TMP/fixture.log"
 export HERDR_MARKETPLACE_E2E_SESSION="$SESSION"
 export HERDR_MARKETPLACE_E2E_TMP="$TMP"
 export HERDR_MARKETPLACE_E2E_SERVER_LOG="$SERVER_LOG"

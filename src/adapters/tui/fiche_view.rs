@@ -4,11 +4,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use super::fiche::{FicheApp, ReadmeState};
-use super::style::{ERROR, MUTED, WARN, bold, ellipsize, ellipsize_middle, muted, wrap};
+use super::fiche::{FicheApp, InstallState, ReadmeState};
+use super::style::{ERROR, MUTED, OK, WARN, bold, ellipsize, ellipsize_middle, muted, wrap};
 use crate::domain::text::clean;
 
-const FOOTER: &str = "↑↓ · PgPréc PgSuiv · Début Fin · s : SHA complet · Échap : fermer";
+const FOOTER: &str =
+    "i : installer · s : SHA complet · Échap : fermer · ↑↓ PgPréc PgSuiv Début Fin";
+const PREVIEW_FOOTER: &str = "Entrée : confirmer · Échap : annuler · ↑↓ PgPréc PgSuiv";
 
 /// README lines a `width` × `height` pane shows.
 pub fn page_rows(app: &FicheApp, width: u16, height: u16) -> usize {
@@ -21,6 +23,13 @@ pub fn render(frame: &mut Frame, app: &FicheApp) {
     let mut lines = header(app, width);
     let body_height = (area.height as usize).saturating_sub(lines.len() + 1);
     let mut body = match &app.readme {
+        _ if app.showing_preview() => app
+            .preview
+            .iter()
+            .skip(app.preview_scroll)
+            .take(body_height)
+            .cloned()
+            .collect(),
         ReadmeState::Loading => vec![Line::styled("Chargement du README…", muted())],
         ReadmeState::NotFound => vec![Line::styled(
             "README.md introuvable",
@@ -48,7 +57,12 @@ pub fn render(frame: &mut Frame, app: &FicheApp) {
     body.truncate(body_height);
     body.resize(body_height, Line::default());
     lines.extend(body);
-    lines.push(Line::styled(ellipsize(FOOTER, width), muted()));
+    let footer = if app.showing_preview() {
+        PREVIEW_FOOTER
+    } else {
+        FOOTER
+    };
+    lines.push(Line::styled(ellipsize(footer, width), muted()));
     frame.render_widget(Paragraph::new(lines), area);
 }
 
@@ -89,6 +103,21 @@ fn header(app: &FicheApp, width: usize) -> Vec<Line<'static>> {
             wrap(&notice, width)
                 .into_iter()
                 .map(|line| Line::styled(line, Style::default().fg(WARN))),
+        );
+    }
+    let status = match &app.install {
+        InstallState::Idle | InstallState::Preview(_) => None,
+        InstallState::Preparing => Some(("Préparation de l'aperçu…".to_string(), MUTED)),
+        InstallState::UpToDate => Some(("Installé : ce commit est déjà installé".to_string(), OK)),
+        InstallState::Refused(reason) => {
+            Some((format!("Installation refusée : {}", clean(reason)), ERROR))
+        }
+    };
+    if let Some((status, color)) = status {
+        lines.extend(
+            wrap(&status, width)
+                .into_iter()
+                .map(|line| Line::styled(line, Style::default().fg(color))),
         );
     }
     lines.push(Line::styled("─".repeat(width), Style::default().fg(MUTED)));

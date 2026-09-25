@@ -317,10 +317,59 @@ def prove_fiche():
     print("fiche_outlives_sidebar_ok", flush=True)
 
 
+def registry():
+    """Plugins installed from GitHub: source and commit, from `herdr plugin list --json`."""
+    return {
+        (p["source"]["owner"], p["source"]["repo"], p["source"].get("subdir", ""),
+         p["source"]["resolved_commit"])
+        for p in data("plugin", "list", "--json")["plugins"]
+        if p["source"]["kind"] == "github"
+    }
+
+
+def fixture_log():
+    path = Path(os.environ["HERDR_MARKETPLACE_FIXTURE_LOG"])
+    return path.read_text() if path.exists() else ""
+
+
+def prove_install_preview():
+    write_catalog(SHA_A)
+    sidebar = open_sidebar()
+    wait(lambda: "résultats" in read(sidebar), "the catalogue did not load")
+    tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
+    fiche = open_fiche(sidebar, "fixture", "2 résultats")
+    wait(lambda: "[image : fixture logo]" in read(fiche), "the fixture README was not rendered")
+    before = registry()
+
+    keys(fiche, "i")
+    shown = wait(lambda: "Entrée : confirmer" in (text := read(fiche)) and text,
+                 "i did not open the install preview")
+    assert "source : massdo/herdr-marketplace-fixture" in shown, shown
+    assert f"commit : {SHA_A}" in shown, shown
+    assert "• /bin/sh build.sh" in shown, shown
+    assert "• hello : /bin/echo hello from herdr-marketplace-fixture" in shown, shown
+    assert "Ce plugin exécutera du code avec vos droits." in shown, shown
+    print("install_preview_ok", flush=True)
+
+    keys(fiche, "esc")
+    wait(lambda: "i : installer" in read(fiche), "escape did not cancel the preview")
+    time.sleep(2)
+    assert registry() == before, (before, registry())
+    assert fixture_log() == "", fixture_log()
+    assert fiches(tab), "cancelling the preview closed the fiche"
+    print("install_cancel_ok", flush=True)
+
+    keys(fiche, "esc")
+    wait(lambda: not fiches(tab), "escape did not close the fiche")
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+
+
 def main():
     check_isolation()
     prove_sidebar()
     prove_fiche()
+    prove_install_preview()
     print("journey_ok", flush=True)
 
 
