@@ -12,22 +12,31 @@ impl HerdrCommand {
     pub fn new(bin: PathBuf) -> Self {
         Self { bin }
     }
-}
 
-impl HerdrCli for HerdrCommand {
-    fn version(&self) -> Result<String, String> {
+    fn stdout(&self, args: &[&str]) -> Result<String, String> {
         let output = Command::new(&self.bin)
-            .arg("--version")
+            .args(args)
             .stdin(Stdio::null())
             .output()
             .map_err(|error| format!("{} : {error}", self.bin.display()))?;
         if !output.status.success() {
             return Err(format!(
-                "{} --version a échoué ({})",
-                self.bin.display(),
-                output.status
+                "herdr {} a échoué ({}) : {}",
+                args.join(" "),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
             ));
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+}
+
+impl HerdrCli for HerdrCommand {
+    fn version(&self) -> Result<String, String> {
+        self.stdout(&["--version"])
+    }
+
+    fn plugin_list(&self) -> Result<String, String> {
+        self.stdout(&["plugin", "list", "--json"])
     }
 }

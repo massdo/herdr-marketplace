@@ -1,0 +1,23 @@
+# herdr-marketplace: search, read and install Herdr plugins from a sidebar.
+# One binary: the sidebar pane, plus a --toggle action. Linked from a local
+# checkout built with `sh scripts/build.sh`.
+
+id = "herdr-marketplace"
+name = "herdr-marketplace"
+version = "0.1.0"
+description = "Chercher, lire et installer des plugins Herdr depuis une sidebar."
+min_herdr_version = "0.9.1"
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "sidebar"
+title = "marketplace"
+placement = "split"
+command = ["./target/release/herdr-marketplace"]
+
+[[actions]]
+id = "toggle"
+title = "Marketplace"
+description = "Ouvrir ou fermer la sidebar marketplace dans l'onglet courant."
+command = ["./target/release/herdr-marketplace", "--toggle"]
+contexts = ["workspace"]

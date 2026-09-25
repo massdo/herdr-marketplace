@@ -77,6 +77,10 @@ impl HerdrCli for FakeHerdr {
     fn version(&self) -> Result<String, String> {
         Ok(self.0.to_string())
     }
+
+    fn plugin_list(&self) -> Result<String, String> {
+        Ok(r#"{"id":"cli:plugin","result":{"plugins":[],"type":"plugin_list"}}"#.into())
+    }
 }
 
 struct CountingFetcher {

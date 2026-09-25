@@ -9,6 +9,16 @@ pub struct PluginSource {
     pub subdir: String,
 }
 
+impl PluginSource {
+    /// Owner and repo ignore case, as GitHub does; Herdr records them with
+    /// the case typed at install time. Subdir keeps its case.
+    pub fn same_source(&self, other: &PluginSource) -> bool {
+        self.owner.eq_ignore_ascii_case(&other.owner)
+            && self.repo.eq_ignore_ascii_case(&other.repo)
+            && self.subdir == other.subdir
+    }
+}
+
 impl fmt::Display for PluginSource {
     /// `owner/repo[/subdir]`, the shorthand Herdr takes.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
