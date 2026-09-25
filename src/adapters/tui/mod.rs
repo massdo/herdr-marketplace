@@ -29,14 +29,16 @@ use crate::application::load_readme::{Readme, load_readme};
 use crate::application::open_fiche::{close_fiche, open_fiche};
 use crate::application::ports::{HerdrCli, HerdrPort, Operations};
 use crate::application::prepare_install::{Prepared, prepare_install};
+use crate::application::prepare_removal::prepare_removal;
 use crate::application::run_operation::{current_operation, operation_running};
 use crate::domain::compat::Platform;
 use crate::domain::error::AppError;
 use crate::domain::fiche::FicheTarget;
 use crate::domain::install::installed_from;
-use crate::domain::operation::OperationRequest;
+use crate::domain::operation::{OperationKind, OperationRequest};
 use crate::domain::registry::InstalledPlugin;
 use crate::domain::source::PluginSource;
+use crate::domain::uninstall::RemovalPlan;
 
 use self::fiche::{FicheApp, FicheIntent, InstalledView};
 use self::sidebar::{Intent, SidebarApp};
@@ -55,6 +57,7 @@ enum FicheAnswer {
     Readme(u64, Result<Readme, String>),
     Install(u64, Prepared),
     Registry(u64, InstalledView),
+    Removal(u64, Box<Result<RemovalPlan, String>>),
 }
 
 const POLL: Duration = Duration::from_millis(100);
@@ -200,12 +203,22 @@ fn fiche_loop(
                         let _ = sender.send(FicheAnswer::Install(request, prepared));
                     });
                 }
-                FicheIntent::Install(args) => launch(app, operations, args),
+                FicheIntent::Install(args) => launch(app, operations, OperationKind::Install, args),
+                FicheIntent::Uninstall(args) => {
+                    launch(app, operations, OperationKind::Uninstall, args)
+                }
                 FicheIntent::ReadRegistry(request) => {
                     thread::spawn(move || {
                         let installed =
                             installed_view(&HerdrCommand::new(env::herdr_bin()), &target.source);
                         let _ = sender.send(FicheAnswer::Registry(request, installed));
+                    });
+                }
+                FicheIntent::PrepareRemoval(request) => {
+                    thread::spawn(move || {
+                        let plan =
+                            prepare_removal(&HerdrCommand::new(env::herdr_bin()), &target.source);
+                        let _ = sender.send(FicheAnswer::Removal(request, Box::new(plan)));
                     });
                 }
             }
@@ -215,6 +228,7 @@ fn fiche_loop(
                 FicheAnswer::Readme(request, readme) => app.readme_loaded(request, readme),
                 FicheAnswer::Install(request, prepared) => app.install_prepared(request, prepared),
                 FicheAnswer::Registry(request, installed) => app.registry_read(request, installed),
+                FicheAnswer::Removal(request, plan) => app.removal_prepared(request, *plan),
             }
         }
         app.operation_seen(current_operation(operations, &app.target.source));
@@ -231,7 +245,7 @@ fn fiche_loop(
 }
 
 /// Starts a confirmed request outside the fiche, unless an operation runs.
-fn launch(app: &mut FicheApp, operations: &FsOperations, args: Vec<String>) {
+fn launch(app: &mut FicheApp, operations: &FsOperations, kind: OperationKind, args: Vec<String>) {
     if operation_running(operations) {
         app.operation_refused(
             "Une opération de la marketplace est déjà en cours : demande refusée".into(),
@@ -244,12 +258,13 @@ fn launch(app: &mut FicheApp, operations: &FsOperations, args: Vec<String>) {
         .unwrap_or(0);
     let request = OperationRequest {
         id: format!("{now}-{}", std::process::id()),
+        kind,
         source: app.target.source.clone(),
         commit: app.target.commit.clone(),
         args,
     };
     match spawn_operation(&request) {
-        Ok(()) => app.operation_launched(request.id),
+        Ok(()) => app.operation_launched(request.id, kind),
         Err(error) => app.operation_refused(format!("Lancement impossible : {error}")),
     }
 }

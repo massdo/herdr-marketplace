@@ -16,7 +16,7 @@ use herdr_marketplace::application::run_operation::{
 use herdr_marketplace::domain::fiche::FicheTarget;
 use herdr_marketplace::domain::install::install_args;
 use herdr_marketplace::domain::operation::{
-    OperationRecord, OperationRequest, Status, record_file_name,
+    OperationKind, OperationRecord, OperationRequest, Status, record_file_name,
 };
 use herdr_marketplace::domain::source::PluginSource;
 use ratatui::Terminal;
@@ -86,6 +86,7 @@ fn source() -> PluginSource {
 fn request(commit: &str) -> OperationRequest {
     OperationRequest {
         id: format!("op-{commit}"),
+        kind: OperationKind::Install,
         source: source(),
         commit: commit.into(),
         args: install_args(&source(), commit),
@@ -262,7 +263,7 @@ fn a_result_left_running_by_a_dead_operation_is_unconfirmed() {
 fn the_fiche_shows_the_operation_in_progress_then_reads_the_registry() {
     let mut app = FicheApp::new(target());
     app.intents.clear();
-    app.operation_launched("op-1".into());
+    app.operation_launched("op-1".into(), OperationKind::Install);
     app.operation_seen(None);
     assert!(fiche_text(&app).contains("Installation en cours…"));
     assert!(app.intents.is_empty());

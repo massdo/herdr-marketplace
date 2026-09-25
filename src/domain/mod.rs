@@ -14,6 +14,7 @@ pub mod search;
 pub mod sidebar_decision;
 pub mod source;
 pub mod text;
+pub mod uninstall;
 pub mod version;
 
 pub const PLUGIN_ID: &str = "herdr-marketplace";

@@ -6,5 +6,6 @@ pub mod open_sidebar;
 pub mod pane_size;
 pub mod ports;
 pub mod prepare_install;
+pub mod prepare_removal;
 pub mod run_operation;
 pub mod toggle_sidebar;

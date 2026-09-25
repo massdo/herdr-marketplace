@@ -455,6 +455,52 @@ def prove_fiche_closed_during_install():
     close_all(tab)
 
 
+def remove(fiche):
+    keys(fiche, "r")
+    shown = wait(lambda: "Entrée : confirmer" in (text := read(fiche)) and text,
+                 "r did not ask for a confirmation")
+    assert "source : massdo/herdr-marketplace-fixture" in shown, shown
+    keys(fiche, "enter")
+    wait(lambda: "Retrait réussi" in read(fiche), "the removal did not succeed", OPERATION_TIMEOUT)
+
+
+def prove_uninstall():
+    sidebar, tab, fiche = fixture_fiche(SHA_A)
+    wait(lambda: "· installé" in read(fiche), "the fiche does not show « installé »")
+    remove(fiche)
+    assert fixture_plugin() is None, data("plugin", "list", "--json")
+    wait(lambda: "· non installé" in read(fiche), "the fiche does not show « non installé »")
+    wait(lambda: "installé · Test fixture." not in (text := read(sidebar)) and "Test fixture." in text,
+         "the sidebar still shows « installé »")
+    print("uninstall_ok", flush=True)
+    close_all(tab)
+
+
+def prove_full_journey():
+    """Two catalogues in turn: search, read, install A; read, switch to B;
+    remove. The registry is checked at each step."""
+    assert registry() == set(), registry()
+    sidebar, tab, fiche = fixture_fiche(SHA_A)
+    wait(lambda: "[image : fixture logo]" in read(fiche), "the README was not read")
+    confirm_install(fiche, "Installation")
+    wait(lambda: "Installation de c8268d4 réussie" in read(fiche),
+         "the install did not succeed", OPERATION_TIMEOUT)
+    assert registry() == {(*FIXTURE, "", SHA_A)}, registry()
+    close_all(tab)
+
+    sidebar, tab, fiche = fixture_fiche(SHA_B)
+    wait(lambda: "[image : fixture logo]" in read(fiche), "the README was not read")
+    confirm_install(fiche, f"commit installé : {SHA_A}")
+    wait(lambda: "Installation de 1be1b7b réussie" in read(fiche),
+         "the switch did not succeed", OPERATION_TIMEOUT)
+    assert registry() == {(*FIXTURE, "", SHA_B)}, registry()
+
+    remove(fiche)
+    assert registry() == set(), registry()
+    print("full_journey_ok", flush=True)
+    close_all(tab)
+
+
 def main():
     check_isolation()
     prove_sidebar()
@@ -464,6 +510,8 @@ def main():
     prove_switch()
     prove_failed_build()
     prove_fiche_closed_during_install()
+    prove_uninstall()
+    prove_full_journey()
     print("journey_ok", flush=True)
 
 

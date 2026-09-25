@@ -1,4 +1,5 @@
-//! Install operations run outside the fiche, and their kept results.
+//! Install and removal operations run outside the fiche, and their kept
+//! results.
 
 use serde::{Deserialize, Serialize};
 
@@ -6,11 +7,20 @@ use super::install::installed_from;
 use super::registry::InstalledPlugin;
 use super::source::PluginSource;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationKind {
+    Install,
+    Uninstall,
+}
+
 /// A confirmed request, handed to the process that runs it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OperationRequest {
     /// Tells this operation's result from an older one of the same source.
     pub id: String,
+    pub kind: OperationKind,
+    /// The fiche's source; the arguments may spell it as the registry does.
     pub source: PluginSource,
     pub commit: String,
     /// Arguments of `herdr`.
@@ -55,9 +65,11 @@ impl OperationRecord {
     }
 }
 
-/// Success is exit code 0 and the registry showing the source at the
-/// commit; code 0 without that is never reported as a success.
-pub fn install_status(
+/// An install succeeds when Herdr answers 0 and the registry shows the
+/// source at the commit; code 0 without that is « résultat non confirmé »,
+/// never a success. A removal succeeds when Herdr answers 0 and the source is
+/// gone from the registry; anything else is a failure.
+pub fn operation_status(
     exit_code: Option<i32>,
     registry: &Result<Vec<InstalledPlugin>, String>,
     request: &OperationRequest,
@@ -65,15 +77,25 @@ pub fn install_status(
     if exit_code != Some(0) {
         return Status::Failed;
     }
-    let confirmed = registry.as_ref().is_ok_and(|registry| {
-        installed_from(registry, &request.source).is_ok_and(|installed| {
-            installed.and_then(InstalledPlugin::resolved_commit) == Some(request.commit.as_str())
-        })
-    });
-    if confirmed {
-        Status::Succeeded
-    } else {
-        Status::Unconfirmed
+    let installed = registry
+        .as_ref()
+        .ok()
+        .and_then(|registry| installed_from(registry, &request.source).ok());
+    match request.kind {
+        OperationKind::Install => {
+            let commit = installed
+                .flatten()
+                .and_then(InstalledPlugin::resolved_commit);
+            if commit == Some(request.commit.as_str()) {
+                Status::Succeeded
+            } else {
+                Status::Unconfirmed
+            }
+        }
+        OperationKind::Uninstall => match installed {
+            Some(None) => Status::Succeeded,
+            _ => Status::Failed,
+        },
     }
 }
 

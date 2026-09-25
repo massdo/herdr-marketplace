@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::application::load_listing::read_registry;
 use crate::application::ports::{HerdrCli, Operations};
 use crate::domain::operation::{
-    OperationRecord, OperationRequest, Status, install_status, registry_state,
+    OperationRecord, OperationRequest, Status, operation_status, registry_state,
 };
 use crate::domain::source::PluginSource;
 
@@ -40,7 +40,7 @@ pub fn run_operation<H: HerdrCli, O: Operations>(
     };
     record.exit_code = code;
     record.registry_after = Some(registry_state(&registry, &request.source));
-    let status = install_status(code, &registry, request);
+    let status = operation_status(code, &registry, request);
     finish(operations, record, status, tail(&output))
 }
 

@@ -7,7 +7,8 @@ use crate::application::load_readme::Readme;
 use crate::application::prepare_install::{InstallPreview, Prepared};
 use crate::domain::compat::Platform;
 use crate::domain::fiche::FicheTarget;
-use crate::domain::operation::{OperationRecord, Status};
+use crate::domain::operation::{OperationKind, OperationRecord, Status};
+use crate::domain::uninstall::RemovalPlan;
 
 /// The fiche's source as the registry shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +39,16 @@ pub enum InstallState {
     Preview(Box<InstallPreview>),
 }
 
+/// Removal request, from the key that asks for it to the second
+/// confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemovalState {
+    Idle,
+    Preparing,
+    Refused(String),
+    Confirm(Box<RemovalPlan>),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FicheIntent {
     /// Load the README; the answer carries this request number.
@@ -48,10 +59,14 @@ pub enum FicheIntent {
     Install(Vec<String>),
     /// Read the registry; the answer carries this request number.
     ReadRegistry(u64),
+    /// Find the installed plugin to remove; the answer carries this number.
+    PrepareRemoval(u64),
+    /// Confirmed removal: the arguments of `herdr`.
+    Uninstall(Vec<String>),
 }
 
-/// Fiche state: the plugin and commit received at opening, its README and
-/// the install request.
+/// Fiche state: the plugin and commit received at opening, its README, and
+/// the install or removal request.
 #[derive(Debug, Clone)]
 pub struct FicheApp {
     pub target: FicheTarget,
@@ -70,12 +85,14 @@ pub struct FicheApp {
     /// Preview rendered for `width`, shown instead of the README.
     pub preview: Vec<Line<'static>>,
     pub preview_scroll: usize,
+    pub removal: RemovalState,
+    pub removal_request: u64,
     pub installed: InstalledView,
     pub registry_request: u64,
     /// Latest kept result of an operation on this source.
     pub operation: Option<OperationRecord>,
     /// Operation launched from this fiche whose result has not appeared yet.
-    pub launched: Option<String>,
+    pub launched: Option<(String, OperationKind)>,
     /// Why the last confirmation launched nothing.
     pub notice: Option<String>,
     pub intents: Vec<FicheIntent>,
@@ -96,6 +113,8 @@ impl FicheApp {
             install_request: 0,
             preview: Vec::new(),
             preview_scroll: 0,
+            removal: RemovalState::Idle,
+            removal_request: 0,
             installed: InstalledView::Unknown,
             registry_request: 1,
             operation: None,
@@ -115,7 +134,8 @@ impl FicheApp {
     /// operation ends, the registry is read again.
     pub fn operation_seen(&mut self, record: Option<OperationRecord>) {
         let was_running = self.operation_running();
-        if record.as_ref().map(|record| &record.request.id) == self.launched.as_ref() {
+        let launched = self.launched.as_ref().map(|(id, _)| id);
+        if record.as_ref().map(|record| &record.request.id) == launched {
             self.launched = None;
         }
         self.operation = record;
@@ -126,8 +146,8 @@ impl FicheApp {
         }
     }
 
-    pub fn operation_launched(&mut self, id: String) {
-        self.launched = Some(id);
+    pub fn operation_launched(&mut self, id: String, kind: OperationKind) {
+        self.launched = Some((id, kind));
         self.notice = None;
     }
 
@@ -169,6 +189,16 @@ impl FicheApp {
         self.render();
     }
 
+    pub fn removal_prepared(&mut self, request: u64, plan: Result<RemovalPlan, String>) {
+        if request != self.removal_request || self.removal != RemovalState::Preparing {
+            return;
+        }
+        self.removal = match plan {
+            Ok(plan) => RemovalState::Confirm(Box::new(plan)),
+            Err(reason) => RemovalState::Refused(reason),
+        };
+    }
+
     pub fn set_viewport(&mut self, width: usize, page: usize) {
         if width != self.width {
             self.width = width;
@@ -184,10 +214,14 @@ impl FicheApp {
             return key.code == KeyCode::Char('c');
         }
         match key.code {
-            KeyCode::Esc if self.install == InstallState::Idle => return true,
-            KeyCode::Esc => self.leave_install(),
+            KeyCode::Esc if self.install != InstallState::Idle => self.leave_install(),
+            KeyCode::Esc if self.removal != RemovalState::Idle => {
+                self.removal = RemovalState::Idle;
+            }
+            KeyCode::Esc => return true,
             KeyCode::Enter => self.enter(),
             KeyCode::Char('i') => self.prepare_install(),
+            KeyCode::Char('r') => self.prepare_removal(),
             KeyCode::Char('s') => self.full_sha = !self.full_sha,
             KeyCode::Up => self.scroll_by(-1),
             KeyCode::Down => self.scroll_by(1),
@@ -209,6 +243,9 @@ impl FicheApp {
             self.intents
                 .push(FicheIntent::Install(preview.args.clone()));
             self.leave_install();
+        } else if let RemovalState::Confirm(plan) = &self.removal {
+            self.intents.push(FicheIntent::Uninstall(plan.args.clone()));
+            self.removal = RemovalState::Idle;
         } else if matches!(self.readme, ReadmeState::NetworkError(_)) {
             self.request += 1;
             self.readme = ReadmeState::Loading;
@@ -224,10 +261,26 @@ impl FicheApp {
         ) {
             return;
         }
+        self.removal = RemovalState::Idle;
         self.install_request += 1;
         self.install = InstallState::Preparing;
         self.intents
             .push(FicheIntent::PrepareInstall(self.install_request));
+    }
+
+    /// `r` asks for the removal; a second key, Enter, confirms it.
+    fn prepare_removal(&mut self) {
+        if matches!(
+            self.removal,
+            RemovalState::Preparing | RemovalState::Confirm(_)
+        ) {
+            return;
+        }
+        self.leave_install();
+        self.removal_request += 1;
+        self.removal = RemovalState::Preparing;
+        self.intents
+            .push(FicheIntent::PrepareRemoval(self.removal_request));
     }
 
     /// Escape out of the preview launches nothing.
