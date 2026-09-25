@@ -1,8 +1,10 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 /// Identity of a plugin: owner/repo/subdir. `subdir` is empty at the root.
 /// The manifest id is not unique and never identifies a plugin on its own.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PluginSource {
     pub owner: String,
     pub repo: String,
@@ -28,6 +30,16 @@ impl fmt::Display for PluginSource {
         }
         Ok(())
     }
+}
+
+/// Herdr 0.9.1 `validate_github_segment`, for owner and repo.
+pub fn is_github_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && segment
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
 }
 
 /// Herdr 0.9.1 `validate_subdir_segment`.

@@ -1,5 +1,8 @@
 pub mod load_catalog;
 pub mod load_listing;
+pub mod load_readme;
+pub mod open_fiche;
 pub mod open_sidebar;
+pub mod pane_size;
 pub mod ports;
 pub mod toggle_sidebar;

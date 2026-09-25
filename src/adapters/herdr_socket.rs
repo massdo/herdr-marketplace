@@ -14,7 +14,7 @@ use crate::application::ports::{HerdrPort, OpenPluginPane};
 use crate::domain::error::AppError;
 use crate::domain::ids::PaneId;
 use crate::domain::pane::{LayoutSnapshot, OpenedPane, PaneInfo};
-use crate::domain::{PLUGIN_ID, SIDEBAR_TOKEN_KEY, TOKEN_VALUE};
+use crate::domain::{PLUGIN_ID, TOKEN_VALUE};
 
 const IPC_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
@@ -145,9 +145,9 @@ impl HerdrPort for HerdrSocket {
         Ok(())
     }
 
-    fn report_sidebar_identity(&self, pane_id: &PaneId) -> Result<(), AppError> {
+    fn report_identity(&self, pane_id: &PaneId, token_key: &str) -> Result<(), AppError> {
         let mut tokens = BTreeMap::new();
-        tokens.insert(SIDEBAR_TOKEN_KEY.to_string(), TOKEN_VALUE.to_string());
+        tokens.insert(token_key.to_string(), TOKEN_VALUE.to_string());
         self.call(
             "pane.report_metadata",
             json!({

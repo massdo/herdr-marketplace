@@ -6,18 +6,19 @@ use unicode_width::UnicodeWidthStr;
 
 use super::sidebar::{LoadState, SidebarApp};
 use super::style::{
-    ACCENT, ERROR, MUTED, OK, SELECTION_BG, SELECTION_FG, WARN, bold, ellipsize, muted, wrap,
+    ACCENT, ERROR, MUTED, OK, SELECTION_BG, SELECTION_FG, WARN, bold, ellipsize, ellipsize_middle,
+    muted, wrap,
 };
 use crate::domain::listing::Row;
 use crate::domain::text::clean;
 
 /// Terminal lines per plugin: name, owner/repo, marks and description.
 pub const ROW_HEIGHT: usize = 3;
-const FOOTER: &str = "↑↓ · Entrée : fiche · Échap : fermer";
+const FOOTER: &str = "Entrée fiche · Échap fermer";
 
-/// Plugins the list area shows for a pane `height` lines high.
-pub fn page_rows(app: &SidebarApp, height: u16) -> usize {
-    let used = header(app, usize::MAX).len() + 1;
+/// Plugins the list area of a `width` × `height` pane shows.
+pub fn page_rows(app: &SidebarApp, width: u16, height: u16) -> usize {
+    let used = header(app, width as usize).len() + 1;
     (height as usize).saturating_sub(used) / ROW_HEIGHT
 }
 
@@ -79,6 +80,13 @@ fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
             ));
         }
     }
+    if let Some(notice) = &app.notice {
+        lines.extend(
+            wrap(&clean(notice), width)
+                .into_iter()
+                .map(|line| Line::styled(line, Style::default().fg(ERROR))),
+        );
+    }
     lines
 }
 
@@ -126,7 +134,10 @@ fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
         Span::raw(" ".repeat(pad)),
         Span::styled(stars, muted()),
     ]);
-    let second = Line::styled(ellipsize(&clean(&entry.source.to_string()), width), muted());
+    let second = Line::styled(
+        ellipsize_middle(&clean(&entry.source.to_string()), width),
+        muted(),
+    );
 
     let mut third = Vec::new();
     let mut used = 0;

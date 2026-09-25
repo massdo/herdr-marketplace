@@ -9,7 +9,7 @@ use serde_json::Value;
 
 use super::compat::{Platform, is_compatible};
 use super::search::catalog_order;
-use super::source::{PluginSource, is_subdir_segment};
+use super::source::{PluginSource, is_github_segment, is_subdir_segment};
 use super::version::Version;
 
 pub const SCHEMA_VERSION: u64 = 1;
@@ -141,8 +141,16 @@ pub fn parse_index(bytes: &[u8]) -> Result<Catalog, IndexError> {
 }
 
 fn entry(repository: &RawRepository, manifest: RawManifest) -> Option<Entry> {
-    let owner = non_empty(repository.owner.clone())?;
-    let repo = non_empty(repository.name.clone())?;
+    // Owner and repo end up in URLs and in `herdr plugin install`: they must
+    // pass Herdr's own rules.
+    let owner = repository
+        .owner
+        .clone()
+        .filter(|owner| is_github_segment(owner))?;
+    let repo = repository
+        .name
+        .clone()
+        .filter(|repo| is_github_segment(repo))?;
     let commit = repository
         .head_commit
         .clone()

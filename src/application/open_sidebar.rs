@@ -2,12 +2,13 @@
 
 use std::collections::BTreeMap;
 
+use crate::application::pane_size::settle_size;
 use crate::application::ports::{HerdrPort, OpenPluginPane};
 use crate::domain::error::AppError;
 use crate::domain::geometry::{pick_working_target, preferred_left_resize};
 use crate::domain::ids::PaneId;
 use crate::domain::pane::OriginContext;
-use crate::domain::{PLUGIN_ID, SIDEBAR_ENTRYPOINT};
+use crate::domain::{PLUGIN_ID, SIDEBAR_ENTRYPOINT, SIDEBAR_TOKEN_KEY};
 
 /// Open the sidebar to the left of the working-pane target.
 pub fn open_sidebar<H: HerdrPort>(herdr: &H, origin: &OriginContext) -> Result<PaneId, AppError> {
@@ -47,24 +48,29 @@ pub fn open_sidebar<H: HerdrPort>(herdr: &H, origin: &OriginContext) -> Result<P
     if let Err(error) = herdr.swap_panes(&opened.pane_id, &target.id()) {
         return Err(cleanup(herdr, &opened.pane_id, error));
     }
-    if let Err(error) = herdr.report_sidebar_identity(&opened.pane_id) {
+    if let Err(error) = herdr.report_identity(&opened.pane_id, SIDEBAR_TOKEN_KEY) {
         return Err(cleanup(herdr, &opened.pane_id, error));
     }
 
     match herdr.pane_layout(&opened.pane_id) {
         Ok(layout) => {
-            if let Some(step) = preferred_left_resize(&layout, opened.pane_id.as_str()) {
-                // Herdr resizes the edge in the requested direction. Shrink
-                // from the working pane's left edge so an explorer to the
-                // sidebar's left cannot become the resize target.
-                let resize_target = if step.direction == "left" {
-                    target.id()
-                } else {
-                    opened.pane_id.clone()
-                };
-                if let Err(error) = herdr.resize_pane(&resize_target, step.direction, step.amount) {
-                    return Err(cleanup(herdr, &opened.pane_id, error));
+            let resized = match preferred_left_resize(&layout, opened.pane_id.as_str()) {
+                Some(step) => {
+                    // Herdr resizes the edge in the requested direction.
+                    // Shrink from the working pane's left edge so an explorer
+                    // to the sidebar's left cannot become the resize target.
+                    let resize_target = if step.direction == "left" {
+                        target.id()
+                    } else {
+                        opened.pane_id.clone()
+                    };
+                    herdr.resize_pane(&resize_target, step.direction, step.amount)
                 }
+                // Already about 32 columns: no layout change sizes it.
+                None => settle_size(herdr, &opened.pane_id),
+            };
+            if let Err(error) = resized {
+                return Err(cleanup(herdr, &opened.pane_id, error));
             }
         }
         Err(error) => return Err(cleanup(herdr, &opened.pane_id, error)),

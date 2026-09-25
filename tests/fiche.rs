@@ -1,0 +1,547 @@
+//! README fiche: loading, Markdown rendering, keyboard and pane handling,
+//! offline.
+
+mod support;
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use herdr_marketplace::adapters::tui::fiche::{FicheApp, FicheIntent, ReadmeState};
+use herdr_marketplace::adapters::tui::{fiche_view, markdown};
+use herdr_marketplace::application::load_readme::{Readme, load_readme};
+use herdr_marketplace::application::open_fiche::{close_fiche, open_fiche};
+use herdr_marketplace::application::ports::{FetchError, Fetcher};
+use herdr_marketplace::domain::compat::Platform;
+use herdr_marketplace::domain::fiche::FicheTarget;
+use herdr_marketplace::domain::ids::PaneId;
+use herdr_marketplace::domain::listing::build_listing;
+use herdr_marketplace::domain::registry::parse_registry;
+use herdr_marketplace::domain::source::PluginSource;
+use herdr_marketplace::domain::{FICHE_ENV, FICHE_TOKEN_KEY, SIDEBAR_TOKEN_KEY};
+use ratatui::backend::{CrosstermBackend, TestBackend};
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier};
+use ratatui::text::Line;
+use ratatui::{Terminal, TerminalOptions, Viewport};
+use serde_json::json;
+use support::*;
+
+const RAW: &str = "https://raw.githubusercontent.com";
+
+/// Terminal output captured byte for byte.
+#[derive(Clone, Default)]
+struct Recorder(std::rc::Rc<RefCell<Vec<u8>>>);
+
+impl std::io::Write for Recorder {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Answers by URL; any other URL is a 404. Every request is recorded.
+struct FakeRaw {
+    answers: HashMap<String, Result<Vec<u8>, FetchError>>,
+    asked: RefCell<Vec<String>>,
+}
+
+impl FakeRaw {
+    fn new(answers: Vec<(String, Result<&str, FetchError>)>) -> Self {
+        Self {
+            answers: answers
+                .into_iter()
+                .map(|(url, answer)| (url, answer.map(|body| body.as_bytes().to_vec())))
+                .collect(),
+            asked: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl Fetcher for FakeRaw {
+    fn fetch(&self, url: &str, _limit: u64) -> Result<Vec<u8>, FetchError> {
+        self.asked.borrow_mut().push(url.to_string());
+        self.answers
+            .get(url)
+            .cloned()
+            .unwrap_or(Err(FetchError::NotFound))
+    }
+}
+
+fn source(subdir: &str) -> PluginSource {
+    PluginSource {
+        owner: "massdo".into(),
+        repo: "herdr-marketplace-fixture".into(),
+        subdir: subdir.into(),
+    }
+}
+
+fn target(subdir: &str) -> FicheTarget {
+    FicheTarget {
+        source: source(subdir),
+        commit: SHA_A.into(),
+        id: "herdr-marketplace-fixture".into(),
+        name: "herdr-marketplace fixture".into(),
+        version: Some("1.0.0".into()),
+        in_catalog: true,
+        compatible: true,
+    }
+}
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::NONE)
+}
+
+fn texts(lines: &[Line]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        })
+        .collect()
+}
+
+fn span_style(lines: &[Line], text: &str) -> ratatui::style::Style {
+    lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .find(|span| span.content == text)
+        .unwrap_or_else(|| panic!("no span {text:?} in {:?}", texts(lines)))
+        .style
+}
+
+#[test]
+fn the_readme_of_a_subfolder_plugin_comes_from_its_folder_at_the_commit() {
+    let own = format!("{RAW}/massdo/herdr-marketplace-fixture/{SHA_A}/alt/README.md");
+    let raw = FakeRaw::new(vec![(own.clone(), Ok("# Alt"))]);
+    let readme = load_readme(&raw, &source("alt"), SHA_A).unwrap();
+    assert_eq!(
+        readme,
+        Readme::Found {
+            text: "# Alt".into(),
+            fallback: false
+        }
+    );
+    assert_eq!(*raw.asked.borrow(), [own]);
+}
+
+#[test]
+fn a_subfolder_without_readme_falls_back_to_the_root_one() {
+    let root = format!("{RAW}/massdo/herdr-marketplace-fixture/{SHA_A}/README.md");
+    let raw = FakeRaw::new(vec![(root.clone(), Ok("# Root"))]);
+    let readme = load_readme(&raw, &source("alt"), SHA_A).unwrap();
+    assert_eq!(
+        readme,
+        Readme::Found {
+            text: "# Root".into(),
+            fallback: true
+        }
+    );
+    assert_eq!(
+        *raw.asked.borrow(),
+        [
+            format!("{RAW}/massdo/herdr-marketplace-fixture/{SHA_A}/alt/README.md"),
+            root
+        ]
+    );
+}
+
+#[test]
+fn a_missing_readme_is_not_found_and_differs_from_a_network_error() {
+    let raw = FakeRaw::new(vec![]);
+    assert_eq!(
+        load_readme(&raw, &source("alt"), SHA_A),
+        Ok(Readme::NotFound)
+    );
+    let raw = FakeRaw::new(vec![]);
+    assert_eq!(load_readme(&raw, &source(""), SHA_A), Ok(Readme::NotFound));
+    assert_eq!(raw.asked.borrow().len(), 1, "a root plugin has no fallback");
+
+    let own = format!("{RAW}/massdo/herdr-marketplace-fixture/{SHA_A}/alt/README.md");
+    let raw = FakeRaw::new(vec![(own, Err(FetchError::Failed("timeout".into())))]);
+    assert_eq!(
+        load_readme(&raw, &source("alt"), SHA_A),
+        Err("timeout".into())
+    );
+}
+
+#[test]
+fn a_network_error_can_be_retried_and_older_answers_are_dropped() {
+    let mut app = FicheApp::new(target(""));
+    assert_eq!(app.intents, [FicheIntent::LoadReadme(1)]);
+    app.intents.clear();
+    app.readme_loaded(1, Err("connexion refusée".into()));
+    assert!(matches!(app.readme, ReadmeState::NetworkError(_)));
+
+    app.handle_key(key(KeyCode::Enter));
+    assert_eq!(app.readme, ReadmeState::Loading);
+    assert_eq!(app.intents, [FicheIntent::LoadReadme(2)]);
+
+    app.readme_loaded(
+        1,
+        Ok(Readme::Found {
+            text: "old answer".into(),
+            fallback: false,
+        }),
+    );
+    assert_eq!(app.readme, ReadmeState::Loading, "request 1 is stale");
+    app.readme_loaded(
+        2,
+        Ok(Readme::Found {
+            text: "fresh answer".into(),
+            fallback: false,
+        }),
+    );
+    assert_eq!(texts(&app.lines), ["fresh answer"]);
+}
+
+#[test]
+fn the_whole_readme_is_reachable_with_the_keyboard() {
+    let readme: String = (1..=60).map(|index| format!("Line {index}.\n\n")).collect();
+    let mut app = FicheApp::new(target(""));
+    app.set_viewport(40, 10);
+    app.readme_loaded(
+        1,
+        Ok(Readme::Found {
+            text: readme,
+            fallback: false,
+        }),
+    );
+    let last = app.lines.len();
+    app.handle_key(key(KeyCode::End));
+    assert_eq!(app.scroll, last - 10);
+    assert_eq!(texts(&app.lines[app.scroll..]).last().unwrap(), "Line 60.");
+    app.handle_key(key(KeyCode::PageUp));
+    assert_eq!(app.scroll, last - 20);
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(app.scroll, last - 21);
+    app.handle_key(key(KeyCode::Home));
+    assert_eq!(app.scroll, 0);
+    app.handle_key(key(KeyCode::Down));
+    app.handle_key(key(KeyCode::PageDown));
+    assert_eq!(app.scroll, 11);
+    for _ in 0..200 {
+        app.handle_key(key(KeyCode::Down));
+    }
+    assert_eq!(app.scroll, last - 10);
+    assert!(app.handle_key(key(KeyCode::Esc)), "escape closes the fiche");
+}
+
+#[test]
+fn the_header_shows_identity_and_a_short_sha_with_the_full_one_on_demand() {
+    let mut app = FicheApp::new(target("alt"));
+    app.readme_loaded(
+        1,
+        Ok(Readme::Found {
+            text: "Root README".into(),
+            fallback: true,
+        }),
+    );
+    let screen = |app: &FicheApp| {
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        terminal
+            .draw(|frame| fiche_view::render(frame, app))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        buffer
+            .content()
+            .chunks(100)
+            .map(|line| line.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+    };
+    let lines = screen(&app);
+    assert!(
+        lines[0].starts_with("herdr-marketplace fixture  1.0.0"),
+        "{lines:#?}"
+    );
+    assert!(
+        lines[1].starts_with("massdo/herdr-marketplace-fixture/alt"),
+        "{lines:#?}"
+    );
+    assert!(lines[2].starts_with("commit c8268d4 "), "{lines:#?}");
+    assert!(
+        lines[3].starts_with("Pas de README.md dans alt/ : README.md racine du dépôt affiché"),
+        "{lines:#?}"
+    );
+    assert!(lines[5].starts_with("Root README"), "{lines:#?}");
+
+    app.handle_key(key(KeyCode::Char('s')));
+    assert!(
+        screen(&app)[2].starts_with(&format!("commit {SHA_A}")),
+        "full SHA"
+    );
+}
+
+const EVERY_ELEMENT: &str = r#"# Title
+
+Intro with **bold**, *italic*, ~~gone~~ and `code`, a [link](https://example.com/doc) and <https://example.com/auto>.
+
+- first
+- second
+  - nested
+
+1. one
+2. two
+
+- [x] done
+- [ ] todo
+
+> quoted text
+
+---
+
+```rust
+fn main() { let x = 1; }
+```
+
+| Left | Right |
+|:-----|------:|
+| a | 1 |
+| long cell | 22 |
+
+![diagram](docs/diagram.png)
+
+<p align="center"><img src="logo.png" alt="logo"></p>
+
+<div>kept <b>text</b> &amp; more</div>
+
+Inline <img src="x.png" alt="small icon"> and <span>span text</span>.
+"#;
+
+#[test]
+fn every_listed_markdown_element_is_rendered() {
+    let lines = markdown::render(EVERY_ELEMENT, 60);
+    let text = texts(&lines);
+    let has = |expected: &str| {
+        assert!(
+            text.iter().any(|line| line == expected),
+            "{expected:?} not in {text:#?}"
+        )
+    };
+
+    has("Title");
+    let title = span_style(&lines, "Title");
+    assert!(
+        title
+            .add_modifier
+            .contains(Modifier::BOLD | Modifier::UNDERLINED)
+    );
+    assert!(
+        span_style(&lines, "bold")
+            .add_modifier
+            .contains(Modifier::BOLD)
+    );
+    assert!(
+        span_style(&lines, "italic")
+            .add_modifier
+            .contains(Modifier::ITALIC)
+    );
+    assert!(
+        span_style(&lines, "gone")
+            .add_modifier
+            .contains(Modifier::CROSSED_OUT)
+    );
+    assert_eq!(span_style(&lines, "code").fg, Some(Color::Cyan));
+    let joined = text.join(" ");
+    assert!(
+        joined.contains("a link (https://example.com/doc) and"),
+        "{text:#?}"
+    );
+    assert!(
+        text.iter()
+            .any(|line| line.contains("https://example.com/auto.")
+                && !line.contains("(https://example.com/auto)")),
+        "{text:#?}"
+    );
+    has("• first");
+    has("• second");
+    has("  • nested");
+    has("1. one");
+    has("2. two");
+    has("[x] done");
+    has("[ ] todo");
+    has("│ quoted text");
+    assert!(text.iter().any(|line| line == &"─".repeat(60)), "rule");
+    has("  fn main() { let x = 1; }");
+    let code_colors: Vec<Option<Color>> = lines
+        .iter()
+        .flat_map(|line| line.spans.iter())
+        .filter(|span| span.content.contains("fn main"))
+        .map(|span| span.style.fg)
+        .collect();
+    assert_eq!(code_colors, [Some(Color::Cyan)], "no syntax highlighting");
+    has("Left      │ Right");
+    has("──────────┼──────");
+    has("a         │     1");
+    has("long cell │    22");
+    has("[image : diagram]");
+    has("[image : logo]");
+    has("kept text & more");
+    has("Inline [image : small icon] and span text.");
+}
+
+#[test]
+fn paragraphs_wrap_to_the_pane_width() {
+    let paragraph = "word ".repeat(40);
+    let lines = markdown::render(&paragraph, 30);
+    let text = texts(&lines);
+    assert!(text.len() > 1, "{text:#?}");
+    assert!(
+        text.iter()
+            .all(|line| unicode_width::UnicodeWidthStr::width(line.as_str()) <= 30),
+        "{text:#?}"
+    );
+    let long_url = format!("see https://example.com/{}", "x".repeat(80));
+    let text = texts(&markdown::render(&long_url, 30));
+    assert!(
+        text.iter()
+            .all(|line| unicode_width::UnicodeWidthStr::width(line.as_str()) <= 30),
+        "{text:#?}"
+    );
+}
+
+const TRAPPED: &str = "# Trap\u{1b}[2J\n\nred \u{1b}[31mtext\u{1b}[0m, title \u{1b}]0;PWNED\u{7}, clipboard \u{1b}]52;c;SGVsbG8=\u{7}, csi \u{9b}6n, dcs \u{1b}P+q\u{1b}\\, bell\u{7}, tab\there\r\n\n```\ncode \u{1b}[1mbold\u{1b}[0m\n```\n\n<p>\u{1b}]8;;https://evil.example\u{7}link\u{1b}]8;;\u{7}</p>\n";
+
+#[test]
+fn control_sequences_of_a_readme_never_reach_the_terminal() {
+    let mut app = FicheApp::new(target(""));
+    app.readme_loaded(
+        1,
+        Ok(Readme::Found {
+            text: TRAPPED.into(),
+            fallback: false,
+        }),
+    );
+
+    let mut cells = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    cells.draw(|frame| fiche_view::render(frame, &app)).unwrap();
+    let buffer = cells.backend().buffer().clone();
+    let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+    assert!(!screen.chars().any(char::is_control), "{screen:?}");
+    assert!(screen.contains("red [31mtext[0m"), "{screen:?}");
+
+    let recorder = Recorder::default();
+    let mut bytes = Terminal::with_options(
+        CrosstermBackend::new(recorder.clone()),
+        TerminalOptions {
+            viewport: Viewport::Fixed(Rect::new(0, 0, 80, 24)),
+        },
+    )
+    .unwrap();
+    bytes.draw(|frame| fiche_view::render(frame, &app)).unwrap();
+    let written = String::from_utf8_lossy(&recorder.0.borrow()).into_owned();
+    assert!(written.contains("PWNED"), "the text itself stays visible");
+    for forbidden in [
+        "\u{7}",
+        "\u{1b}]",
+        "\u{1b}P",
+        "\u{1b}\\",
+        "\u{9b}",
+        "\u{1b}[2J",
+        "\u{1b}[31m",
+        "\t",
+        "\r",
+    ] {
+        assert!(
+            !written.contains(forbidden),
+            "{forbidden:?} reached the terminal"
+        );
+    }
+}
+
+#[test]
+fn opening_b_while_a_is_loading_never_shows_a_under_b() {
+    let herdr = FakePanes::new(vec![
+        pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
+        pane("w1:work", "w1:t1", None),
+        pane("w1:fiche-a", "w1:t1", Some(FICHE_TOKEN_KEY)),
+        pane("w1:fiche-other-tab", "w1:t2", Some(FICHE_TOKEN_KEY)),
+    ]);
+    let b = target("alt");
+
+    open_fiche(&herdr, &PaneId("w1:side".into()), &b).unwrap();
+
+    assert_eq!(
+        *herdr.calls.borrow(),
+        [
+            "close w1:fiche-a",
+            "open fiche next to w1:work",
+            "identity w1:new herdr_marketplace_fiche",
+            "resize w1:new left",
+            "resize w1:new right",
+        ]
+    );
+    let opened = herdr.opened.borrow();
+    assert!(opened[0].focus);
+    let handed: FicheTarget = serde_json::from_str(&opened[0].env[FICHE_ENV]).unwrap();
+    assert_eq!(handed, b, "B's pane only ever knows B");
+}
+
+#[test]
+fn escape_returns_focus_to_the_sidebar_or_else_to_a_remaining_pane() {
+    let herdr = FakePanes::new(vec![
+        pane("w1:work", "w1:t1", None),
+        pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
+        pane("w1:fiche", "w1:t1", Some(FICHE_TOKEN_KEY)),
+    ]);
+    close_fiche(&herdr, &PaneId("w1:fiche".into())).unwrap();
+    assert_eq!(*herdr.calls.borrow(), ["focus w1:side", "close w1:fiche"]);
+
+    let herdr = FakePanes::new(vec![
+        pane("w1:other-tab", "w1:t2", None),
+        pane("w1:work", "w1:t1", None),
+        pane("w1:fiche", "w1:t1", Some(FICHE_TOKEN_KEY)),
+    ]);
+    close_fiche(&herdr, &PaneId("w1:fiche".into())).unwrap();
+    assert_eq!(*herdr.calls.borrow(), ["focus w1:work", "close w1:fiche"]);
+}
+
+#[test]
+fn an_installed_plugin_that_is_incompatible_is_read_at_its_installed_commit() {
+    let mut installed = github_plugin(
+        "martinro.next-agent",
+        "martin-ro",
+        "herdr-next-agent",
+        None,
+        SHA_B,
+    );
+    installed["platforms"] = json!(["linux"]);
+    installed["version"] = json!("0.9.0");
+    let mut next_agent = manifest("herdr-plugin.toml", "martinro.next-agent");
+    next_agent["platforms"] = json!(["linux"]);
+    let listing = build_listing(
+        &catalog(vec![repo(
+            "martin-ro",
+            "herdr-next-agent",
+            3,
+            vec![next_agent],
+        )]),
+        &parse_registry(&registry(vec![installed])).unwrap(),
+        Platform::Macos,
+        HERDR,
+    );
+    let fiche = FicheTarget::from_row(&listing.rows[0]);
+    assert_eq!(fiche.commit, SHA_B, "installed commit, not the indexed one");
+    assert_eq!(fiche.version.as_deref(), Some("0.9.0"));
+    assert!(!fiche.compatible);
+
+    let listing = build_listing(
+        &catalog(vec![repo(
+            "acme",
+            "plugin",
+            3,
+            vec![manifest("herdr-plugin.toml", "acme.plugin")],
+        )]),
+        &[],
+        Platform::Macos,
+        HERDR,
+    );
+    assert_eq!(FicheTarget::from_row(&listing.rows[0]).commit, SHA_A);
+}

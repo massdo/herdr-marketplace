@@ -1,3 +1,6 @@
+pub mod fiche;
+pub mod fiche_view;
+pub mod markdown;
 pub mod sidebar;
 pub mod sidebar_view;
 pub mod style;
@@ -7,7 +10,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -20,14 +23,19 @@ use crate::adapters::fetch::HttpFetcher;
 use crate::adapters::herdr_cli::HerdrCommand;
 use crate::adapters::herdr_socket::HerdrSocket;
 use crate::application::load_listing::{LoadedListing, load_listing};
+use crate::application::load_readme::{Readme, load_readme};
+use crate::application::open_fiche::{close_fiche, open_fiche};
 use crate::application::ports::HerdrPort;
 use crate::domain::compat::Platform;
 use crate::domain::error::AppError;
+use crate::domain::fiche::FicheTarget;
 
+use self::fiche::{FicheApp, FicheIntent};
 use self::sidebar::{Intent, SidebarApp};
 
 type Screen = Terminal<CrosstermBackend<io::Stdout>>;
 type Loaded = Result<LoadedListing, String>;
+type ReadmeAnswer = (u64, Result<Readme, String>);
 
 const POLL: Duration = Duration::from_millis(100);
 
@@ -38,7 +46,14 @@ pub fn run_sidebar(process: ProcessEnv) -> Result<(), AppError> {
     let mut app = SidebarApp::new();
     let (sender, receiver) = mpsc::channel();
     let mut terminal = setup()?;
-    let result = sidebar_loop(&mut terminal, &mut app, &sender, &receiver);
+    let result = sidebar_loop(
+        &mut terminal,
+        &mut app,
+        &herdr,
+        &process,
+        &sender,
+        &receiver,
+    );
     let _ = teardown(&mut terminal);
     if let Some(pane_id) = process.own_pane_id {
         let _ = herdr.close_plugin_pane(&pane_id);
@@ -49,6 +64,8 @@ pub fn run_sidebar(process: ProcessEnv) -> Result<(), AppError> {
 fn sidebar_loop(
     terminal: &mut Screen,
     app: &mut SidebarApp,
+    herdr: &HerdrSocket,
+    process: &ProcessEnv,
     sender: &Sender<Loaded>,
     receiver: &Receiver<Loaded>,
 ) -> Result<(), AppError> {
@@ -56,18 +73,26 @@ fn sidebar_loop(
         for intent in std::mem::take(&mut app.intents) {
             match intent {
                 Intent::Load => spawn_load(sender.clone()),
-                Intent::Open(_) => {}
+                Intent::Open(row) => {
+                    let opened = match &process.own_pane_id {
+                        Some(sidebar) => {
+                            open_fiche(herdr, sidebar, &FicheTarget::from_row(&row)).map(drop)
+                        }
+                        None => Err(AppError::OriginMissing),
+                    };
+                    app.notice = opened
+                        .err()
+                        .map(|error| format!("Fiche non ouverte : {error}"));
+                }
             }
         }
         while let Ok(loaded) = receiver.try_recv() {
             app.loaded(loaded);
         }
-        let height = terminal.size()?.height;
-        app.set_page(sidebar_view::page_rows(app, height));
+        let size = terminal.size()?;
+        app.set_page(sidebar_view::page_rows(app, size.width, size.height));
         terminal.draw(|frame| sidebar_view::render(frame, app))?;
-        if event::poll(POLL)?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
+        if let Some(key) = next_key()?
             && app.handle_key(key)
         {
             return Ok(());
@@ -86,6 +111,65 @@ fn spawn_load(sender: Sender<Loaded>) {
         .map_err(|error| error.to_string());
         let _ = sender.send(loaded);
     });
+}
+
+/// Fiche pane: README of the plugin and commit received at opening.
+pub fn run_fiche(process: ProcessEnv, target: FicheTarget) -> Result<(), AppError> {
+    let herdr = HerdrSocket::new(process.socket_path.clone());
+    let mut app = FicheApp::new(target);
+    let (sender, receiver) = mpsc::channel();
+    let mut terminal = setup()?;
+    let result = fiche_loop(&mut terminal, &mut app, &sender, &receiver);
+    let _ = teardown(&mut terminal);
+    if let Some(pane_id) = process.own_pane_id {
+        let _ = close_fiche(&herdr, &pane_id);
+    }
+    result
+}
+
+fn fiche_loop(
+    terminal: &mut Screen,
+    app: &mut FicheApp,
+    sender: &Sender<ReadmeAnswer>,
+    receiver: &Receiver<ReadmeAnswer>,
+) -> Result<(), AppError> {
+    loop {
+        for intent in std::mem::take(&mut app.intents) {
+            match intent {
+                FicheIntent::LoadReadme(request) => {
+                    let sender = sender.clone();
+                    let target = app.target.clone();
+                    thread::spawn(move || {
+                        let readme =
+                            load_readme(&HttpFetcher::new(), &target.source, &target.commit);
+                        let _ = sender.send((request, readme));
+                    });
+                }
+            }
+        }
+        while let Ok((request, readme)) = receiver.try_recv() {
+            app.readme_loaded(request, readme);
+        }
+        let size = terminal.size()?;
+        let page = fiche_view::page_rows(app, size.width, size.height);
+        app.set_viewport(size.width as usize, page);
+        terminal.draw(|frame| fiche_view::render(frame, app))?;
+        if let Some(key) = next_key()?
+            && app.handle_key(key)
+        {
+            return Ok(());
+        }
+    }
+}
+
+fn next_key() -> Result<Option<KeyEvent>, AppError> {
+    if !event::poll(POLL)? {
+        return Ok(None);
+    }
+    match event::read()? {
+        Event::Key(key) if key.kind == KeyEventKind::Press => Ok(Some(key)),
+        _ => Ok(None),
+    }
 }
 
 fn setup() -> Result<Screen, AppError> {

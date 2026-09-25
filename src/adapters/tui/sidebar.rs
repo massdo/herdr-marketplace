@@ -35,6 +35,8 @@ pub struct SidebarApp {
     /// Rows the list area can show.
     pub page: usize,
     pub intents: Vec<Intent>,
+    /// Why the last fiche did not open.
+    pub notice: Option<String>,
 }
 
 impl Default for SidebarApp {
@@ -53,6 +55,7 @@ impl SidebarApp {
             offset: 0,
             page: 1,
             intents: vec![Intent::Load],
+            notice: None,
         }
     }
 

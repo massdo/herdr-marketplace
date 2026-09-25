@@ -39,6 +39,27 @@ pub fn ellipsize(text: &str, max_cells: usize) -> String {
     out
 }
 
+/// `text` cut in its middle, so both ends of an owner/repo/subdir stay
+/// visible.
+pub fn ellipsize_middle(text: &str, max_cells: usize) -> String {
+    if text.width() <= max_cells || max_cells < 3 {
+        return ellipsize(text, max_cells);
+    }
+    let tail_cells = (max_cells - 1) / 2;
+    let head = ellipsize(text, max_cells - tail_cells);
+    let mut tail: Vec<char> = Vec::new();
+    let mut used = 0;
+    for ch in text.chars().rev() {
+        let width = ch.width().unwrap_or(0);
+        if used + width > tail_cells {
+            break;
+        }
+        tail.push(ch);
+        used += width;
+    }
+    format!("{head}{}", tail.into_iter().rev().collect::<String>())
+}
+
 /// Greedy word wrap on cell width; words longer than a line are split.
 pub fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);

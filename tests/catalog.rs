@@ -373,17 +373,26 @@ fn invalid_entries_are_rejected_and_counted() {
         1,
         vec![manifest("herdr-plugin.toml", "ok")],
     );
+    let dot_owner = repo("..", "plugin", 1, vec![manifest("herdr-plugin.toml", "x")]);
+    let spaced_repo = repo(
+        "bad",
+        "my plugin",
+        1,
+        vec![manifest("herdr-plugin.toml", "x")],
+    );
     let catalog = parse(vec![
         short_sha,
         upper_sha,
         no_sha,
         typed_owner,
         bad_paths,
+        dot_owner,
+        spaced_repo,
         good,
     ]);
     assert_eq!(only(&catalog).id, "ok");
-    assert_eq!(catalog.read, 14);
-    assert_eq!(catalog.rejected, 13);
+    assert_eq!(catalog.read, 16);
+    assert_eq!(catalog.rejected, 15);
     assert_eq!(catalog.entries.len() + catalog.rejected, catalog.read);
 }
 

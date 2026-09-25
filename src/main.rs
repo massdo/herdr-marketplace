@@ -16,8 +16,9 @@ fn run() -> Result<(), AppError> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--toggle") => toggle(),
+        Some("--fiche") => tui::run_fiche(env::load()?, env::fiche_target()?),
         Some("--help" | "-h") => {
-            println!("herdr-marketplace [--toggle]");
+            println!("herdr-marketplace [--toggle | --fiche]");
             Ok(())
         }
         Some(other) => Err(AppError::Io {

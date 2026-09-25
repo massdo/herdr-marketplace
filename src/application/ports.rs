@@ -43,7 +43,8 @@ pub trait HerdrPort {
     fn swap_panes(&self, source: &PaneId, target: &PaneId) -> Result<(), AppError>;
     fn focus_pane(&self, pane_id: &PaneId) -> Result<(), AppError>;
     fn resize_pane(&self, pane_id: &PaneId, direction: &str, amount: f64) -> Result<(), AppError>;
-    fn report_sidebar_identity(&self, pane_id: &PaneId) -> Result<(), AppError>;
+    /// Session token that recognises a marketplace pane: `token_key = "v1"`.
+    fn report_identity(&self, pane_id: &PaneId, token_key: &str) -> Result<(), AppError>;
     fn close_plugin_pane(&self, pane_id: &PaneId) -> Result<(), AppError>;
 }
 

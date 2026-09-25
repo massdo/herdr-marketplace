@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use super::ids::{PaneId, TabId, WorkspaceId};
-use super::{EXPLORER_TOKEN_KEY, SIDEBAR_TOKEN_KEY, TOKEN_VALUE};
+use super::{EXPLORER_TOKEN_KEY, FICHE_TOKEN_KEY, SIDEBAR_TOKEN_KEY, TOKEN_VALUE};
 
 /// Context captured from the action before any socket I/O.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,8 +31,16 @@ impl PaneInfo {
         PaneId(self.pane_id.clone())
     }
 
+    pub fn tab(&self) -> TabId {
+        TabId(self.tab_id.clone())
+    }
+
     pub fn is_marketplace_sidebar(&self) -> bool {
         self.tokens.get(SIDEBAR_TOKEN_KEY).map(String::as_str) == Some(TOKEN_VALUE)
+    }
+
+    pub fn is_marketplace_fiche(&self) -> bool {
+        self.tokens.get(FICHE_TOKEN_KEY).map(String::as_str) == Some(TOKEN_VALUE)
     }
 
     pub fn is_explorer(&self) -> bool {
@@ -42,7 +50,7 @@ impl PaneInfo {
     }
 
     pub fn is_excluded_working_target(&self) -> bool {
-        self.is_marketplace_sidebar() || self.is_explorer()
+        self.is_marketplace_sidebar() || self.is_marketplace_fiche() || self.is_explorer()
     }
 }
 
