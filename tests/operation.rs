@@ -230,6 +230,23 @@ fn a_second_request_during_an_operation_is_refused() {
 }
 
 #[test]
+fn a_fiche_probing_the_lock_does_not_refuse_an_operation() {
+    let dir = state_dir();
+    let probe = FsOperations::new(dir.clone())
+        .try_begin()
+        .unwrap()
+        .expect("the lock is free");
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        drop(probe);
+    });
+    let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
+    let record = run_operation(&herdr, &FsOperations::new(dir), &request(SHA_A));
+    release.join().unwrap();
+    assert_eq!(record.status, Status::Succeeded);
+}
+
+#[test]
 fn a_new_fiche_reads_the_kept_result_again() {
     let dir = state_dir();
     let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));

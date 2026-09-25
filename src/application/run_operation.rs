@@ -1,4 +1,5 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::application::load_listing::read_registry;
 use crate::application::ports::{HerdrCli, Operations};
@@ -9,6 +10,8 @@ use crate::domain::source::PluginSource;
 
 /// Herdr's output kept in a result, from the end.
 pub const OUTPUT_LIMIT: usize = 64 * 1024;
+const LOCK_ATTEMPTS: usize = 10;
+const LOCK_PAUSE: Duration = Duration::from_millis(50);
 
 /// Runs a confirmed request to its end and keeps the result, whoever
 /// watches. Refused while another marketplace operation runs.
@@ -18,7 +21,7 @@ pub fn run_operation<H: HerdrCli, O: Operations>(
     request: &OperationRequest,
 ) -> OperationRecord {
     let mut record = OperationRecord::running(request);
-    let _guard = match operations.try_begin() {
+    let _guard = match begin(operations) {
         Ok(Some(guard)) => guard,
         Ok(None) => {
             return finish(
@@ -42,6 +45,18 @@ pub fn run_operation<H: HerdrCli, O: Operations>(
     record.registry_after = Some(registry_state(&registry, &request.source));
     let status = operation_status(code, &registry, request);
     finish(operations, record, status, tail(&output))
+}
+
+/// Fiches probe the lock for an instant to know whether an operation runs.
+/// A short wait tells such a probe from an operation that really runs.
+fn begin<O: Operations>(operations: &O) -> Result<Option<O::Guard>, String> {
+    for _ in 1..LOCK_ATTEMPTS {
+        if let Some(guard) = operations.try_begin()? {
+            return Ok(Some(guard));
+        }
+        thread::sleep(LOCK_PAUSE);
+    }
+    operations.try_begin()
 }
 
 fn finish<O: Operations>(
