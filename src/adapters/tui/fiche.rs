@@ -17,7 +17,8 @@ pub enum InstalledView {
     /// Installed at this commit.
     At(String),
     NotInstalled,
-    Unreadable(String),
+    /// Registry unreadable, or several plugins installed from this source.
+    Uncertain(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

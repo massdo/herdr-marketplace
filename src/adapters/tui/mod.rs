@@ -272,14 +272,14 @@ fn launch(app: &mut FicheApp, operations: &FsOperations, kind: OperationKind, ar
 fn installed_view<H: HerdrCli>(herdr: &H, source: &PluginSource) -> InstalledView {
     let registry = match read_registry(herdr) {
         Ok(registry) => registry,
-        Err(error) => return InstalledView::Unreadable(error),
+        Err(error) => return InstalledView::Uncertain(error),
     };
     match installed_from(&registry, source) {
         Ok(Some(plugin)) => {
             InstalledView::At(plugin.resolved_commit().unwrap_or_default().to_string())
         }
         Ok(None) => InstalledView::NotInstalled,
-        Err(error) => InstalledView::Unreadable(error),
+        Err(error) => InstalledView::Uncertain(error),
     }
 }
 

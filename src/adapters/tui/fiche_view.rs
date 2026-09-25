@@ -120,10 +120,7 @@ fn header(app: &FicheApp, width: usize) -> Vec<Line<'static>> {
             Style::default().fg(OK),
         ),
         InstalledView::NotInstalled => Span::styled(" · non installé", muted()),
-        InstalledView::Unreadable(_) => Span::styled(
-            " · état inconnu (registre illisible)",
-            Style::default().fg(WARN),
-        ),
+        InstalledView::Uncertain(_) => Span::styled(" · état inconnu", Style::default().fg(WARN)),
     };
     let mut lines = vec![
         fit(Line::from(title), width),
