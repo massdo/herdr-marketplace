@@ -3,7 +3,9 @@ use std::fmt;
 
 use crate::domain::error::AppError;
 use crate::domain::ids::PaneId;
+use crate::domain::operation::OperationRecord;
 use crate::domain::pane::{LayoutSnapshot, OpenedPane, PaneInfo};
+use crate::domain::source::PluginSource;
 
 /// Downloads. `file://` URLs are served from disk, which the tests use.
 pub trait Fetcher {
@@ -33,6 +35,29 @@ pub trait HerdrCli {
     fn version(&self) -> Result<String, String>;
     /// Standard output of `herdr plugin list --json`.
     fn plugin_list(&self) -> Result<String, String>;
+    /// Runs `herdr` with these arguments, each passed as is.
+    fn run(&self, args: &[String]) -> Result<CommandOutput, String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandOutput {
+    /// `None` when a signal ended the command.
+    pub code: Option<i32>,
+    /// Standard output then standard error.
+    pub output: String,
+}
+
+/// Where operation results are kept, and the lock that allows one
+/// operation at a time.
+pub trait Operations {
+    /// Held while an operation runs; dropping it releases the lock.
+    type Guard;
+    /// The lock, or `None` while another operation holds it.
+    fn try_begin(&self) -> Result<Option<Self::Guard>, String>;
+    fn load(&self, source: &PluginSource) -> Option<OperationRecord>;
+    fn save(&self, record: &OperationRecord) -> Result<(), String>;
+    /// Latest end time among the kept results, in Unix milliseconds.
+    fn latest_finish(&self) -> u64;
 }
 
 /// Herdr socket operations on panes. The OS lock is an adapter detail.

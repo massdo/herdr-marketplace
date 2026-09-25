@@ -7,6 +7,17 @@ use crate::application::load_readme::Readme;
 use crate::application::prepare_install::{InstallPreview, Prepared};
 use crate::domain::compat::Platform;
 use crate::domain::fiche::FicheTarget;
+use crate::domain::operation::{OperationRecord, Status};
+
+/// The fiche's source as the registry shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstalledView {
+    Unknown,
+    /// Installed at this commit.
+    At(String),
+    NotInstalled,
+    Unreadable(String),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadmeState {
@@ -35,6 +46,8 @@ pub enum FicheIntent {
     PrepareInstall(u64),
     /// Confirmed request: the arguments of `herdr`.
     Install(Vec<String>),
+    /// Read the registry; the answer carries this request number.
+    ReadRegistry(u64),
 }
 
 /// Fiche state: the plugin and commit received at opening, its README and
@@ -57,6 +70,14 @@ pub struct FicheApp {
     /// Preview rendered for `width`, shown instead of the README.
     pub preview: Vec<Line<'static>>,
     pub preview_scroll: usize,
+    pub installed: InstalledView,
+    pub registry_request: u64,
+    /// Latest kept result of an operation on this source.
+    pub operation: Option<OperationRecord>,
+    /// Operation launched from this fiche whose result has not appeared yet.
+    pub launched: Option<String>,
+    /// Why the last confirmation launched nothing.
+    pub notice: Option<String>,
     pub intents: Vec<FicheIntent>,
 }
 
@@ -75,8 +96,51 @@ impl FicheApp {
             install_request: 0,
             preview: Vec::new(),
             preview_scroll: 0,
-            intents: vec![FicheIntent::LoadReadme(1)],
+            installed: InstalledView::Unknown,
+            registry_request: 1,
+            operation: None,
+            launched: None,
+            notice: None,
+            intents: vec![FicheIntent::LoadReadme(1), FicheIntent::ReadRegistry(1)],
         }
+    }
+
+    pub fn registry_read(&mut self, request: u64, installed: InstalledView) {
+        if request == self.registry_request {
+            self.installed = installed;
+        }
+    }
+
+    /// Latest kept result for this source, looked at on every tick. When an
+    /// operation ends, the registry is read again.
+    pub fn operation_seen(&mut self, record: Option<OperationRecord>) {
+        let was_running = self.operation_running();
+        if record.as_ref().map(|record| &record.request.id) == self.launched.as_ref() {
+            self.launched = None;
+        }
+        self.operation = record;
+        if was_running && !self.operation_running() {
+            self.registry_request += 1;
+            self.intents
+                .push(FicheIntent::ReadRegistry(self.registry_request));
+        }
+    }
+
+    pub fn operation_launched(&mut self, id: String) {
+        self.launched = Some(id);
+        self.notice = None;
+    }
+
+    pub fn operation_refused(&mut self, reason: String) {
+        self.notice = Some(reason);
+    }
+
+    pub fn operation_running(&self) -> bool {
+        self.launched.is_some()
+            || self
+                .operation
+                .as_ref()
+                .is_some_and(|record| record.status == Status::Running)
     }
 
     pub fn readme_loaded(&mut self, request: u64, result: Result<Readme, String>) {

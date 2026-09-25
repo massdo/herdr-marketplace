@@ -531,6 +531,7 @@ name = "herdr-marketplace"
 version = "0.1.0"
 dependencies = [
  "crossterm",
+ "libc",
  "pulldown-cmark",
  "ratatui",
  "serde",

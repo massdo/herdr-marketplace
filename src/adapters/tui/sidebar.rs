@@ -1,7 +1,9 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::application::load_listing::LoadedListing;
+use crate::domain::compat::Platform;
 use crate::domain::listing::Row;
+use crate::domain::registry::InstalledPlugin;
 use crate::domain::search::matches;
 use crate::domain::source::PluginSource;
 
@@ -72,6 +74,19 @@ impl SidebarApp {
             Err(error) => LoadState::Failed(error),
         };
         self.refilter();
+    }
+
+    /// The registry was read again after an operation: rows are rebuilt from
+    /// the same catalogue and the selection keeps its identity.
+    pub fn registry_refreshed(
+        &mut self,
+        registry: Result<Vec<InstalledPlugin>, String>,
+        host: Platform,
+    ) {
+        if let LoadState::Ready(loaded) = &mut self.state {
+            loaded.use_registry(registry, host);
+            self.refilter();
+        }
     }
 
     /// Returns true when the sidebar should close.

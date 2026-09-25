@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use crate::application::ports::HerdrCli;
+use crate::application::ports::{CommandOutput, HerdrCli};
 
 /// Runs the `herdr` binary: `HERDR_BIN_PATH` inside Herdr, else `herdr`.
 pub struct HerdrCommand {
@@ -38,5 +38,19 @@ impl HerdrCli for HerdrCommand {
 
     fn plugin_list(&self) -> Result<String, String> {
         self.stdout(&["plugin", "list", "--json"])
+    }
+
+    fn run(&self, args: &[String]) -> Result<CommandOutput, String> {
+        let output = Command::new(&self.bin)
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| format!("{} : {error}", self.bin.display()))?;
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+        Ok(CommandOutput {
+            code: output.status.code(),
+            output: text,
+        })
     }
 }

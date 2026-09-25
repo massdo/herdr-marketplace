@@ -9,7 +9,7 @@ pub mod style;
 use std::io::{self, stdout};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use crossterm::execute;
@@ -23,28 +23,42 @@ use crate::adapters::env::{self, ProcessEnv};
 use crate::adapters::fetch::HttpFetcher;
 use crate::adapters::herdr_cli::HerdrCommand;
 use crate::adapters::herdr_socket::HerdrSocket;
-use crate::application::load_listing::{LoadedListing, load_listing};
+use crate::adapters::operations::{FsOperations, spawn_operation};
+use crate::application::load_listing::{LoadedListing, load_listing, read_registry};
 use crate::application::load_readme::{Readme, load_readme};
 use crate::application::open_fiche::{close_fiche, open_fiche};
-use crate::application::ports::HerdrPort;
+use crate::application::ports::{HerdrCli, HerdrPort, Operations};
 use crate::application::prepare_install::{Prepared, prepare_install};
+use crate::application::run_operation::{current_operation, operation_running};
 use crate::domain::compat::Platform;
 use crate::domain::error::AppError;
 use crate::domain::fiche::FicheTarget;
+use crate::domain::install::installed_from;
+use crate::domain::operation::OperationRequest;
+use crate::domain::registry::InstalledPlugin;
+use crate::domain::source::PluginSource;
 
-use self::fiche::{FicheApp, FicheIntent};
+use self::fiche::{FicheApp, FicheIntent, InstalledView};
 use self::sidebar::{Intent, SidebarApp};
 
 type Screen = Terminal<CrosstermBackend<io::Stdout>>;
-type Loaded = Result<LoadedListing, String>;
+
+/// Background answers to the sidebar.
+enum SidebarAnswer {
+    Loaded(Result<LoadedListing, String>),
+    /// Registry read again after an operation ended.
+    Registry(Result<Vec<InstalledPlugin>, String>),
+}
 
 /// Background answers to a fiche, tagged with their request number.
 enum FicheAnswer {
     Readme(u64, Result<Readme, String>),
     Install(u64, Prepared),
+    Registry(u64, InstalledView),
 }
 
 const POLL: Duration = Duration::from_millis(100);
+const OPERATION_CHECK: Duration = Duration::from_secs(1);
 
 /// Sidebar pane. The catalogue loads in a background thread so drawing and
 /// the keyboard never wait for the network.
@@ -73,10 +87,26 @@ fn sidebar_loop(
     app: &mut SidebarApp,
     herdr: &HerdrSocket,
     process: &ProcessEnv,
-    sender: &Sender<Loaded>,
-    receiver: &Receiver<Loaded>,
+    sender: &Sender<SidebarAnswer>,
+    receiver: &Receiver<SidebarAnswer>,
 ) -> Result<(), AppError> {
+    let operations = FsOperations::new(process.state_dir.clone());
+    let mut seen_finish = operations.latest_finish();
+    let mut last_check = Instant::now();
     loop {
+        // An operation that ended since the last look: read the registry again.
+        if last_check.elapsed() >= OPERATION_CHECK {
+            last_check = Instant::now();
+            let latest = operations.latest_finish();
+            if latest > seen_finish {
+                seen_finish = latest;
+                let sender = sender.clone();
+                thread::spawn(move || {
+                    let registry = read_registry(&HerdrCommand::new(env::herdr_bin()));
+                    let _ = sender.send(SidebarAnswer::Registry(registry));
+                });
+            }
+        }
         for intent in std::mem::take(&mut app.intents) {
             match intent {
                 Intent::Load => spawn_load(sender.clone()),
@@ -93,8 +123,13 @@ fn sidebar_loop(
                 }
             }
         }
-        while let Ok(loaded) = receiver.try_recv() {
-            app.loaded(loaded);
+        while let Ok(answer) = receiver.try_recv() {
+            match answer {
+                SidebarAnswer::Loaded(loaded) => app.loaded(loaded),
+                SidebarAnswer::Registry(registry) => {
+                    app.registry_refreshed(registry, Platform::current())
+                }
+            }
         }
         let size = terminal.size()?;
         app.set_page(sidebar_view::page_rows(app, size.width, size.height));
@@ -107,7 +142,7 @@ fn sidebar_loop(
     }
 }
 
-fn spawn_load(sender: Sender<Loaded>) {
+fn spawn_load(sender: Sender<SidebarAnswer>) {
     thread::spawn(move || {
         let loaded = load_listing(
             &HttpFetcher::new(),
@@ -116,17 +151,18 @@ fn spawn_load(sender: Sender<Loaded>) {
             Platform::current(),
         )
         .map_err(|error| error.to_string());
-        let _ = sender.send(loaded);
+        let _ = sender.send(SidebarAnswer::Loaded(loaded));
     });
 }
 
 /// Fiche pane: README of the plugin and commit received at opening.
 pub fn run_fiche(process: ProcessEnv, target: FicheTarget) -> Result<(), AppError> {
     let herdr = HerdrSocket::new(process.socket_path.clone());
+    let operations = FsOperations::new(process.state_dir.clone());
     let mut app = FicheApp::new(target);
     let (sender, receiver) = mpsc::channel();
     let mut terminal = setup()?;
-    let result = fiche_loop(&mut terminal, &mut app, &sender, &receiver);
+    let result = fiche_loop(&mut terminal, &mut app, &operations, &sender, &receiver);
     let _ = teardown(&mut terminal);
     if let Some(pane_id) = process.own_pane_id {
         let _ = close_fiche(&herdr, &pane_id);
@@ -137,6 +173,7 @@ pub fn run_fiche(process: ProcessEnv, target: FicheTarget) -> Result<(), AppErro
 fn fiche_loop(
     terminal: &mut Screen,
     app: &mut FicheApp,
+    operations: &FsOperations,
     sender: &Sender<FicheAnswer>,
     receiver: &Receiver<FicheAnswer>,
 ) -> Result<(), AppError> {
@@ -163,15 +200,24 @@ fn fiche_loop(
                         let _ = sender.send(FicheAnswer::Install(request, prepared));
                     });
                 }
-                FicheIntent::Install(_) => {}
+                FicheIntent::Install(args) => launch(app, operations, args),
+                FicheIntent::ReadRegistry(request) => {
+                    thread::spawn(move || {
+                        let installed =
+                            installed_view(&HerdrCommand::new(env::herdr_bin()), &target.source);
+                        let _ = sender.send(FicheAnswer::Registry(request, installed));
+                    });
+                }
             }
         }
         while let Ok(answer) = receiver.try_recv() {
             match answer {
                 FicheAnswer::Readme(request, readme) => app.readme_loaded(request, readme),
                 FicheAnswer::Install(request, prepared) => app.install_prepared(request, prepared),
+                FicheAnswer::Registry(request, installed) => app.registry_read(request, installed),
             }
         }
+        app.operation_seen(current_operation(operations, &app.target.source));
         let size = terminal.size()?;
         let page = fiche_view::page_rows(app, size.width, size.height);
         app.set_viewport(size.width as usize, page);
@@ -181,6 +227,44 @@ fn fiche_loop(
         {
             return Ok(());
         }
+    }
+}
+
+/// Starts a confirmed request outside the fiche, unless an operation runs.
+fn launch(app: &mut FicheApp, operations: &FsOperations, args: Vec<String>) {
+    if operation_running(operations) {
+        app.operation_refused(
+            "Une opération de la marketplace est déjà en cours : demande refusée".into(),
+        );
+        return;
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    let request = OperationRequest {
+        id: format!("{now}-{}", std::process::id()),
+        source: app.target.source.clone(),
+        commit: app.target.commit.clone(),
+        args,
+    };
+    match spawn_operation(&request) {
+        Ok(()) => app.operation_launched(request.id),
+        Err(error) => app.operation_refused(format!("Lancement impossible : {error}")),
+    }
+}
+
+fn installed_view<H: HerdrCli>(herdr: &H, source: &PluginSource) -> InstalledView {
+    let registry = match read_registry(herdr) {
+        Ok(registry) => registry,
+        Err(error) => return InstalledView::Unreadable(error),
+    };
+    match installed_from(&registry, source) {
+        Ok(Some(plugin)) => {
+            InstalledView::At(plugin.resolved_commit().unwrap_or_default().to_string())
+        }
+        Ok(None) => InstalledView::NotInstalled,
+        Err(error) => InstalledView::Unreadable(error),
     }
 }
 

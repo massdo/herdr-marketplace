@@ -175,7 +175,10 @@ fn a_missing_readme_is_not_found_and_differs_from_a_network_error() {
 #[test]
 fn a_network_error_can_be_retried_and_older_answers_are_dropped() {
     let mut app = FicheApp::new(target(""));
-    assert_eq!(app.intents, [FicheIntent::LoadReadme(1)]);
+    assert_eq!(
+        app.intents,
+        [FicheIntent::LoadReadme(1), FicheIntent::ReadRegistry(1)]
+    );
     app.intents.clear();
     app.readme_loaded(1, Err("connexion refusée".into()));
     assert!(matches!(app.readme, ReadmeState::NetworkError(_)));

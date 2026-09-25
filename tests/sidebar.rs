@@ -5,9 +5,9 @@ mod support;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herdr_marketplace::adapters::tui::sidebar::{Intent, LoadState, SidebarApp};
 use herdr_marketplace::adapters::tui::sidebar_view;
+use herdr_marketplace::application::load_catalog::LoadedCatalog;
 use herdr_marketplace::application::load_listing::LoadedListing;
 use herdr_marketplace::domain::compat::Platform;
-use herdr_marketplace::domain::listing::build_listing;
 use herdr_marketplace::domain::registry::parse_registry;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -43,15 +43,15 @@ fn loaded_app() -> SidebarApp {
 }
 
 fn ready(repos: Vec<serde_json::Value>, installed: Vec<serde_json::Value>) -> SidebarApp {
-    let installed = parse_registry(&registry(installed)).unwrap();
-    let listing = build_listing(&catalog(repos), &installed, Platform::Macos, HERDR);
+    let installed = parse_registry(&registry(installed));
+    let loaded = LoadedCatalog {
+        catalog: catalog(repos),
+        herdr: HERDR,
+    };
     let mut app = SidebarApp::new();
     app.intents.clear();
     app.set_page(3);
-    app.loaded(Ok(LoadedListing {
-        listing,
-        registry_error: None,
-    }));
+    app.loaded(Ok(LoadedListing::new(loaded, installed, Platform::Macos)));
     app
 }
 

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use herdr_marketplace::adapters::fetch::HttpFetcher;
 use herdr_marketplace::application::load_catalog::{LoadError, load_catalog};
-use herdr_marketplace::application::ports::{FetchError, Fetcher, HerdrCli};
+use herdr_marketplace::application::ports::{CommandOutput, FetchError, Fetcher, HerdrCli};
 use herdr_marketplace::domain::compat::Platform;
 use herdr_marketplace::domain::index::{Catalog, Entry, IndexError, parse_index};
 use herdr_marketplace::domain::search::search;
@@ -80,6 +80,10 @@ impl HerdrCli for FakeHerdr {
 
     fn plugin_list(&self) -> Result<String, String> {
         Ok(r#"{"id":"cli:plugin","result":{"plugins":[],"type":"plugin_list"}}"#.into())
+    }
+
+    fn run(&self, args: &[String]) -> Result<CommandOutput, String> {
+        Err(format!("unexpected herdr {args:?}"))
     }
 }
 

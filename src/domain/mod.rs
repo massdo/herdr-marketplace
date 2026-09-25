@@ -7,6 +7,7 @@ pub mod index;
 pub mod install;
 pub mod listing;
 pub mod manifest;
+pub mod operation;
 pub mod pane;
 pub mod registry;
 pub mod search;

@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use herdr_marketplace::application::ports::{HerdrCli, HerdrPort, OpenPluginPane};
+use herdr_marketplace::application::ports::{CommandOutput, HerdrCli, HerdrPort, OpenPluginPane};
 use herdr_marketplace::domain::error::AppError;
 use herdr_marketplace::domain::ids::PaneId;
 use herdr_marketplace::domain::index::{Catalog, parse_index};
@@ -129,6 +129,10 @@ impl HerdrCli for FakeHerdr {
 
     fn plugin_list(&self) -> Result<String, String> {
         self.registry.clone()
+    }
+
+    fn run(&self, args: &[String]) -> Result<CommandOutput, String> {
+        Err(format!("unexpected herdr {args:?}"))
     }
 }
 

@@ -23,8 +23,12 @@ FICHE_TOKEN = "herdr_marketplace_fiche"
 END = "\x1b[F"
 
 FIXTURE = ("massdo", "herdr-marketplace-fixture")
-SHA_A = "c8268d42a98d9140254f4bf4ca13c23a587faed8"
+SHA_A = "c8268d42a98d9140254f4bf4ca13c23a587faed8"  # 1.0.0, harmless build
+SHA_B = "1be1b7bb9d9ad3d8733a66d132b87c908ff210c6"  # 1.1.0, harmless build
+SHA_C = "bc4d8b84d062b8048b5d89647e7110c9f5a05561"  # 1.2.0, build fails on purpose
 BROWSER_SHA = "ff8f17077e52a8b582a4659f3424cd8abbb5ce1d"
+# Installs fetch the fixture from GitHub and build it.
+OPERATION_TIMEOUT = 180
 
 
 class Client:
@@ -365,11 +369,101 @@ def prove_install_preview():
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
 
 
+def fixture_plugin():
+    return next((p for p in data("plugin", "list", "--json")["plugins"]
+                 if p["plugin_id"] == "herdr-marketplace-fixture"), None)
+
+
+def fixture_fiche(sha):
+    """Sidebar on a catalogue with the fixture at `sha`, and the root fixture's fiche."""
+    write_catalog(sha)
+    sidebar = open_sidebar()
+    wait(lambda: "résultats" in read(sidebar), "the catalogue did not load")
+    tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
+    fiche = open_fiche(sidebar, "fixture", "2 résultats")
+    wait(lambda: f"commit {sha[:7]}" in read(fiche), "the fixture fiche did not open")
+    return sidebar, tab, fiche
+
+
+def confirm_install(fiche, expected):
+    keys(fiche, "i")
+    shown = wait(lambda: "Entrée : confirmer" in (text := read(fiche)) and text,
+                 "i did not open the install preview")
+    assert expected in shown, shown
+    keys(fiche, "enter")
+
+
+def close_all(tab):
+    for pane in fiches(tab):
+        keys(pane["pane_id"], "esc")
+    wait(lambda: not fiches(tab), "escape did not close the fiche")
+    if with_token(SIDEBAR_TOKEN):
+        toggle()
+        wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+
+
+def prove_install():
+    sidebar, tab, fiche = fixture_fiche(SHA_A)
+    confirm_install(fiche, "Installation")
+    wait(lambda: "Installation de c8268d4 réussie" in read(fiche),
+         "the install did not succeed", OPERATION_TIMEOUT)
+    assert (*FIXTURE, "", SHA_A) in registry(), registry()
+    marker = Path(fixture_plugin()["plugin_root"]) / "build-marker.txt"
+    assert marker.read_text().strip() == "1.0.0", marker.read_text()
+    wait(lambda: "· installé" in read(fiche), "the fiche does not show « installé »")
+    wait(lambda: "installé · Test fixture." in read(sidebar), "the sidebar does not show « installé »")
+    print("install_from_fiche_ok", flush=True)
+    close_all(tab)
+
+
+def prove_switch():
+    herdr("plugin", "install", "/".join(FIXTURE), "--ref", SHA_A, "--yes")
+    assert (*FIXTURE, "", SHA_A) in registry(), registry()
+    sidebar, tab, fiche = fixture_fiche(SHA_B)
+    confirm_install(fiche, f"commit installé : {SHA_A}")
+    wait(lambda: "Installation de 1be1b7b réussie" in read(fiche),
+         "the switch did not succeed", OPERATION_TIMEOUT)
+    assert (*FIXTURE, "", SHA_B) in registry(), registry()
+    print("switch_commit_ok", flush=True)
+    close_all(tab)
+
+
+def prove_failed_build():
+    sidebar, tab, fiche = fixture_fiche(SHA_C)
+    confirm_install(fiche, "Changement de commit")
+    shown = wait(lambda: "Échec de l'installation de bc4d8b8" in (text := read(fiche)) and text,
+                 "the failed build was not reported", OPERATION_TIMEOUT)
+    assert f"Registre : installé à {SHA_B}" in shown, shown
+    assert "Plugin was not installed." in shown or "plugin build failed" in shown, shown
+    assert (*FIXTURE, "", SHA_B) in registry(), registry()
+    print("failed_build_ok", flush=True)
+    close_all(tab)
+
+
+def prove_fiche_closed_during_install():
+    sidebar, tab, fiche = fixture_fiche(SHA_A)
+    confirm_install(fiche, "Changement de commit")
+    wait(lambda: "en cours" in read(fiche), "the fiche did not show the running install")
+    keys(fiche, "esc")
+    wait(lambda: not fiches(tab), "escape did not close the fiche")
+    wait(lambda: (*FIXTURE, "", SHA_A) in registry(),
+         "the install stopped with its fiche", OPERATION_TIMEOUT)
+    fiche = open_fiche(sidebar, "fixture", "2 résultats")
+    wait(lambda: "Installation de c8268d4 réussie" in read(fiche),
+         "the reopened fiche did not show the result")
+    print("fiche_closed_during_install_ok", flush=True)
+    close_all(tab)
+
+
 def main():
     check_isolation()
     prove_sidebar()
     prove_fiche()
     prove_install_preview()
+    prove_install()
+    prove_switch()
+    prove_failed_build()
+    prove_fiche_closed_during_install()
     print("journey_ok", flush=True)
 
 
