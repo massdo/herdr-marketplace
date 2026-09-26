@@ -1,7 +1,7 @@
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-use super::style::{ACCENT, WARN, bold, muted, wrap};
+use super::style::{WARN, bold, muted, wrap};
 use crate::application::prepare_install::InstallPreview;
 use crate::domain::compat::Platform;
 use crate::domain::install::Plan;
@@ -13,13 +13,10 @@ use crate::domain::text::clean;
 pub fn preview_lines(preview: &InstallPreview, width: usize, host: Platform) -> Vec<Line<'static>> {
     let manifest = &preview.manifest;
     let title = match preview.plan {
-        Plan::Install => "Install",
-        Plan::Switch { .. } => "Switch commit",
+        Plan::Install => "Install this plugin?",
+        Plan::Switch { .. } => "Switch this plugin to another commit?",
     };
-    let mut lines = vec![Line::styled(
-        title,
-        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-    )];
+    let mut lines = vec![Line::styled(title, bold())];
     let mut field = |label: &str, value: &str| {
         lines.extend(
             wrap(&format!("{label}: {}", clean(value)), width)

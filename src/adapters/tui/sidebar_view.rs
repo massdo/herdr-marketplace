@@ -6,15 +6,25 @@ use unicode_width::UnicodeWidthStr;
 
 use super::sidebar::{LoadState, SidebarApp};
 use super::style::{
-    ACCENT, ERROR, MUTED, OK, SELECTION_BG, SELECTION_FG, WARN, bold, ellipsize, ellipsize_middle,
-    muted, wrap,
+    ACCENT, ERROR, MUTED, OK, SELECTION_BG, SELECTION_FG, Tone, WARN, bold, button_text, ellipsize,
+    ellipsize_middle, muted, wrap,
 };
 use crate::domain::listing::Row;
 use crate::domain::text::clean;
 
 /// Terminal lines per plugin: name, owner/repo, marks and description.
 pub const ROW_HEIGHT: usize = 3;
-const FOOTER: &str = "Enter: details · Esc: close";
+const PLACEHOLDER: &str = "Search name, topic, author…";
+const FOOTER: &str = "Click/Enter: open · Esc: close";
+const RETRY: &str = "Retry";
+
+/// What a click lands on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hit {
+    /// This position in the list of results.
+    Row(usize),
+    Retry,
+}
 
 /// Plugins the list area of a `width` × `height` pane shows.
 pub fn page_rows(app: &SidebarApp, width: u16, height: u16) -> usize {
@@ -39,11 +49,34 @@ pub fn render(frame: &mut Frame, app: &SidebarApp) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// What a click at `column`, `row` of a `width` × `height` pane lands on,
+/// laid out as `render` draws it.
+pub fn hit(app: &SidebarApp, width: u16, height: u16, column: u16, row: u16) -> Option<Hit> {
+    let top = header(app, width as usize).len();
+    let list_height = (height as usize).saturating_sub(top + 1);
+    let line = (row as usize)
+        .checked_sub(top)
+        .filter(|&line| line < list_height)?;
+    match &app.state {
+        LoadState::Ready(_) => {
+            let shown = line / ROW_HEIGHT;
+            let position = app.offset + shown;
+            (shown < app.page && position < app.visible.len()).then_some(Hit::Row(position))
+        }
+        LoadState::Failed(error) => {
+            let retry = failure(error, width as usize).len() - 1;
+            let cells = button_text(RETRY, "Enter").width();
+            (line == retry && (column as usize) < cells).then_some(Hit::Retry)
+        }
+        LoadState::Loading => None,
+    }
+}
+
 fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     let search = if app.query.is_empty() {
         Line::from(vec![
             Span::styled("> ", Style::default().fg(ACCENT)),
-            Span::styled("Search plugins", muted()),
+            Span::styled(ellipsize(PLACEHOLDER, width.saturating_sub(2)), muted()),
         ])
     } else {
         Line::from(vec![
@@ -55,11 +88,13 @@ fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     if let LoadState::Ready(loaded) = &app.state {
         let count = app.visible.len();
         let plural = if count == 1 { "" } else { "s" };
-        lines.push(Line::styled(
-            ellipsize(&format!("{count} result{plural}"), width),
-            muted(),
-        ));
-        let hidden = loaded.listing.hidden_incompatible;
+        let counter = if app.query.trim().is_empty() {
+            format!("{count} plugin{plural} in catalog")
+        } else {
+            format!("{count} result{plural}")
+        };
+        lines.push(Line::styled(ellipsize(&counter, width), muted()));
+        let hidden = app.hidden;
         if hidden > 0 {
             let plural = if hidden == 1 { "" } else { "s" };
             lines.push(Line::styled(
@@ -87,6 +122,7 @@ fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
+/// The error, then a Retry button on the last line.
 fn failure(error: &str, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![Line::styled("Loading failed", Style::default().fg(ERROR))];
     lines.extend(
@@ -95,7 +131,10 @@ fn failure(error: &str, width: usize) -> Vec<Line<'static>> {
             .map(|line| Line::styled(line, muted())),
     );
     lines.push(Line::default());
-    lines.push(Line::styled("Enter: retry", bold()));
+    lines.push(Line::from(Span::styled(
+        button_text(RETRY, "Enter"),
+        Tone::Plain.style(),
+    )));
     lines
 }
 

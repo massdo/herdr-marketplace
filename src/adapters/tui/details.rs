@@ -1,14 +1,20 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::text::Line;
 
+use super::details_view;
 use super::markdown;
 use super::preview::preview_lines;
+use super::style::Tone;
 use crate::application::load_readme::Readme;
 use crate::application::prepare_install::{InstallPreview, Prepared};
 use crate::domain::compat::Platform;
 use crate::domain::details::DetailsTarget;
+use crate::domain::install::Plan;
 use crate::domain::operation::{OperationKind, OperationRecord, Status};
 use crate::domain::uninstall::RemovalPlan;
+
+/// Lines the wheel scrolls per step.
+const WHEEL: isize = 3;
 
 /// The source of the details pane as the registry shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +54,30 @@ pub enum RemovalState {
     Preparing,
     Refused(String),
     Confirm(Box<RemovalPlan>),
+}
+
+/// What a button, or the key written on it, does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Command {
+    /// Build the install preview; nothing runs yet.
+    Install,
+    /// Ask for the removal; nothing runs yet.
+    Remove,
+    /// Run the install or removal on screen.
+    Confirm,
+    /// Leave the preview or the removal without running anything.
+    Cancel,
+    RetryReadme,
+    ToggleSha,
+}
+
+/// A button of the action bar, under the header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Button {
+    pub label: String,
+    pub key: &'static str,
+    pub tone: Tone,
+    pub command: Command,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,15 +269,17 @@ impl DetailsApp {
             return key.code == KeyCode::Char('c');
         }
         match key.code {
-            KeyCode::Esc if self.install != InstallState::Idle => self.leave_install(),
-            KeyCode::Esc if self.removal != RemovalState::Idle => {
-                self.removal = RemovalState::Idle;
+            KeyCode::Esc
+                if self.install != InstallState::Idle || self.removal != RemovalState::Idle =>
+            {
+                self.press(Command::Cancel)
             }
             KeyCode::Esc => return true,
-            KeyCode::Enter => self.enter(),
-            KeyCode::Char('i') => self.prepare_install(),
-            KeyCode::Char('r') => self.prepare_removal(),
-            KeyCode::Char('s') => self.full_sha = !self.full_sha,
+            KeyCode::Enter if self.showing_confirmation() => self.press(Command::Confirm),
+            KeyCode::Enter => self.press(Command::RetryReadme),
+            KeyCode::Char('i') => self.press(Command::Install),
+            KeyCode::Char('r') => self.press(Command::Remove),
+            KeyCode::Char('s') => self.press(Command::ToggleSha),
             KeyCode::Up => self.scroll_by(-1),
             KeyCode::Down => self.scroll_by(1),
             KeyCode::PageUp => self.scroll_by(-(self.page as isize)),
@@ -259,6 +291,110 @@ impl DetailsApp {
         false
     }
 
+    /// A click runs the button under it; the wheel scrolls.
+    pub fn handle_mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(command) =
+                    details_view::hit(self, width, height, mouse.column, mouse.row)
+                {
+                    self.press(command);
+                }
+            }
+            MouseEventKind::ScrollDown => self.scroll_by(WHEEL),
+            MouseEventKind::ScrollUp => self.scroll_by(-WHEEL),
+            _ => {}
+        }
+    }
+
+    /// Runs a button, clicked or through its key.
+    pub fn press(&mut self, command: Command) {
+        match command {
+            Command::Install => self.prepare_install(),
+            Command::Remove => self.prepare_removal(),
+            Command::Confirm => self.confirm(),
+            Command::Cancel => {
+                self.leave_install();
+                self.removal = RemovalState::Idle;
+            }
+            Command::RetryReadme => self.retry_readme(),
+            Command::ToggleSha => self.full_sha = !self.full_sha,
+        }
+    }
+
+    /// What can be done now, each button with its key. A confirmation shows
+    /// only Confirm and Cancel; a running operation, nothing.
+    pub fn buttons(&self) -> Vec<Button> {
+        let button = |label: &str, key, tone, command| Button {
+            label: label.to_string(),
+            key,
+            tone,
+            command,
+        };
+        if self.operation_running() {
+            return Vec::new();
+        }
+        if let InstallState::Preview(preview) = &self.install {
+            let label = match preview.plan {
+                Plan::Install => "Confirm install",
+                Plan::Switch { .. } => "Confirm switch",
+            };
+            return vec![
+                button(label, "Enter", Tone::Primary, Command::Confirm),
+                button("Cancel", "Esc", Tone::Plain, Command::Cancel),
+            ];
+        }
+        if matches!(self.removal, RemovalState::Confirm(_)) {
+            return vec![
+                button("Confirm removal", "Enter", Tone::Danger, Command::Confirm),
+                button("Cancel", "Esc", Tone::Plain, Command::Cancel),
+            ];
+        }
+        if self.install == InstallState::Preparing || self.removal == RemovalState::Preparing {
+            return vec![button("Cancel", "Esc", Tone::Plain, Command::Cancel)];
+        }
+        let install = if self.target.compatible {
+            Tone::Primary
+        } else {
+            Tone::Plain
+        };
+        let catalog = self.target.in_catalog;
+        let mut buttons = Vec::new();
+        match &self.installed {
+            InstalledView::Unknown => {}
+            InstalledView::NotInstalled if catalog => {
+                buttons.push(button("Install", "i", install, Command::Install));
+            }
+            InstalledView::NotInstalled => {}
+            InstalledView::At(sha) if *sha == self.target.commit => {
+                buttons.push(button("Remove", "r", Tone::Plain, Command::Remove));
+            }
+            InstalledView::At(_) => {
+                if catalog {
+                    let commit: String = self.target.commit.chars().take(7).collect();
+                    let label = format!("Switch to {commit}");
+                    buttons.push(button(&label, "i", install, Command::Install));
+                }
+                buttons.push(button("Remove", "r", Tone::Plain, Command::Remove));
+            }
+            InstalledView::Uncertain(_) => {
+                if catalog {
+                    buttons.push(button("Install", "i", Tone::Plain, Command::Install));
+                }
+                buttons.push(button("Remove", "r", Tone::Plain, Command::Remove));
+            }
+        }
+        if matches!(self.readme, ReadmeState::NetworkError(_)) {
+            buttons.push(button(
+                "Retry README",
+                "Enter",
+                Tone::Plain,
+                Command::RetryReadme,
+            ));
+        }
+        buttons
+    }
+
     pub fn showing_preview(&self) -> bool {
         matches!(self.install, InstallState::Preview(_))
     }
@@ -267,8 +403,9 @@ impl DetailsApp {
         self.showing_preview() || matches!(self.removal, RemovalState::Confirm(_))
     }
 
-    fn enter(&mut self) {
-        if self.showing_confirmation() && (self.page == 0 || self.width == 0) {
+    /// Runs the install or removal on screen, never one the pane hides.
+    fn confirm(&mut self) {
+        if self.page == 0 || self.width == 0 {
             return;
         }
         if let InstallState::Preview(preview) = &self.install {
@@ -277,7 +414,11 @@ impl DetailsApp {
         } else if let RemovalState::Confirm(plan) = &self.removal {
             self.intents.push(DetailsIntent::Uninstall(plan.clone()));
             self.removal = RemovalState::Idle;
-        } else if matches!(self.readme, ReadmeState::NetworkError(_)) {
+        }
+    }
+
+    fn retry_readme(&mut self) {
+        if matches!(self.readme, ReadmeState::NetworkError(_)) {
             self.request += 1;
             self.readme = ReadmeState::Loading;
             self.lines.clear();
@@ -300,7 +441,7 @@ impl DetailsApp {
             .push(DetailsIntent::PrepareInstall(self.install_request));
     }
 
-    /// `r` asks for the removal; a second key, Enter, confirms it.
+    /// Remove asks for the removal; Confirm runs it.
     fn prepare_removal(&mut self) {
         if matches!(
             self.removal,
@@ -336,7 +477,7 @@ impl DetailsApp {
     }
 
     fn scroll_by(&mut self, delta: isize) {
-        let (prefix, content) = super::details_view::body_lines(self, self.width);
+        let (prefix, content) = details_view::body_lines(self, self.width);
         let len = prefix.len() + content.len();
         let scroll = if self.showing_confirmation() {
             &mut self.preview_scroll

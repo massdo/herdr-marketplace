@@ -9,6 +9,38 @@ pub const OK: Color = Color::Green;
 pub const WARN: Color = Color::Yellow;
 pub const ERROR: Color = Color::Red;
 
+/// Background of a secondary button, as in VS Code.
+pub const BUTTON_BG: Color = Color::Rgb(0x3a, 0x3d, 0x41);
+
+/// Look of a button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    /// The main action: white on blue.
+    Primary,
+    /// An action that deletes: white on red.
+    Danger,
+    Plain,
+}
+
+impl Tone {
+    pub fn style(self) -> Style {
+        let background = match self {
+            Self::Primary => ACCENT,
+            Self::Danger => ERROR,
+            Self::Plain => BUTTON_BG,
+        };
+        Style::default()
+            .fg(Color::White)
+            .bg(background)
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
+/// Text of a button, with its key written on it: " Install (i) ".
+pub fn button_text(label: &str, key: &str) -> String {
+    format!(" {label} ({key}) ")
+}
+
 pub fn muted() -> Style {
     Style::default().fg(MUTED)
 }

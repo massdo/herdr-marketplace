@@ -5,8 +5,10 @@ mod support;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use herdr_marketplace::adapters::tui::details::{DetailsApp, DetailsIntent, InstallState};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use herdr_marketplace::adapters::tui::details::{
+    DetailsApp, DetailsIntent, InstallState, InstalledView,
+};
 use herdr_marketplace::adapters::tui::details_view;
 use herdr_marketplace::application::ports::{FetchError, Fetcher};
 use herdr_marketplace::application::prepare_install::{InstallPreview, Prepared, prepare_install};
@@ -526,5 +528,148 @@ fn a_short_pane_keeps_the_preview_reachable_after_a_long_operation_error() {
     assert!(
         app.intents.is_empty(),
         "a hidden confirmation cannot execute"
+    );
+}
+
+fn click(column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+/// Lines of a 90 × 30 details pane.
+fn lines(app: &DetailsApp) -> Vec<String> {
+    let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
+    terminal
+        .draw(|frame| details_view::render(frame, app))
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .chunks(90)
+        .map(|line| line.iter().map(|cell| cell.symbol()).collect::<String>())
+        .collect()
+}
+
+/// Column of the middle of `label` on the action bar, the fourth line.
+fn button_column(app: &DetailsApp, label: &str) -> u16 {
+    let bar = &lines(app)[3];
+    let start = bar
+        .find(label)
+        .unwrap_or_else(|| panic!("{label:?} not on the action bar {bar:?}"));
+    (start + label.len() / 2) as u16
+}
+
+#[test]
+fn the_install_button_opens_the_preview_and_its_confirm_button_installs() {
+    let preview = preview(prepare(&FakeWeb::fixture(), vec![], &target("")));
+    let mut app = DetailsApp::new(target(""));
+    app.registry_read(1, InstalledView::NotInstalled);
+    app.set_viewport(90, details_view::page_rows(&app, 90, 30));
+    app.intents.clear();
+    assert!(
+        lines(&app)[3].starts_with(" Install (i) "),
+        "{:#?}",
+        lines(&app)
+    );
+    app.handle_mouse(click(40, 3), 90, 30);
+    assert!(app.intents.is_empty(), "beside the button");
+
+    app.handle_mouse(click(button_column(&app, "Install (i)"), 3), 90, 30);
+    assert_eq!(app.intents, [DetailsIntent::PrepareInstall(1)]);
+    app.install_prepared(1, Prepared::Preview(Box::new(preview.clone())));
+    let screen = lines(&app);
+    assert!(
+        screen[3].starts_with(" Confirm install (Enter) "),
+        "{screen:#?}"
+    );
+    assert!(screen[3].contains(" Cancel (Esc) "), "{screen:#?}");
+    assert!(
+        screen
+            .iter()
+            .any(|line| line.starts_with("Install this plugin?")),
+        "{screen:#?}"
+    );
+
+    app.intents.clear();
+    app.handle_mouse(click(button_column(&app, "Cancel (Esc)"), 3), 90, 30);
+    assert_eq!(app.install, InstallState::Idle);
+    assert!(app.intents.is_empty(), "cancelling launches nothing");
+
+    app.handle_mouse(click(button_column(&app, "Install (i)"), 3), 90, 30);
+    app.install_prepared(2, Prepared::Preview(Box::new(preview.clone())));
+    app.intents.clear();
+    app.handle_mouse(
+        click(button_column(&app, "Confirm install (Enter)"), 3),
+        90,
+        30,
+    );
+    assert_eq!(app.intents, [DetailsIntent::Install(Box::new(preview))]);
+    assert!(
+        !lines(&app)[3].contains("Confirm"),
+        "no second confirmation: {:#?}",
+        lines(&app)
+    );
+}
+
+#[test]
+fn another_installed_commit_offers_a_switch_and_a_removal() {
+    let mut app = DetailsApp::new(target(""));
+    app.registry_read(1, InstalledView::At(SHA_B.into()));
+    let bar = &lines(&app)[3];
+    assert!(bar.starts_with(" Switch to c8268d4 (i) "), "{bar:?}");
+    assert!(bar.contains(" Remove (r) "), "{bar:?}");
+
+    app.registry_read(1, InstalledView::At(SHA_A.into()));
+    let bar = &lines(&app)[3];
+    assert!(
+        bar.starts_with(" Remove (r) "),
+        "installed at this commit: {bar:?}"
+    );
+    assert!(!bar.contains("Install"), "{bar:?}");
+}
+
+#[test]
+fn a_running_operation_hides_the_buttons() {
+    let mut app = DetailsApp::new(target(""));
+    app.registry_read(1, InstalledView::NotInstalled);
+    app.operation_launched(
+        "op".into(),
+        herdr_marketplace::domain::operation::OperationKind::Install,
+    );
+    assert!(app.buttons().is_empty());
+    assert!(
+        lines(&app)[3].starts_with("Installing…"),
+        "{:#?}",
+        lines(&app)
+    );
+    app.intents.clear();
+    app.handle_mouse(click(3, 3), 90, 30);
+    assert!(app.intents.is_empty());
+}
+
+#[test]
+fn buttons_look_like_buttons() {
+    use herdr_marketplace::adapters::tui::style::{ACCENT, BUTTON_BG};
+    let mut app = DetailsApp::new(target(""));
+    app.registry_read(1, InstalledView::At(SHA_B.into()));
+    let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
+    terminal
+        .draw(|frame| details_view::render(frame, &app))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let bar = lines(&app)[3].clone();
+    let switch = bar.find("Switch to").unwrap() as u16;
+    let remove = bar.find("Remove (r)").unwrap() as u16;
+    assert_eq!(buffer[(switch, 3)].bg, ACCENT, "the main action is blue");
+    assert_eq!(buffer[(remove, 3)].bg, BUTTON_BG, "the other one is grey");
+    assert_eq!(
+        buffer[(remove - 2, 3)].bg,
+        ratatui::style::Color::Reset,
+        "a gap between them"
     );
 }

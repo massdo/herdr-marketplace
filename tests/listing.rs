@@ -57,9 +57,15 @@ fn an_installed_linux_only_plugin_stays_listed_on_macos_marked_incompatible() {
     assert!(next_agent.installed.is_some());
     assert!(!next_agent.compatible);
     assert!(next_agent.in_catalog);
+    let hidden: Vec<String> = listing
+        .hidden
+        .iter()
+        .map(|entry| entry.source.to_string())
+        .collect();
     assert_eq!(
-        listing.hidden_incompatible, 1,
-        "someone/linux-tool is hidden"
+        hidden,
+        ["someone/linux-tool"],
+        "incompatible and not installed"
     );
 }
 

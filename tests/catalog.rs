@@ -514,7 +514,7 @@ fn the_catalogue_is_sorted_by_stars_then_identity() {
 }
 
 #[test]
-fn search_is_a_case_insensitive_substring_on_the_listed_fields() {
+fn search_ignores_case_on_the_listed_fields() {
     let mut other = repo(
         "someone",
         "unrelated",
@@ -553,6 +553,123 @@ fn search_is_a_case_insensitive_substring_on_the_listed_fields() {
     assert!(found("no such plugin").is_empty());
     assert_eq!(found(""), ["zenbu-labs.terminal-browser", "other"]);
     assert_eq!(found("   "), ["zenbu-labs.terminal-browser", "other"]);
+}
+
+/// One plugin per repository: name, description and topics given.
+fn plugins(specs: &[(&str, &str, &str, &[&str])]) -> Vec<Entry> {
+    let repos = specs
+        .iter()
+        .enumerate()
+        .map(|(index, (repo_name, name, description, topics))| {
+            let mut repo = repo(
+                "acme",
+                repo_name,
+                100 - index as u64,
+                vec![manifest("herdr-plugin.toml", &format!("acme.{repo_name}"))],
+            );
+            repo["topics"] = json!(topics);
+            repo["manifests"][0]["name"] = json!(name);
+            repo["manifests"][0]["description"] = json!(description);
+            repo
+        })
+        .collect();
+    parse(repos).entries
+}
+
+fn found_repos(entries: &[Entry], query: &str) -> Vec<String> {
+    search(entries, query)
+        .into_iter()
+        .map(|index| entries[index].source.repo.clone())
+        .collect()
+}
+
+#[test]
+fn search_is_fuzzy_letters_in_order_and_close_together() {
+    let entries = plugins(&[
+        (
+            "reviewer",
+            "Code Review",
+            "Review diffs beside the agent",
+            &[],
+        ),
+        ("sidebar", "herdr-sidebar", "A file explorer", &[]),
+        (
+            "scattered",
+            "Rust Event Viewer",
+            "Real-time visual indicators in a window",
+            &[],
+        ),
+    ]);
+    assert_eq!(
+        found_repos(&entries, "reviw"),
+        ["reviewer"],
+        "a missing letter"
+    );
+    assert_eq!(found_repos(&entries, "sidbar"), ["sidebar"]);
+    assert_eq!(
+        found_repos(&entries, "cod rev"),
+        ["reviewer"],
+        "every word must match"
+    );
+    assert!(
+        found_repos(&entries, "rvw").is_empty(),
+        "letters spread over a name or a sentence do not match"
+    );
+}
+
+#[test]
+fn a_word_that_matches_nothing_is_tried_again_with_typos() {
+    let entries = plugins(&[
+        (
+            "reviewer",
+            "Code Review",
+            "Review diffs beside the agent",
+            &[],
+        ),
+        ("tools", "Tool Box", "Handy tools", &[]),
+    ]);
+    assert_eq!(
+        found_repos(&entries, "reveiw"),
+        ["reviewer"],
+        "swapped letters"
+    );
+    assert_eq!(
+        found_repos(&entries, "revuew"),
+        ["reviewer"],
+        "a wrong letter"
+    );
+    assert_eq!(
+        found_repos(&entries, "tool"),
+        ["tools"],
+        "an exact match leaves out the typo matches"
+    );
+    assert!(
+        found_repos(&entries, "rev")
+            .iter()
+            .all(|repo| repo == "reviewer"),
+        "no typo allowed under 4 letters"
+    );
+}
+
+#[test]
+fn results_rank_the_name_first_then_closeness_then_stars() {
+    let entries = plugins(&[
+        ("described", "Helper", "Browser helper for herdr", &[]),
+        ("tagged", "Helper Two", "Nothing here", &["browser"]),
+        ("inside", "Webbrowser", "Nothing here", &[]),
+        ("named", "Terminal Browser", "Nothing here", &[]),
+        ("gaps", "Browsxer", "Nothing here", &[]),
+    ]);
+    assert_eq!(
+        found_repos(&entries, "browser"),
+        ["named", "inside", "gaps", "tagged", "described"],
+        "name at a word start, inside a word, with a gap; then a topic; then the description"
+    );
+    let starred = plugins(&[
+        ("popular", "Browser One", "", &[]),
+        ("quiet", "Browser Two", "", &[]),
+    ]);
+    assert_eq!(found_repos(&starred, "browser"), ["popular", "quiet"]);
 }
 
 #[test]

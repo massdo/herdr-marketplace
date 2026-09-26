@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 crossterm = "0.29"
 libc = "0.2"
+frizbee = "0.13"
 percent-encoding = "2"
 pulldown-cmark = { version = "0.13", default-features = false }
 ratatui = "0.30"

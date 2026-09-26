@@ -11,11 +11,11 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
-use crossterm::execute;
+use crossterm::event::{self, Event, KeyEvent, KeyEventKind, MouseEvent};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use crossterm::{Command, execute};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
@@ -140,10 +140,10 @@ fn sidebar_loop(
         let size = terminal.size()?;
         app.set_page(sidebar_view::page_rows(app, size.width, size.height));
         terminal.draw(|frame| sidebar_view::render(frame, app))?;
-        if let Some(key) = next_key()?
-            && app.handle_key(key)
-        {
-            return Ok(());
+        match next_input()? {
+            Some(Input::Key(key)) if app.handle_key(key) => return Ok(()),
+            Some(Input::Mouse(mouse)) => app.handle_mouse(mouse, size.width, size.height),
+            _ => {}
         }
     }
 }
@@ -268,10 +268,10 @@ fn details_loop(
         let page = details_view::page_rows(app, size.width, size.height);
         app.set_viewport(size.width as usize, page);
         terminal.draw(|frame| details_view::render(frame, app))?;
-        if let Some(key) = next_key()?
-            && app.handle_key(key)
-        {
-            return Ok(());
+        match next_input()? {
+            Some(Input::Key(key)) if app.handle_key(key) => return Ok(()),
+            Some(Input::Mouse(mouse)) => app.handle_mouse(mouse, size.width, size.height),
+            _ => {}
         }
     }
 }
@@ -366,25 +366,49 @@ fn installed_view<H: HerdrCli>(herdr: &H, source: &PluginSource) -> InstalledVie
     }
 }
 
-fn next_key() -> Result<Option<KeyEvent>, AppError> {
+enum Input {
+    Key(KeyEvent),
+    Mouse(MouseEvent),
+}
+
+fn next_input() -> Result<Option<Input>, AppError> {
     if !event::poll(POLL)? {
         return Ok(None);
     }
     match event::read()? {
-        Event::Key(key) if key.kind == KeyEventKind::Press => Ok(Some(key)),
+        Event::Key(key) if key.kind == KeyEventKind::Press => Ok(Some(Input::Key(key))),
+        Event::Mouse(mouse) => Ok(Some(Input::Mouse(mouse))),
         _ => Ok(None),
+    }
+}
+
+/// Clicks and the wheel, in SGR encoding. Unlike crossterm's
+/// `EnableMouseCapture`, no event for every move of the pointer.
+struct EnableMouse;
+
+impl Command for EnableMouse {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        f.write_str("\x1b[?1000h\x1b[?1006h")
+    }
+}
+
+struct DisableMouse;
+
+impl Command for DisableMouse {
+    fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
+        f.write_str("\x1b[?1006l\x1b[?1000l")
     }
 }
 
 fn setup() -> Result<Screen, AppError> {
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouse)?;
     Terminal::new(CrosstermBackend::new(stdout)).map_err(AppError::from)
 }
 
 fn teardown(terminal: &mut Screen) -> io::Result<()> {
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), DisableMouse, LeaveAlternateScreen)?;
     disable_raw_mode()?;
     terminal.show_cursor()?;
     Ok(())

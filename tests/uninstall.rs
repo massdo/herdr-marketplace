@@ -5,9 +5,11 @@ mod support;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use herdr_marketplace::adapters::operations::FsOperations;
-use herdr_marketplace::adapters::tui::details::{DetailsApp, DetailsIntent, RemovalState};
+use herdr_marketplace::adapters::tui::details::{
+    DetailsApp, DetailsIntent, InstalledView, RemovalState,
+};
 use herdr_marketplace::adapters::tui::details_view;
 use herdr_marketplace::application::ports::{CommandOutput, HerdrCli};
 use herdr_marketplace::application::prepare_removal::prepare_removal;
@@ -210,7 +212,7 @@ fn a_removal_needs_a_second_explicit_key() {
     app.handle_key(key(KeyCode::Char('r')));
     app.removal_prepared(1, Ok(plan.clone()));
     let shown = screen(&app);
-    assert!(shown.contains("Remove"), "{shown}");
+    assert!(shown.contains("Remove this plugin?"), "{shown}");
     assert!(
         shown.contains("source: massdo/herdr-marketplace-fixture"),
         "{shown}"
@@ -349,4 +351,56 @@ fn a_removal_confirmation_scrolls_to_its_last_line_in_a_short_pane() {
         .map(|cell| cell.symbol())
         .collect::<String>();
     assert!(text.contains("Herdr also deletes its checkout."), "{text}");
+}
+
+fn click(column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+/// Column of the middle of `label` on the action bar, the fourth line.
+fn button_column(app: &DetailsApp, label: &str) -> u16 {
+    let bar = screen(app).lines().nth(3).unwrap().to_string();
+    let start = bar
+        .find(label)
+        .unwrap_or_else(|| panic!("{label:?} not on the action bar {bar:?}"));
+    (start + label.len() / 2) as u16
+}
+
+#[test]
+fn the_remove_button_asks_and_confirm_removal_removes() {
+    let plan = plan_removal(
+        &installed(vec![fixture(None, "massdo", "herdr-marketplace-fixture")]),
+        &source(""),
+    )
+    .unwrap();
+    let mut app = DetailsApp::new(target(true, true));
+    app.registry_read(1, InstalledView::At(SHA_A.into()));
+    app.set_viewport(90, details_view::page_rows(&app, 90, 30));
+    app.intents.clear();
+
+    app.handle_mouse(click(button_column(&app, "Remove (r)"), 3), 90, 30);
+    assert_eq!(app.intents, [DetailsIntent::PrepareRemoval(1)]);
+    app.removal_prepared(1, Ok(plan.clone()));
+    let bar = screen(&app).lines().nth(3).unwrap().to_string();
+    assert!(bar.starts_with(" Confirm removal (Enter) "), "{bar:?}");
+
+    app.intents.clear();
+    app.handle_mouse(click(button_column(&app, "Cancel (Esc)"), 3), 90, 30);
+    assert_eq!(app.removal, RemovalState::Idle);
+    assert!(app.intents.is_empty(), "cancelling removes nothing");
+
+    app.handle_mouse(click(button_column(&app, "Remove (r)"), 3), 90, 30);
+    app.removal_prepared(2, Ok(plan.clone()));
+    app.intents.clear();
+    app.handle_mouse(
+        click(button_column(&app, "Confirm removal (Enter)"), 3),
+        90,
+        30,
+    );
+    assert_eq!(app.intents, [DetailsIntent::Uninstall(Box::new(plan))]);
 }

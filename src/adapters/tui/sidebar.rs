@@ -1,10 +1,11 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
+use super::sidebar_view::{self, Hit};
 use crate::application::load_listing::LoadedListing;
 use crate::domain::compat::Platform;
 use crate::domain::listing::Row;
 use crate::domain::registry::InstalledPlugin;
-use crate::domain::search::matches;
+use crate::domain::search::search;
 use crate::domain::source::PluginSource;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,8 +29,10 @@ pub enum LoadState {
 pub struct SidebarApp {
     pub state: LoadState,
     pub query: String,
-    /// Positions in `rows()` that match the query.
+    /// Positions in `rows()` that match the query, most relevant first.
     pub visible: Vec<usize>,
+    /// Incompatible plugins left out of the list that match the query.
+    pub hidden: usize,
     /// The selection follows an identity, not a position.
     pub selected: Option<PluginSource>,
     /// First visible position shown in the list.
@@ -53,6 +56,7 @@ impl SidebarApp {
             state: LoadState::Loading,
             query: String::new(),
             visible: Vec::new(),
+            hidden: 0,
             selected: None,
             offset: 0,
             page: 1,
@@ -101,15 +105,15 @@ impl SidebarApp {
             KeyCode::Esc if self.query.is_empty() => return true,
             KeyCode::Esc => {
                 self.query.clear();
-                self.refilter();
+                self.search_changed();
             }
             KeyCode::Char(ch) => {
                 self.query.push(ch);
-                self.refilter();
+                self.search_changed();
             }
             KeyCode::Backspace => {
                 if self.query.pop().is_some() {
-                    self.refilter();
+                    self.search_changed();
                 }
             }
             KeyCode::Up => self.move_by(-1),
@@ -122,6 +126,26 @@ impl SidebarApp {
             _ => {}
         }
         false
+    }
+
+    /// One click on a plugin selects it and opens its details, as in VS
+    /// Code; the wheel scrolls the list without moving the selection.
+    pub fn handle_mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                match sidebar_view::hit(self, width, height, mouse.column, mouse.row) {
+                    Some(Hit::Row(position)) => {
+                        self.move_to(position);
+                        self.enter();
+                    }
+                    Some(Hit::Retry) => self.enter(),
+                    None => {}
+                }
+            }
+            MouseEventKind::ScrollDown => self.scroll_by(1),
+            MouseEventKind::ScrollUp => self.scroll_by(-1),
+            _ => {}
+        }
     }
 
     pub fn selected_row(&self) -> Option<&Row> {
@@ -137,9 +161,15 @@ impl SidebarApp {
             .position(|&index| rows[index].entry.source == *selected)
     }
 
+    /// A new height brings the selection back into view; otherwise a list
+    /// scrolled with the wheel stays where it is.
     pub fn set_page(&mut self, page: usize) {
-        self.page = page.max(1);
-        self.ensure_visible();
+        let page = page.max(1);
+        if page != self.page {
+            self.page = page;
+            self.ensure_visible();
+        }
+        self.offset = self.offset.min(self.last_offset());
     }
 
     fn enter(&mut self) {
@@ -157,18 +187,26 @@ impl SidebarApp {
         }
     }
 
+    /// A new search starts from its most relevant result.
+    fn search_changed(&mut self) {
+        self.selected = None;
+        self.refilter();
+    }
+
     fn refilter(&mut self) {
-        let rows = self.rows();
-        let visible: Vec<usize> = rows
-            .iter()
-            .enumerate()
-            .filter(|(_, row)| matches(&row.entry, &self.query))
-            .map(|(index, _)| index)
-            .collect();
+        let (rows, hidden): (&[Row], &[_]) = match &self.state {
+            LoadState::Ready(loaded) => (&loaded.listing.rows[..], &loaded.listing.hidden[..]),
+            _ => (&[], &[]),
+        };
+        let (visible, hidden): (Vec<usize>, Vec<usize>) =
+            search(rows.iter().map(|row| &row.entry).chain(hidden), &self.query)
+                .into_iter()
+                .partition(|&position| position < rows.len());
         let first = visible
             .first()
             .map(|&index| rows[index].entry.source.clone());
         self.visible = visible;
+        self.hidden = hidden.len();
         if self.selected_position().is_none() {
             self.selected = first;
             self.offset = 0;
@@ -188,6 +226,14 @@ impl SidebarApp {
         let index = self.visible[position.min(last)];
         self.selected = Some(self.rows()[index].entry.source.clone());
         self.ensure_visible();
+    }
+
+    fn scroll_by(&mut self, delta: isize) {
+        self.offset = (self.offset as isize + delta).clamp(0, self.last_offset() as isize) as usize;
+    }
+
+    fn last_offset(&self) -> usize {
+        self.visible.len().saturating_sub(self.page)
     }
 
     fn ensure_visible(&mut self) {

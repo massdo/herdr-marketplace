@@ -4,13 +4,21 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use super::details::{DetailsApp, InstallState, InstalledView, ReadmeState, RemovalState};
-use super::style::{ERROR, MUTED, OK, WARN, bold, ellipsize, ellipsize_middle, muted, wrap};
+use super::details::{
+    Button, Command, DetailsApp, InstallState, InstalledView, ReadmeState, RemovalState,
+};
+use super::style::{
+    ERROR, MUTED, OK, WARN, bold, button_text, ellipsize, ellipsize_middle, muted, wrap,
+};
 use crate::domain::operation::{OperationKind, Status};
 use crate::domain::text::clean;
 
-const FOOTER: &str = "i: install · r: remove · s: full SHA · Esc: close · ↑↓ PgUp PgDn Home End";
+const FOOTER: &str = "s: full SHA · Esc: close · ↑↓ PgUp PgDn Home End";
 const PREVIEW_FOOTER: &str = "Enter: confirm · Esc: cancel · ↑↓ PgUp PgDn";
+/// Header lines: title, source, commit, then the action bar.
+const COMMIT_LINE: usize = 2;
+const BAR_LINE: usize = 3;
+const BUTTON_GAP: usize = 2;
 
 /// Body lines visible after the compact identity header and footer.
 pub fn page_rows(app: &DetailsApp, width: u16, height: u16) -> usize {
@@ -53,6 +61,66 @@ pub fn render(frame: &mut Frame, app: &DetailsApp) {
     frame.render_widget(Paragraph::new(lines), area);
 }
 
+/// What a click at `column`, `row` of a `width` × `height` pane runs, laid
+/// out as `render` draws it: a button of the action bar, or the commit,
+/// which shows the full SHA.
+pub fn hit(app: &DetailsApp, width: u16, height: u16, column: u16, row: u16) -> Option<Command> {
+    let shown = header(app, width as usize)
+        .len()
+        .min(height.saturating_sub(2) as usize);
+    let (column, row) = (column as usize, row as usize);
+    if row >= shown {
+        return None;
+    }
+    if row == COMMIT_LINE {
+        return Some(Command::ToggleSha);
+    }
+    let buttons = app.buttons();
+    if row != BAR_LINE || buttons.is_empty() {
+        return None;
+    }
+    buttons
+        .iter()
+        .zip(bar_layout(&buttons, width as usize))
+        .find(|(_, (start, end))| (*start..*end).contains(&column))
+        .map(|(button, _)| button.command)
+}
+
+/// Cells each button covers, from the left; the buttons that do not fit are
+/// left out.
+fn bar_layout(buttons: &[Button], width: usize) -> Vec<(usize, usize)> {
+    let mut cells = Vec::new();
+    let mut used = 0;
+    for button in buttons {
+        let start = if cells.is_empty() {
+            0
+        } else {
+            used + BUTTON_GAP
+        };
+        let end = start + button_text(&button.label, button.key).width();
+        if end > width {
+            break;
+        }
+        cells.push((start, end));
+        used = end;
+    }
+    cells
+}
+
+fn bar(buttons: &[Button], width: usize) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut used = 0;
+    for (button, (start, end)) in buttons.iter().zip(bar_layout(buttons, width)) {
+        spans.push(Span::raw(" ".repeat(start - used)));
+        spans.push(Span::styled(
+            button_text(&button.label, button.key),
+            button.tone.style(),
+        ));
+        used = end;
+    }
+    Line::from(spans)
+}
+
 /// All variable-length content scrolls. A confirmation starts at its first
 /// line and is never pushed below old operation output.
 pub(super) fn body_lines(app: &DetailsApp, width: usize) -> (Vec<Line<'static>>, &[Line<'static>]) {
@@ -74,13 +142,15 @@ pub(super) fn body_lines(app: &DetailsApp, width: usize) -> (Vec<Line<'static>>,
             Style::default().fg(WARN),
         )),
         ReadmeState::NetworkError(error) => {
-            lines.push(Line::styled("Network error", Style::default().fg(ERROR)));
+            lines.push(Line::styled(
+                "README not loaded: network error",
+                Style::default().fg(ERROR),
+            ));
             lines.extend(
                 wrap(&clean(error), width)
                     .into_iter()
                     .map(|line| Line::styled(line, muted())),
             );
-            lines.push(Line::styled("Enter: retry", bold()));
         }
         ReadmeState::Found { .. } => return (lines, &app.lines),
     }
@@ -97,7 +167,7 @@ fn removal_lines(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
         .github_source()
         .map(ToString::to_string)
         .unwrap_or_default();
-    let mut lines = vec![Line::styled("Remove", bold().fg(ERROR))];
+    let mut lines = vec![Line::styled("Remove this plugin?", bold())];
     for text in [
         format!("id: {}", installed.plugin_id),
         format!("source: {source}"),
@@ -156,6 +226,10 @@ fn header(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
             width,
         ),
     ];
+    let buttons = app.buttons();
+    if !buttons.is_empty() {
+        lines.push(bar(&buttons, width));
+    }
     if let Some(status) = operation_lines(app, width).into_iter().next() {
         lines.push(fit(status, width));
     }

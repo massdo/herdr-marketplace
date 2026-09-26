@@ -20,8 +20,9 @@ pub struct Row {
 pub struct Listing {
     /// In catalogue order.
     pub rows: Vec<Row>,
-    /// Incompatible catalogue entries that are not installed.
-    pub hidden_incompatible: usize,
+    /// Incompatible catalogue entries that are not installed, in catalogue
+    /// order: hidden, but counted by the search.
+    pub hidden: Vec<Entry>,
 }
 
 /// Compatible entries and every plugin installed from GitHub, even
@@ -50,7 +51,7 @@ pub fn build_listing(
         }
         let compatible = entry.is_compatible(host, herdr);
         if installed.is_none() && !compatible {
-            listing.hidden_incompatible += 1;
+            listing.hidden.push(entry.clone());
             continue;
         }
         listing.rows.push(Row {

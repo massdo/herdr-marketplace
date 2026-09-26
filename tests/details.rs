@@ -6,8 +6,10 @@ mod support;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use herdr_marketplace::adapters::tui::details::{DetailsApp, DetailsIntent, ReadmeState};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use herdr_marketplace::adapters::tui::details::{
+    DetailsApp, DetailsIntent, InstalledView, ReadmeState,
+};
 use herdr_marketplace::adapters::tui::{details_view, markdown};
 use herdr_marketplace::application::load_readme::{Readme, load_readme};
 use herdr_marketplace::application::open_details::{close_details, open_details};
@@ -557,4 +559,76 @@ fn an_installed_plugin_that_is_incompatible_is_read_at_its_installed_commit() {
         HERDR,
     );
     assert_eq!(DetailsTarget::from_row(&listing.rows[0]).commit, SHA_A);
+}
+
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+#[test]
+fn a_click_on_the_commit_shows_the_full_sha() {
+    let mut app = DetailsApp::new(target(""));
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), 9, 2),
+        100,
+        12,
+    );
+    assert!(app.full_sha);
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), 9, 2),
+        100,
+        12,
+    );
+    assert!(!app.full_sha);
+}
+
+#[test]
+fn the_wheel_scrolls_the_readme() {
+    let mut app = DetailsApp::new(target(""));
+    let text: String = (1..=40).map(|n| format!("line {n}\n\n")).collect();
+    app.readme_loaded(
+        1,
+        Ok(Readme::Found {
+            text,
+            fallback: false,
+        }),
+    );
+    app.set_viewport(60, details_view::page_rows(&app, 60, 12));
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 6), 60, 12);
+    assert_eq!(app.scroll, 3);
+    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 6), 60, 12);
+    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 6), 60, 12);
+    assert_eq!(app.scroll, 0);
+}
+
+#[test]
+fn a_readme_network_error_offers_a_retry_button() {
+    let mut app = DetailsApp::new(target(""));
+    app.registry_read(1, InstalledView::NotInstalled);
+    app.readme_loaded(1, Err("timeout".into()));
+    let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+    terminal
+        .draw(|frame| details_view::render(frame, &app))
+        .unwrap();
+    let bar: String = terminal.backend().buffer().content()[300..400]
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(bar.starts_with(" Install (i) "), "{bar:?}");
+    let retry = bar
+        .find("Retry README (Enter)")
+        .unwrap_or_else(|| panic!("{bar:?}"));
+    app.intents.clear();
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), retry as u16 + 3, 3),
+        100,
+        12,
+    );
+    assert_eq!(app.intents, [DetailsIntent::LoadReadme(2)]);
+    assert_eq!(app.readme, ReadmeState::Loading);
 }

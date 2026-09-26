@@ -29,6 +29,7 @@ SHA_C = "bc4d8b84d062b8048b5d89647e7110c9f5a05561"  # 1.2.0, build fails on purp
 BROWSER_SHA = "ff8f17077e52a8b582a4659f3424cd8abbb5ce1d"
 # Installs fetch the fixture from GitHub and build it.
 OPERATION_TIMEOUT = 180
+CLIENT_COLS, CLIENT_ROWS = 200, 50
 
 
 class Client:
@@ -39,7 +40,8 @@ class Client:
         self.pid, self.master = pty.fork()
         if self.pid == 0:
             os.execvp("herdr", ["herdr", "--session", SESSION])
-        fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 200, 0, 0))
+        fcntl.ioctl(self.master, termios.TIOCSWINSZ,
+                    struct.pack("HHHH", CLIENT_ROWS, CLIENT_COLS, 0, 0))
         self.reader = threading.Thread(target=self.record, daemon=True)
         self.reader.start()
 
@@ -53,6 +55,13 @@ class Client:
                 if not chunk:
                     break
                 log.write(chunk)
+
+    def click(self, column, row):
+        """Left button pressed and released at 1-based screen cell
+        `column`, `row`, in the SGR encoding a terminal sends."""
+        os.write(self.master, f"\x1b[<0;{column};{row}M".encode())
+        time.sleep(0.05)
+        os.write(self.master, f"\x1b[<0;{column};{row}m".encode())
 
     def close(self):
         try:
@@ -105,6 +114,22 @@ def type_text(pane, text):
 
 def toggle():
     herdr("plugin", "action", "invoke", "herdr-marketplace.toggle")
+
+
+def click_text(pane, text):
+    """Clicks the middle of `text` where `pane` shows it, through the attached
+    client, as a user would. The tab area fills the client right of Herdr's
+    sidebar and under its top bar; a pane in a split has a one-cell border."""
+    lines = read(pane).split("\n")
+    row = next((i for i, line in enumerate(lines) if text in line), None)
+    assert row is not None, f"{text!r} is not on {pane}: {lines}"
+    column = lines[row].index(text) + len(text) // 2
+    layout = data("pane", "layout", "--pane", pane)["layout"]
+    rect = next(p["rect"] for p in layout["panes"] if p["pane_id"] == pane)
+    inset = 1 if len(layout["panes"]) > 1 else 0
+    x = CLIENT_COLS - layout["area"]["width"] + rect["x"] + inset + column + 1
+    y = CLIENT_ROWS - layout["area"]["height"] + rect["y"] + inset + row + 1
+    CLIENT.click(x, y)
 
 
 def with_token(key):
@@ -191,8 +216,9 @@ def prove_sidebar():
     count = write_catalog(SHA_A)
     before = others()
     sidebar = open_sidebar()
-    shown = wait(lambda: "results" in (text := read(sidebar)) and text, "the catalogue did not load")
-    assert f"{count - 1} results" in shown, shown
+    shown = wait(lambda: "in catalog" in (text := read(sidebar)) and text, "the catalogue did not load")
+    assert f"{count - 1} plugins in catalog" in shown, shown
+    assert "Search name, topic, author" in shown, shown
     assert "1 incompatible plugin hidden" in shown, shown
     # 30 inner columns: a long owner/repo/subdir loses its middle, never its ends.
     assert "Terminal Browser" in shown and "zenbu-labs/term…r/herdr-plugin" in shown, shown
@@ -221,7 +247,7 @@ def prove_sidebar():
     shown = wait(lambda: "1 result" in (text := read(sidebar)) and text, "the search stopped working")
     assert "Loading failed" not in shown, shown
     keys(sidebar, "esc")
-    wait(lambda: f"{count - 1} results" in read(sidebar), "esc did not clear the search")
+    wait(lambda: f"{count - 1} plugins in catalog" in read(sidebar), "esc did not clear the search")
     print("typing_without_network_ok", flush=True)
 
     type_text(sidebar, END)
@@ -237,10 +263,10 @@ def prove_sidebar():
     sidebar = open_sidebar()
     shown = wait(lambda: "Loading failed" in (text := read(sidebar)) and text,
                  "the download failure was not shown")
-    assert "Enter: retry" in shown, shown
+    assert "Retry (Enter)" in shown, shown
     write_catalog(SHA_A)
     keys(sidebar, "enter")
-    wait(lambda: f"{count - 1} results" in read(sidebar), "the retry did not load the catalogue")
+    wait(lambda: f"{count - 1} plugins in catalog" in read(sidebar), "the retry did not load the catalogue")
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
     print("retry_ok", flush=True)
@@ -271,7 +297,7 @@ def open_details(sidebar, query, expected_results):
 def prove_details():
     write_catalog(SHA_A)
     sidebar = open_sidebar()
-    wait(lambda: "results" in read(sidebar), "the catalogue did not load")
+    wait(lambda: "in catalog" in read(sidebar), "the catalogue did not load")
     tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
 
     details = open_details(sidebar, "terminal browser", "1 result")
@@ -320,6 +346,21 @@ def prove_details():
     wait(lambda: focused() is not None and focused() in others(), "focus did not go to a remaining pane")
     print("details_outlives_sidebar_ok", flush=True)
 
+    # One click on a plugin of the sidebar opens its details, as in VS Code.
+    sidebar = open_sidebar()
+    wait(lambda: "in catalog" in read(sidebar), "the catalogue did not load")
+    before = {p["pane_id"] for p in panes()}
+    click_text(sidebar, "Terminal Browser")
+    details = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] not in before), None),
+                   "a click on a plugin did not open its details pane")
+    wait(lambda: "zenbu-labs/terminal-browser/herdr-plugin" in read(details),
+         "the clicked plugin is not the one shown")
+    print("details_click_ok", flush=True)
+    keys(details, "esc")
+    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+
 
 def registry():
     """Plugins installed from GitHub: source and commit, from `herdr plugin list --json`."""
@@ -339,7 +380,7 @@ def fixture_log():
 def prove_install_preview():
     write_catalog(SHA_A)
     sidebar = open_sidebar()
-    wait(lambda: "results" in read(sidebar), "the catalogue did not load")
+    wait(lambda: "in catalog" in read(sidebar), "the catalogue did not load")
     tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
     details = open_details(sidebar, "fixture", "2 results")
     wait(lambda: "[image: fixture logo]" in read(details), "the fixture README was not rendered")
@@ -356,7 +397,7 @@ def prove_install_preview():
     print("install_preview_ok", flush=True)
 
     keys(details, "esc")
-    wait(lambda: "i: install" in read(details), "escape did not cancel the preview")
+    wait(lambda: "Install (i)" in read(details), "escape did not cancel the preview")
     time.sleep(2)
     assert registry() == before, (before, registry())
     assert fixture_log() == "", fixture_log()
@@ -378,7 +419,7 @@ def fixture_details(sha):
     """Sidebar on a catalogue with the fixture at `sha`, and the root fixture's details pane."""
     write_catalog(sha)
     sidebar = open_sidebar()
-    wait(lambda: "results" in read(sidebar), "the catalogue did not load")
+    wait(lambda: "in catalog" in read(sidebar), "the catalogue did not load")
     tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
     details = open_details(sidebar, "fixture", "2 results")
     wait(lambda: f"commit {sha[:7]}" in read(details), "the fixture details pane did not open")
@@ -403,8 +444,14 @@ def close_all(tab):
 
 
 def prove_install():
+    """Through the buttons, with the mouse."""
     sidebar, tab, details = fixture_details(SHA_A)
-    confirm_install(details, "Install")
+    wait(lambda: "Install (i)" in read(details), "the details pane has no Install button")
+    click_text(details, "Install (i)")
+    shown = wait(lambda: "Confirm install (Enter)" in (text := read(details)) and text,
+                 "a click on Install did not open the preview")
+    assert "Install this plugin?" in shown and "Cancel (Esc)" in shown, shown
+    click_text(details, "Confirm install (Enter)")
     wait(lambda: "Install of c8268d4 succeeded" in read(details),
          "the install did not succeed", OPERATION_TIMEOUT)
     assert (*FIXTURE, "", SHA_A) in registry(), registry()
@@ -430,7 +477,7 @@ def prove_switch():
 
 def prove_failed_build():
     sidebar, tab, details = fixture_details(SHA_C)
-    confirm_install(details, "Switch commit")
+    confirm_install(details, "another commit?")
     shown = wait(lambda: "Install of bc4d8b8 failed" in (text := read(details)) and text,
                  "the failed build was not reported", OPERATION_TIMEOUT)
     assert f"Registry: installed at {SHA_B}" in shown, shown
@@ -442,7 +489,7 @@ def prove_failed_build():
 
 def prove_details_closed_during_install():
     sidebar, tab, details = fixture_details(SHA_A)
-    confirm_install(details, "Switch commit")
+    confirm_install(details, "another commit?")
     wait(lambda: "Installing" in read(details), "the details pane did not show the running install")
     keys(details, "esc")
     wait(lambda: not details_panes(tab), "escape did not close the details pane")
@@ -465,9 +512,16 @@ def remove(details):
 
 
 def prove_uninstall():
+    """Through the buttons, with the mouse."""
     sidebar, tab, details = fixture_details(SHA_A)
     wait(lambda: "· installed" in read(details), "the details pane does not show 'installed'")
-    remove(details)
+    wait(lambda: "Remove (r)" in read(details), "the details pane has no Remove button")
+    click_text(details, "Remove (r)")
+    shown = wait(lambda: "Confirm removal (Enter)" in (text := read(details)) and text,
+                 "a click on Remove did not ask for a confirmation")
+    assert "Remove this plugin?" in shown, shown
+    click_text(details, "Confirm removal (Enter)")
+    wait(lambda: "Removal succeeded" in read(details), "the removal did not succeed", OPERATION_TIMEOUT)
     assert fixture_plugin() is None, data("plugin", "list", "--json")
     wait(lambda: "· not installed" in read(details), "the details pane does not show 'not installed'")
     wait(lambda: "installed · Test fixture." not in (text := read(sidebar)) and "Test fixture." in text,
@@ -528,12 +582,12 @@ def diagnostics():
 
 
 if __name__ == "__main__":
-    client = Client()
-    client.start()
+    CLIENT = Client()
+    CLIENT.start()
     try:
         main()
     except Exception:
         diagnostics()
         raise
     finally:
-        client.close()
+        CLIENT.close()
