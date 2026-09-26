@@ -9,6 +9,7 @@ pub mod listing;
 pub mod manifest;
 pub mod operation;
 pub mod pane;
+pub mod readme;
 pub mod registry;
 pub mod search;
 pub mod sidebar_decision;

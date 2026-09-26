@@ -16,6 +16,7 @@ SESSION = os.environ["HERDR_MARKETPLACE_E2E_SESSION"]
 TMP = Path(os.environ["HERDR_MARKETPLACE_E2E_TMP"])
 CLIENT_LOG = TMP / "client.log"
 INDEX = TMP / "index.json"
+OPENED = TMP / "opened.log"
 SIDEBAR_TOKEN = "herdr_marketplace_sidebar"
 DETAILS_TOKEN = "herdr_marketplace_details"
 
@@ -27,6 +28,8 @@ SHA_A = "c8268d42a98d9140254f4bf4ca13c23a587faed8"  # 1.0.0, harmless build
 SHA_B = "1be1b7bb9d9ad3d8733a66d132b87c908ff210c6"  # 1.1.0, harmless build
 SHA_C = "bc4d8b84d062b8048b5d89647e7110c9f5a05561"  # 1.2.0, build fails on purpose
 BROWSER_SHA = "ff8f17077e52a8b582a4659f3424cd8abbb5ce1d"
+# herdr-sidebar's README shows a PNG next to it and links to the root README.
+SIDEBAR_SHA = "1a5d37ef84edc91e5b3d3d4e39daa32952e6ecf2"
 # Installs fetch the fixture from GitHub and build it.
 OPERATION_TIMEOUT = 180
 CLIENT_COLS, CLIENT_ROWS = 200, 50
@@ -40,8 +43,9 @@ class Client:
         self.pid, self.master = pty.fork()
         if self.pid == 0:
             os.execvp("herdr", ["herdr", "--session", SESSION])
+        # Pixel size as a real terminal reports it: 8 × 17 pixel cells.
         fcntl.ioctl(self.master, termios.TIOCSWINSZ,
-                    struct.pack("HHHH", CLIENT_ROWS, CLIENT_COLS, 0, 0))
+                    struct.pack("HHHH", CLIENT_ROWS, CLIENT_COLS, CLIENT_COLS * 8, CLIENT_ROWS * 17))
         self.reader = threading.Thread(target=self.record, daemon=True)
         self.reader.start()
 
@@ -175,6 +179,10 @@ def write_catalog(fixture_sha):
             manifest("herdr-plugin/herdr-plugin.toml", "zenbu-labs.terminal-browser",
                      "Terminal Browser", "Open a browser inside herdr"),
         ], topics=["browser"]),
+        repo("alexarthurs", "herdr-sidebar", SIDEBAR_SHA, 389, [
+            manifest("plugins/herdr-sidebar/herdr-plugin.toml", "herdr-sidebar",
+                     "herdr-sidebar", "File explorer and source control."),
+        ]),
         repo("future", "needs-new-herdr", SHA_A, 900, [
             manifest("herdr-plugin.toml", "future.plugin", "Future Plugin",
                      "Needs a newer Herdr.", min_herdr="9.9.9"),
@@ -563,10 +571,41 @@ def prove_full_journey():
     close_all(tab)
 
 
+def opened():
+    return OPENED.read_text().splitlines() if OPENED.exists() else []
+
+
+def prove_readme():
+    """herdr-sidebar's README: its image reaches the client through the
+    kitty graphics protocol; a relative link and the GitHub button open."""
+    write_catalog(SHA_A)
+    sidebar = open_sidebar()
+    wait(lambda: "in catalog" in read(sidebar), "the catalogue did not load")
+    tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
+    sent = CLIENT_LOG.stat().st_size
+    details = open_details(sidebar, "herdr-sidebar", "1 result")
+    wait(lambda: "The sidebar your terminal was missing" in read(details),
+         "the herdr-sidebar README was not rendered")
+    wait(lambda: b"\x1b_Ga=t" in CLIENT_LOG.read_bytes()[sent:],
+         "the README image did not reach the client", 60)
+    assert "[image: The sidebar docked" not in read(details), read(details)
+    print("readme_image_ok", flush=True)
+
+    click_text(details, "repo README")
+    wait(lambda: f"https://github.com/alexarthurs/herdr-sidebar/blob/{SIDEBAR_SHA}/README.md" in opened(),
+         f"the relative link did not open: {opened()}")
+    click_text(details, "Open on GitHub (o)")
+    page = f"https://github.com/alexarthurs/herdr-sidebar/tree/{SIDEBAR_SHA}/plugins/herdr-sidebar"
+    wait(lambda: page in opened(), f"the GitHub page did not open: {opened()}")
+    print("readme_links_ok", flush=True)
+    close_all(tab)
+
+
 def main():
     check_isolation()
     prove_sidebar()
     prove_details()
+    prove_readme()
     prove_install_preview()
     prove_install()
     prove_switch()

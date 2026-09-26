@@ -634,22 +634,25 @@ fn another_installed_commit_offers_a_switch_and_a_removal() {
 }
 
 #[test]
-fn a_running_operation_hides_the_buttons() {
+fn a_running_operation_leaves_only_the_github_page() {
     let mut app = DetailsApp::new(target(""));
     app.registry_read(1, InstalledView::NotInstalled);
     app.operation_launched(
         "op".into(),
         herdr_marketplace::domain::operation::OperationKind::Install,
     );
-    assert!(app.buttons().is_empty());
-    assert!(
-        lines(&app)[3].starts_with("Installing…"),
-        "{:#?}",
-        lines(&app)
-    );
+    let labels: Vec<String> = app
+        .buttons()
+        .into_iter()
+        .map(|button| button.label)
+        .collect();
+    assert_eq!(labels, ["Open on GitHub"]);
+    let screen = lines(&app);
+    assert!(screen[3].starts_with(" Open on GitHub (o) "), "{screen:#?}");
+    assert!(screen[4].starts_with("Installing…"), "{screen:#?}");
     app.intents.clear();
-    app.handle_mouse(click(3, 3), 90, 30);
-    assert!(app.intents.is_empty());
+    app.handle_mouse(click(40, 3), 90, 30);
+    assert!(app.intents.is_empty(), "beside the button");
 }
 
 #[test]

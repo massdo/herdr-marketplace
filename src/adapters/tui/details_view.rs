@@ -70,7 +70,7 @@ pub fn hit(app: &DetailsApp, width: u16, height: u16, column: u16, row: u16) -> 
         .min(height.saturating_sub(2) as usize);
     let (column, row) = (column as usize, row as usize);
     if row >= shown {
-        return None;
+        return link_at(app, width, height, column, row - shown);
     }
     if row == COMMIT_LINE {
         return Some(Command::ToggleSha);
@@ -84,6 +84,25 @@ pub fn hit(app: &DetailsApp, width: u16, height: u16, column: u16, row: u16) -> 
         .zip(bar_layout(&buttons, width as usize))
         .find(|(_, (start, end))| (*start..*end).contains(&column))
         .map(|(button, _)| button.command)
+}
+
+/// The README link under a click on body line `row`.
+fn link_at(
+    app: &DetailsApp,
+    width: u16,
+    height: u16,
+    column: usize,
+    row: usize,
+) -> Option<Command> {
+    if app.showing_confirmation() || row >= page_rows(app, width, height) {
+        return None;
+    }
+    let (prefix, _) = body_lines(app, width as usize);
+    let line = (app.scroll + row).checked_sub(prefix.len())?;
+    app.links
+        .iter()
+        .position(|area| area.line == line && (area.start..area.end).contains(&column))
+        .map(Command::OpenLink)
 }
 
 /// Cells each button covers, from the left; the buttons that do not fit are

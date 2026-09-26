@@ -274,11 +274,12 @@ fn the_header_shows_identity_and_a_short_sha_with_the_full_one_on_demand() {
         "{lines:#?}"
     );
     assert!(lines[2].starts_with("commit c8268d4 "), "{lines:#?}");
+    assert!(lines[3].starts_with(" Open on GitHub (o) "), "{lines:#?}");
     assert!(
-        lines[4].starts_with("No README.md in alt/: showing the repository root README.md"),
+        lines[5].starts_with("No README.md in alt/: showing the repository root README.md"),
         "{lines:#?}"
     );
-    assert!(lines[6].starts_with("Root README"), "{lines:#?}");
+    assert!(lines[7].starts_with("Root README"), "{lines:#?}");
 
     app.handle_key(key(KeyCode::Char('s')));
     assert!(
@@ -335,11 +336,12 @@ fn every_listed_markdown_element_is_rendered() {
     };
 
     has("Title");
+    has(&"━".repeat(60));
     let title = span_style(&lines, "Title");
-    assert!(
-        title
-            .add_modifier
-            .contains(Modifier::BOLD | Modifier::UNDERLINED)
+    assert!(title.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(
+        title.fg,
+        Some(herdr_marketplace::adapters::tui::style::ACCENT)
     );
     assert!(
         span_style(&lines, "bold")
@@ -356,43 +358,57 @@ fn every_listed_markdown_element_is_rendered() {
             .add_modifier
             .contains(Modifier::CROSSED_OUT)
     );
-    assert_eq!(span_style(&lines, "code").fg, Some(Color::Cyan));
+    let code = span_style(&lines, "code");
+    assert!(code.bg.is_some(), "inline code sits on its own background");
     let joined = text.join(" ");
     assert!(
-        joined.contains("a link (https://example.com/doc) and"),
-        "{text:#?}"
+        joined.contains("a link and https://example.com/auto."),
+        "a link shows its text, not its address: {text:#?}"
     );
     assert!(
-        text.iter()
-            .any(|line| line.contains("https://example.com/auto.")
-                && !line.contains("(https://example.com/auto)")),
-        "{text:#?}"
+        span_style(&lines, "link")
+            .add_modifier
+            .contains(Modifier::UNDERLINED)
     );
     has("• first");
     has("• second");
-    has("  • nested");
+    has("  ◦ nested");
     has("1. one");
     has("2. two");
-    has("[x] done");
-    has("[ ] todo");
-    has("│ quoted text");
-    assert!(text.iter().any(|line| line == &"─".repeat(60)), "rule");
-    has("  fn main() { let x = 1; }");
-    let code_colors: Vec<Option<Color>> = lines
+    has("☑ done");
+    has("☐ todo");
+    has("▎ quoted text");
+    has(&"─".repeat(60));
+    let code_line = lines
         .iter()
-        .flat_map(|line| line.spans.iter())
-        .filter(|span| span.content.contains("fn main"))
+        .find(|line| line.spans.iter().any(|span| span.content.contains("main")))
+        .expect("code block");
+    assert_eq!(code_line.width(), 60, "a code block fills the line");
+    let colors: std::collections::HashSet<Option<Color>> = code_line
+        .spans
+        .iter()
+        .filter(|span| !span.content.trim().is_empty())
         .map(|span| span.style.fg)
         .collect();
-    assert_eq!(code_colors, [Some(Color::Cyan)], "no syntax highlighting");
-    has("Left      │ Right");
-    has("──────────┼──────");
-    has("a         │     1");
-    has("long cell │    22");
+    assert!(colors.len() > 1, "Rust is highlighted: {code_line:?}");
+    assert!(
+        code_line.spans.iter().all(|span| span.style.bg.is_some()),
+        "{code_line:?}"
+    );
+    has("┌───────────┬───────┐");
+    has("│ Left      │ Right │");
+    has("├───────────┼───────┤");
+    has("│ a         │     1 │");
+    has("│ long cell │    22 │");
+    has("└───────────┴───────┘");
     has("[image: diagram]");
-    has("[image: logo]");
+    assert!(
+        text.iter()
+            .any(|line| line.trim() == "[image: logo]" && line.starts_with("   ")),
+        "an image in a centered paragraph is centered: {text:#?}"
+    );
     has("kept text & more");
-    has("Inline [image: small icon] and span text.");
+    has("Inline \u{a0}small\u{a0}icon\u{a0} and span text.");
 }
 
 #[test]

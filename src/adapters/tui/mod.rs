@@ -1,13 +1,16 @@
 pub mod details;
 pub mod details_view;
 pub mod focus;
+pub mod graphics;
 pub mod markdown;
 pub mod preview;
 pub mod sidebar;
 pub mod sidebar_view;
 pub mod style;
 
-use std::io::{self, stdout};
+use std::io::{self, Write, stdout};
+use std::process::{Command as Process, Stdio};
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -26,11 +29,12 @@ use crate::adapters::env::{self, ProcessEnv};
 use crate::adapters::fetch::HttpFetcher;
 use crate::adapters::herdr_cli::HerdrCommand;
 use crate::adapters::herdr_socket::HerdrSocket;
+use crate::adapters::images::{IMAGE_LIMIT, Picture, decode};
 use crate::adapters::operations::{FsOperations, spawn_operation};
 use crate::application::load_listing::{LoadedListing, load_listing, read_registry};
 use crate::application::load_readme::{Readme, load_readme};
 use crate::application::open_details::{close_details, open_details};
-use crate::application::ports::{HerdrCli, HerdrPort, Operations};
+use crate::application::ports::{Fetcher, HerdrCli, HerdrPort, Operations};
 use crate::application::prepare_install::{Prepared, prepare_install};
 use crate::application::prepare_removal::prepare_removal;
 use crate::application::run_operation::current_operation;
@@ -65,9 +69,12 @@ enum DetailsAnswer {
     Registry(u64, InstalledView),
     Removal(u64, Box<Result<RemovalPlan, String>>),
     Operation(Box<OperationRecord>),
+    Picture(String, Result<Arc<Picture>, String>),
 }
 
 const POLL: Duration = Duration::from_millis(100);
+/// Command that opens an address in the browser.
+pub const OPEN_ENV: &str = "HERDR_MARKETPLACE_OPEN";
 const OPERATION_CHECK: Duration = Duration::from_secs(1);
 
 /// Sidebar pane. The catalogue loads in a background thread so drawing and
@@ -176,6 +183,8 @@ pub fn run_details(process: ProcessEnv, target: DetailsTarget) -> Result<(), App
     let mut app = DetailsApp::new(target);
     let (sender, receiver) = mpsc::channel();
     let mut terminal = setup()?;
+    // Before the event reader starts: the answers come on the input.
+    app.pictures.graphics = Some(graphics::detect());
     let result = details_loop(&mut terminal, &mut app, &operations, &sender, &receiver);
     let _ = teardown(&mut terminal);
     if let Some(pane_id) = process.own_pane_id {
@@ -257,6 +266,20 @@ fn details_loop(
                         let _ = sender.send(DetailsAnswer::Removal(request, Box::new(plan)));
                     });
                 }
+                DetailsIntent::LoadImages(urls) => {
+                    for url in urls {
+                        let sender = sender.clone();
+                        thread::spawn(move || {
+                            let picture = HttpFetcher::new()
+                                .fetch(&url, IMAGE_LIMIT)
+                                .map_err(|error| error.to_string())
+                                .and_then(|bytes| decode(&bytes))
+                                .map(Arc::new);
+                            let _ = sender.send(DetailsAnswer::Picture(url, picture));
+                        });
+                    }
+                }
+                DetailsIntent::OpenUrl(url) => open_url(&url),
             }
         }
         while let Ok(answer) = receiver.try_recv() {
@@ -270,12 +293,19 @@ fn details_loop(
                 }
                 DetailsAnswer::Removal(request, plan) => app.removal_prepared(request, *plan),
                 DetailsAnswer::Operation(record) => app.operation_finished(*record),
+                DetailsAnswer::Picture(url, picture) => app.picture_loaded(&url, picture),
             }
         }
         app.operation_seen(current_operation(operations, &app.target.source));
         let size = terminal.size()?;
         let page = details_view::page_rows(app, size.width, size.height);
         app.set_viewport(size.width as usize, page);
+        // Images the layout draws reach the terminal before their cells.
+        let images = app.pictures.take_commands();
+        if !images.is_empty() {
+            terminal.backend_mut().write_all(images.as_bytes())?;
+            terminal.backend_mut().flush()?;
+        }
         terminal.draw(|frame| details_view::render(frame, app))?;
         match next_input()? {
             Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),
@@ -361,6 +391,31 @@ fn launch(
             });
         }
         Err(error) => app.operation_refused(format!("Could not start: {error}")),
+    }
+}
+
+/// The browser opens `url`: `HERDR_MARKETPLACE_OPEN` names the command, else
+/// `open` on macOS and `xdg-open` elsewhere.
+fn open_url(url: &str) {
+    let opener = std::env::var(OPEN_ENV)
+        .ok()
+        .filter(|opener| !opener.trim().is_empty())
+        .unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                "open"
+            } else {
+                "xdg-open"
+            }
+            .into()
+        });
+    if let Ok(mut child) = Process::new(opener)
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        thread::spawn(move || child.wait());
     }
 }
 

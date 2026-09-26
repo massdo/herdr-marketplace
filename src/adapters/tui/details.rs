@@ -1,16 +1,21 @@
+use std::sync::Arc;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::text::Line;
 
 use super::details_view;
-use super::markdown;
+use super::graphics::Pictures;
+use super::markdown::{self, LinkArea};
 use super::preview::preview_lines;
 use super::style::Tone;
+use crate::adapters::images::Picture;
 use crate::application::load_readme::Readme;
 use crate::application::prepare_install::{InstallPreview, Prepared};
 use crate::domain::compat::Platform;
 use crate::domain::details::DetailsTarget;
 use crate::domain::install::Plan;
 use crate::domain::operation::{OperationKind, OperationRecord, Status};
+use crate::domain::readme::{LinkTarget, ReadmePlace, github_page};
 use crate::domain::uninstall::RemovalPlan;
 
 /// Lines the wheel scrolls per step.
@@ -69,6 +74,10 @@ pub enum Command {
     Cancel,
     RetryReadme,
     ToggleSha,
+    /// The plugin's page on GitHub, in the browser.
+    OpenGitHub,
+    /// The link of this area of the README.
+    OpenLink(usize),
 }
 
 /// A button of the action bar, under the header.
@@ -94,6 +103,10 @@ pub enum DetailsIntent {
     PrepareRemoval(u64),
     /// Confirmed removal and the exact installed plugin the user reviewed.
     Uninstall(Box<RemovalPlan>),
+    /// Download and decode these images of the README.
+    LoadImages(Vec<String>),
+    /// Open this address in the browser.
+    OpenUrl(String),
 }
 
 /// Details pane state: the plugin and commit received at opening, its README, and
@@ -106,6 +119,11 @@ pub struct DetailsApp {
     pub request: u64,
     /// README rendered for `width`.
     pub lines: Vec<Line<'static>>,
+    /// Parts of `lines` a click opens.
+    pub links: Vec<LinkArea>,
+    /// First line of each README heading, by anchor.
+    pub anchors: Vec<(String, usize)>,
+    pub pictures: Pictures,
     pub width: usize,
     pub scroll: usize,
     /// Body lines the pane shows.
@@ -136,6 +154,9 @@ impl DetailsApp {
             readme: ReadmeState::Loading,
             request: 1,
             lines: Vec::new(),
+            links: Vec::new(),
+            anchors: Vec::new(),
+            pictures: Pictures::default(),
             width: 80,
             scroll: 0,
             page: 1,
@@ -230,6 +251,12 @@ impl DetailsApp {
         self.render();
     }
 
+    /// An image of the README arrived: the README is laid out again.
+    pub fn picture_loaded(&mut self, url: &str, picture: Result<Arc<Picture>, String>) {
+        self.pictures.loaded(url, picture);
+        self.render();
+    }
+
     pub fn install_prepared(&mut self, request: u64, prepared: Prepared) {
         if request != self.install_request || self.install != InstallState::Preparing {
             return;
@@ -280,6 +307,7 @@ impl DetailsApp {
             KeyCode::Char('i') => self.press(Command::Install),
             KeyCode::Char('r') => self.press(Command::Remove),
             KeyCode::Char('s') => self.press(Command::ToggleSha),
+            KeyCode::Char('o') => self.press(Command::OpenGitHub),
             KeyCode::Up => self.scroll_by(-1),
             KeyCode::Down => self.scroll_by(1),
             KeyCode::PageUp => self.scroll_by(-(self.page as isize)),
@@ -319,11 +347,30 @@ impl DetailsApp {
             }
             Command::RetryReadme => self.retry_readme(),
             Command::ToggleSha => self.full_sha = !self.full_sha,
+            Command::OpenGitHub => self.intents.push(DetailsIntent::OpenUrl(github_page(
+                &self.target.source,
+                &self.target.commit,
+            ))),
+            Command::OpenLink(area) => match self.links.get(area).map(|area| area.target.clone()) {
+                Some(LinkTarget::Web(url)) => self.intents.push(DetailsIntent::OpenUrl(url)),
+                Some(LinkTarget::Anchor(anchor)) => self.go_to(&anchor),
+                None => {}
+            },
         }
     }
 
+    /// Scrolls to the heading of `anchor`, as a link to `#anchor` does.
+    fn go_to(&mut self, anchor: &str) {
+        let Some(&(_, line)) = self.anchors.iter().find(|(name, _)| name == anchor) else {
+            return;
+        };
+        let (prefix, _) = details_view::body_lines(self, self.width);
+        self.scroll = prefix.len() + line;
+        self.scroll_by(0);
+    }
+
     /// What can be done now, each button with its key. A confirmation shows
-    /// only Confirm and Cancel; a running operation, nothing.
+    /// only Confirm and Cancel; a running operation, only the GitHub page.
     pub fn buttons(&self) -> Vec<Button> {
         let button = |label: &str, key, tone, command| Button {
             label: label.to_string(),
@@ -331,8 +378,9 @@ impl DetailsApp {
             tone,
             command,
         };
+        let github = button("Open on GitHub", "o", Tone::Plain, Command::OpenGitHub);
         if self.operation_running() {
-            return Vec::new();
+            return vec![github];
         }
         if let InstallState::Preview(preview) = &self.install {
             let label = match preview.plan {
@@ -392,6 +440,7 @@ impl DetailsApp {
                 Command::RetryReadme,
             ));
         }
+        buttons.push(github);
         buttons
     }
 
@@ -464,10 +513,33 @@ impl DetailsApp {
     }
 
     fn render(&mut self) {
-        self.lines = match &self.readme {
-            ReadmeState::Found { text, .. } => markdown::render(text, self.width),
-            _ => Vec::new(),
+        self.pictures.begin_layout();
+        let rendered = match &self.readme {
+            ReadmeState::Found { text, fallback } => {
+                let place = ReadmePlace {
+                    source: self.target.source.clone(),
+                    commit: self.target.commit.clone(),
+                    folder: if *fallback {
+                        String::new()
+                    } else {
+                        self.target.source.subdir.clone()
+                    },
+                };
+                markdown::render_readme(text, self.width, Some(&place), &mut self.pictures)
+            }
+            _ => markdown::Rendered::default(),
         };
+        self.lines = rendered.lines;
+        self.links = rendered.links;
+        self.anchors = rendered.anchors;
+        let wanted: Vec<String> = rendered
+            .images
+            .into_iter()
+            .filter(|url| self.pictures.request(url))
+            .collect();
+        if !wanted.is_empty() {
+            self.intents.push(DetailsIntent::LoadImages(wanted));
+        }
         self.preview = match &self.install {
             InstallState::Preview(preview) => {
                 preview_lines(preview, self.width, Platform::current())

@@ -28,6 +28,8 @@ export HERDR_CONFIG_PATH="$CONFIG"
 export HERDR_MARKETPLACE_INDEX_URL="file://$TMP/index.json"
 # The fixture's build appends a line here; Herdr passes it to builds.
 export HERDR_MARKETPLACE_FIXTURE_LOG="$TMP/fixture.log"
+# Links open through this script, which only writes the address down.
+export HERDR_MARKETPLACE_OPEN="$TMP/open.sh"
 export HERDR_MARKETPLACE_E2E_SESSION="$SESSION"
 export HERDR_MARKETPLACE_E2E_TMP="$TMP"
 export HERDR_MARKETPLACE_E2E_SERVER_LOG="$SERVER_LOG"
@@ -56,6 +58,8 @@ echo "== build plugin =="
 sh "$PLUGIN_DIR/scripts/build.sh"
 
 mkdir -p "$XDG/herdr" "$TMP/work"
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "$(dirname "$0")/opened.log"\n' > "$HERDR_MARKETPLACE_OPEN"
+chmod +x "$HERDR_MARKETPLACE_OPEN"
 cat > "$CONFIG" <<'EOF'
 onboarding = false
 
