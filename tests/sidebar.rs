@@ -177,7 +177,7 @@ fn a_failed_load_is_retried_with_enter() {
 }
 
 #[test]
-fn enter_asks_for_the_fiche_of_the_selected_plugin() {
+fn enter_asks_for_the_details_of_the_selected_plugin() {
     let mut app = loaded_app();
     app.handle_key(key(KeyCode::Down));
     app.handle_key(key(KeyCode::Enter));

@@ -2,7 +2,7 @@ use crate::application::load_listing::read_registry;
 use crate::application::load_readme::raw_url;
 use crate::application::ports::{FetchError, Fetcher, HerdrCli};
 use crate::domain::compat::Platform;
-use crate::domain::fiche::FicheTarget;
+use crate::domain::details::DetailsTarget;
 use crate::domain::install::{Plan, check_target, install_args, installed_from, plan};
 use crate::domain::manifest::{Manifest, parse_manifest};
 use crate::domain::registry::InstalledPlugin;
@@ -32,12 +32,12 @@ pub struct InstallPreview {
     pub args: Vec<String>,
 }
 
-/// Builds the preview from the manifest read at the fiche's commit and a
+/// Builds the preview from the manifest read at the commit shown and a
 /// freshly read registry. Runs nothing.
 pub fn prepare_install<F: Fetcher, H: HerdrCli>(
     fetcher: &F,
     herdr: &H,
-    target: &FicheTarget,
+    target: &DetailsTarget,
     host: Platform,
 ) -> Prepared {
     match preview(fetcher, herdr, target, host) {
@@ -50,7 +50,7 @@ pub fn prepare_install<F: Fetcher, H: HerdrCli>(
 fn preview<F: Fetcher, H: HerdrCli>(
     fetcher: &F,
     herdr: &H,
-    target: &FicheTarget,
+    target: &DetailsTarget,
     host: Platform,
 ) -> Result<Option<InstallPreview>, String> {
     check_target(target)?;
@@ -81,7 +81,7 @@ fn preview<F: Fetcher, H: HerdrCli>(
     }))
 }
 
-fn read_manifest<F: Fetcher>(fetcher: &F, target: &FicheTarget) -> Result<Manifest, String> {
+fn read_manifest<F: Fetcher>(fetcher: &F, target: &DetailsTarget) -> Result<Manifest, String> {
     let url = raw_url(
         &target.source,
         &target.commit,

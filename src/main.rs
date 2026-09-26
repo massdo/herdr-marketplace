@@ -20,10 +20,10 @@ fn run() -> Result<(), AppError> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("--toggle") => toggle(),
-        Some("--fiche") => tui::run_fiche(env::load()?, env::fiche_target()?),
+        Some("--details") => tui::run_details(env::load()?, env::details_target()?),
         Some("--run-operation") => operation(args.get(1)),
         Some("--help" | "-h") => {
-            println!("herdr-marketplace [--toggle | --fiche | --run-operation <request>]");
+            println!("herdr-marketplace [--toggle | --details | --run-operation <request>]");
             Ok(())
         }
         Some(other) => Err(AppError::Io {
@@ -41,7 +41,7 @@ fn toggle() -> Result<(), AppError> {
     Ok(())
 }
 
-/// Detached run of a confirmed request, started by a fiche.
+/// Detached run of a confirmed request, started by a details pane.
 fn operation(request: Option<&String>) -> Result<(), AppError> {
     let request: OperationRequest = request
         .and_then(|json| serde_json::from_str(json).ok())

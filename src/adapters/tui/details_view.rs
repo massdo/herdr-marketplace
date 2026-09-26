@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use super::fiche::{FicheApp, InstallState, InstalledView, ReadmeState, RemovalState};
+use super::details::{DetailsApp, InstallState, InstalledView, ReadmeState, RemovalState};
 use super::style::{ERROR, MUTED, OK, WARN, bold, ellipsize, ellipsize_middle, muted, wrap};
 use crate::domain::operation::{OperationKind, Status};
 use crate::domain::text::clean;
@@ -14,11 +14,11 @@ const FOOTER: &str =
 const PREVIEW_FOOTER: &str = "Entrée : confirmer · Échap : annuler · ↑↓ PgPréc PgSuiv";
 
 /// README lines a `width` × `height` pane shows.
-pub fn page_rows(app: &FicheApp, width: u16, height: u16) -> usize {
+pub fn page_rows(app: &DetailsApp, width: u16, height: u16) -> usize {
     (height as usize).saturating_sub(header(app, width as usize).len() + 1)
 }
 
-pub fn render(frame: &mut Frame, app: &FicheApp) {
+pub fn render(frame: &mut Frame, app: &DetailsApp) {
     let area = frame.area();
     let width = area.width as usize;
     let mut lines = header(app, width);
@@ -69,7 +69,7 @@ pub fn render(frame: &mut Frame, app: &FicheApp) {
 }
 
 /// What the removal will do, before its confirmation.
-fn removal_lines(app: &FicheApp, width: usize) -> Vec<Line<'static>> {
+fn removal_lines(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
     let RemovalState::Confirm(plan) = &app.removal else {
         return Vec::new();
     };
@@ -93,7 +93,7 @@ fn removal_lines(app: &FicheApp, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn header(app: &FicheApp, width: usize) -> Vec<Line<'static>> {
+fn header(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
     let target = &app.target;
     let mut title = vec![Span::styled(clean(&target.name), bold())];
     if let Some(version) = &target.version {
@@ -186,7 +186,7 @@ const OUTPUT_LINES: usize = 8;
 
 /// State of the latest operation on this source: running, succeeded,
 /// failed, unconfirmed or refused. Herdr's output is cleaned and cut.
-fn operation_lines(app: &FicheApp, width: usize) -> Vec<Line<'static>> {
+fn operation_lines(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
     if let Some((_, kind)) = &app.launched {
         let text = match kind {
             OperationKind::Install => "Installation en cours…",

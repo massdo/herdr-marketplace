@@ -1,4 +1,4 @@
-//! Removal rules: only the plugin installed from the fiche's exact source.
+//! Removal rules: only the plugin installed from the exact source shown.
 
 use super::install::installed_from;
 use super::registry::InstalledPlugin;

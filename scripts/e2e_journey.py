@@ -17,7 +17,7 @@ TMP = Path(os.environ["HERDR_MARKETPLACE_E2E_TMP"])
 CLIENT_LOG = TMP / "client.log"
 INDEX = TMP / "index.json"
 SIDEBAR_TOKEN = "herdr_marketplace_sidebar"
-FICHE_TOKEN = "herdr_marketplace_fiche"
+DETAILS_TOKEN = "herdr_marketplace_details"
 
 # `herdr pane send-keys` has no names for these keys: send their sequences.
 END = "\x1b[F"
@@ -246,79 +246,79 @@ def prove_sidebar():
     print("retry_ok", flush=True)
 
 
-def fiches(tab):
+def details_panes(tab):
     return [p for p in panes()
-            if p["tab_id"] == tab and (p.get("tokens") or {}).get(FICHE_TOKEN) == "v1"]
+            if p["tab_id"] == tab and (p.get("tokens") or {}).get(DETAILS_TOKEN) == "v1"]
 
 
 def focused():
     return next((p["pane_id"] for p in panes() if p.get("focused")), None)
 
 
-def open_fiche(sidebar, query, expected_results):
-    """Search in the sidebar, press Enter on the first result, return the fiche."""
+def open_details(sidebar, query, expected_results):
+    """Search in the sidebar, press Enter on the first result, return its details pane."""
     type_text(sidebar, query)
     wait(lambda: expected_results in read(sidebar), f"search {query!r} did not settle")
     before = {p["pane_id"] for p in panes()}
     keys(sidebar, "enter")
-    fiche = wait(lambda: next((p for p in panes() if p["pane_id"] not in before
-                               and (p.get("tokens") or {}).get(FICHE_TOKEN) == "v1"), None),
-                 f"Enter on {query!r} did not open a fiche")["pane_id"]
+    details = wait(lambda: next((p for p in panes() if p["pane_id"] not in before
+                               and (p.get("tokens") or {}).get(DETAILS_TOKEN) == "v1"), None),
+                 f"Enter on {query!r} did not open a details pane")["pane_id"]
     keys(sidebar, *["backspace"] * len(query))
-    return fiche
+    return details
 
 
-def prove_fiche():
+def prove_details():
     write_catalog(SHA_A)
     sidebar = open_sidebar()
     wait(lambda: "résultats" in read(sidebar), "the catalogue did not load")
     tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
 
-    fiche = open_fiche(sidebar, "terminal browser", "1 résultat")
-    shown = wait(lambda: "open-split" in (text := read(fiche)) and text,
+    details = open_details(sidebar, "terminal browser", "1 résultat")
+    shown = wait(lambda: "open-split" in (text := read(details)) and text,
                  "the terminal-browser README was not rendered")
     assert "zenbu-labs/terminal-browser/herdr-plugin" in shown, shown
     assert f"commit {BROWSER_SHA[:7]}" in shown, shown
     assert "terminal-browser herdr plugin" in shown, shown
     assert "herdr plugin install zenbu-labs/terminal-browser/herdr-plugin" in shown, shown
     assert "```" not in shown and "### " not in shown, shown
-    assert focused() == fiche, "the fiche did not take focus"
-    print("fiche_terminal_browser_ok", flush=True)
+    assert focused() == details, "the details pane did not take focus"
+    print("details_terminal_browser_ok", flush=True)
 
-    keys(fiche, "esc")
-    wait(lambda: not fiches(tab), "escape did not close the fiche")
+    keys(details, "esc")
+    wait(lambda: not details_panes(tab), "escape did not close the details pane")
     wait(lambda: focused() == sidebar, "focus did not return to the sidebar")
-    print("fiche_escape_ok", flush=True)
+    print("details_escape_ok", flush=True)
 
-    fiche = open_fiche(sidebar, "fixture", "2 résultats")
-    shown = wait(lambda: "[image : fixture logo]" in (text := read(fiche)) and text,
+    details = open_details(sidebar, "fixture", "2 résultats")
+    shown = wait(lambda: "[image : fixture logo]" in (text := read(details)) and text,
                  "the fixture README was not rendered")
     assert "massdo/herdr-marketplace-fixture" in shown and f"commit {SHA_A[:7]}" in shown, shown
     assert "End of the fixture README" not in shown, shown
-    type_text(fiche, END)
-    wait(lambda: "End of the fixture README, version 1.0.0." in read(fiche),
+    type_text(details, END)
+    wait(lambda: "End of the fixture README, version 1.0.0." in read(details),
          "the last README line was not reachable")
-    print("fiche_last_line_ok", flush=True)
+    print("details_last_line_ok", flush=True)
 
     type_text(sidebar, "fixture")
     wait(lambda: "2 résultats" in read(sidebar), "search fixture did not settle")
     keys(sidebar, "down", "enter")
-    alt = wait(lambda: next((p["pane_id"] for p in fiches(tab) if p["pane_id"] != fiche), None),
-               "Enter on the alt source did not open its fiche")
+    alt = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != details), None),
+               "Enter on the alt source did not open its details pane")
     shown = wait(lambda: "Pas de README.md dans alt/" in (text := read(alt)) and text,
                  "the root README fallback was not signalled")
     assert "massdo/herdr-marketplace-fixture/alt" in shown, shown
     assert "herdr-marketplace fixture" in shown, shown
-    assert [p["pane_id"] for p in fiches(tab)] == [alt], "two openings left more than one fiche"
-    print("fiche_fallback_and_single_fiche_ok", flush=True)
+    assert [p["pane_id"] for p in details_panes(tab)] == [alt], "two openings left more than one details pane"
+    print("details_fallback_and_single_pane_ok", flush=True)
 
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
-    assert "massdo/herdr-marketplace-fixture/alt" in read(alt), "the fiche lost its plugin"
+    assert "massdo/herdr-marketplace-fixture/alt" in read(alt), "the details pane lost its plugin"
     keys(alt, "esc")
-    wait(lambda: not fiches(tab), "escape did not close the fiche")
+    wait(lambda: not details_panes(tab), "escape did not close the details pane")
     wait(lambda: focused() is not None and focused() in others(), "focus did not go to a remaining pane")
-    print("fiche_outlives_sidebar_ok", flush=True)
+    print("details_outlives_sidebar_ok", flush=True)
 
 
 def registry():
@@ -341,12 +341,12 @@ def prove_install_preview():
     sidebar = open_sidebar()
     wait(lambda: "résultats" in read(sidebar), "the catalogue did not load")
     tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
-    fiche = open_fiche(sidebar, "fixture", "2 résultats")
-    wait(lambda: "[image : fixture logo]" in read(fiche), "the fixture README was not rendered")
+    details = open_details(sidebar, "fixture", "2 résultats")
+    wait(lambda: "[image : fixture logo]" in read(details), "the fixture README was not rendered")
     before = registry()
 
-    keys(fiche, "i")
-    shown = wait(lambda: "Entrée : confirmer" in (text := read(fiche)) and text,
+    keys(details, "i")
+    shown = wait(lambda: "Entrée : confirmer" in (text := read(details)) and text,
                  "i did not open the install preview")
     assert "source : massdo/herdr-marketplace-fixture" in shown, shown
     assert f"commit : {SHA_A}" in shown, shown
@@ -355,16 +355,16 @@ def prove_install_preview():
     assert "Ce plugin exécutera du code avec vos droits." in shown, shown
     print("install_preview_ok", flush=True)
 
-    keys(fiche, "esc")
-    wait(lambda: "i : installer" in read(fiche), "escape did not cancel the preview")
+    keys(details, "esc")
+    wait(lambda: "i : installer" in read(details), "escape did not cancel the preview")
     time.sleep(2)
     assert registry() == before, (before, registry())
     assert fixture_log() == "", fixture_log()
-    assert fiches(tab), "cancelling the preview closed the fiche"
+    assert details_panes(tab), "cancelling the preview closed the details pane"
     print("install_cancel_ok", flush=True)
 
-    keys(fiche, "esc")
-    wait(lambda: not fiches(tab), "escape did not close the fiche")
+    keys(details, "esc")
+    wait(lambda: not details_panes(tab), "escape did not close the details pane")
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
 
@@ -374,54 +374,54 @@ def fixture_plugin():
                  if p["plugin_id"] == "herdr-marketplace-fixture"), None)
 
 
-def fixture_fiche(sha):
-    """Sidebar on a catalogue with the fixture at `sha`, and the root fixture's fiche."""
+def fixture_details(sha):
+    """Sidebar on a catalogue with the fixture at `sha`, and the root fixture's details pane."""
     write_catalog(sha)
     sidebar = open_sidebar()
     wait(lambda: "résultats" in read(sidebar), "the catalogue did not load")
     tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
-    fiche = open_fiche(sidebar, "fixture", "2 résultats")
-    wait(lambda: f"commit {sha[:7]}" in read(fiche), "the fixture fiche did not open")
-    return sidebar, tab, fiche
+    details = open_details(sidebar, "fixture", "2 résultats")
+    wait(lambda: f"commit {sha[:7]}" in read(details), "the fixture details pane did not open")
+    return sidebar, tab, details
 
 
-def confirm_install(fiche, expected):
-    keys(fiche, "i")
-    shown = wait(lambda: "Entrée : confirmer" in (text := read(fiche)) and text,
+def confirm_install(details, expected):
+    keys(details, "i")
+    shown = wait(lambda: "Entrée : confirmer" in (text := read(details)) and text,
                  "i did not open the install preview")
     assert expected in shown, shown
-    keys(fiche, "enter")
+    keys(details, "enter")
 
 
 def close_all(tab):
-    for pane in fiches(tab):
+    for pane in details_panes(tab):
         keys(pane["pane_id"], "esc")
-    wait(lambda: not fiches(tab), "escape did not close the fiche")
+    wait(lambda: not details_panes(tab), "escape did not close the details pane")
     if with_token(SIDEBAR_TOKEN):
         toggle()
         wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
 
 
 def prove_install():
-    sidebar, tab, fiche = fixture_fiche(SHA_A)
-    confirm_install(fiche, "Installation")
-    wait(lambda: "Installation de c8268d4 réussie" in read(fiche),
+    sidebar, tab, details = fixture_details(SHA_A)
+    confirm_install(details, "Installation")
+    wait(lambda: "Installation de c8268d4 réussie" in read(details),
          "the install did not succeed", OPERATION_TIMEOUT)
     assert (*FIXTURE, "", SHA_A) in registry(), registry()
     marker = Path(fixture_plugin()["plugin_root"]) / "build-marker.txt"
     assert marker.read_text().strip() == "1.0.0", marker.read_text()
-    wait(lambda: "· installé" in read(fiche), "the fiche does not show « installé »")
+    wait(lambda: "· installé" in read(details), "the details pane does not show « installé »")
     wait(lambda: "installé · Test fixture." in read(sidebar), "the sidebar does not show « installé »")
-    print("install_from_fiche_ok", flush=True)
+    print("install_from_details_ok", flush=True)
     close_all(tab)
 
 
 def prove_switch():
     herdr("plugin", "install", "/".join(FIXTURE), "--ref", SHA_A, "--yes")
     assert (*FIXTURE, "", SHA_A) in registry(), registry()
-    sidebar, tab, fiche = fixture_fiche(SHA_B)
-    confirm_install(fiche, f"commit installé : {SHA_A}")
-    wait(lambda: "Installation de 1be1b7b réussie" in read(fiche),
+    sidebar, tab, details = fixture_details(SHA_B)
+    confirm_install(details, f"commit installé : {SHA_A}")
+    wait(lambda: "Installation de 1be1b7b réussie" in read(details),
          "the switch did not succeed", OPERATION_TIMEOUT)
     assert (*FIXTURE, "", SHA_B) in registry(), registry()
     print("switch_commit_ok", flush=True)
@@ -429,9 +429,9 @@ def prove_switch():
 
 
 def prove_failed_build():
-    sidebar, tab, fiche = fixture_fiche(SHA_C)
-    confirm_install(fiche, "Changement de commit")
-    shown = wait(lambda: "Échec de l'installation de bc4d8b8" in (text := read(fiche)) and text,
+    sidebar, tab, details = fixture_details(SHA_C)
+    confirm_install(details, "Changement de commit")
+    shown = wait(lambda: "Échec de l'installation de bc4d8b8" in (text := read(details)) and text,
                  "the failed build was not reported", OPERATION_TIMEOUT)
     assert f"Registre : installé à {SHA_B}" in shown, shown
     assert "Plugin was not installed." in shown or "plugin build failed" in shown, shown
@@ -440,36 +440,36 @@ def prove_failed_build():
     close_all(tab)
 
 
-def prove_fiche_closed_during_install():
-    sidebar, tab, fiche = fixture_fiche(SHA_A)
-    confirm_install(fiche, "Changement de commit")
-    wait(lambda: "en cours" in read(fiche), "the fiche did not show the running install")
-    keys(fiche, "esc")
-    wait(lambda: not fiches(tab), "escape did not close the fiche")
+def prove_details_closed_during_install():
+    sidebar, tab, details = fixture_details(SHA_A)
+    confirm_install(details, "Changement de commit")
+    wait(lambda: "en cours" in read(details), "the details pane did not show the running install")
+    keys(details, "esc")
+    wait(lambda: not details_panes(tab), "escape did not close the details pane")
     wait(lambda: (*FIXTURE, "", SHA_A) in registry(),
-         "the install stopped with its fiche", OPERATION_TIMEOUT)
-    fiche = open_fiche(sidebar, "fixture", "2 résultats")
-    wait(lambda: "Installation de c8268d4 réussie" in read(fiche),
-         "the reopened fiche did not show the result")
-    print("fiche_closed_during_install_ok", flush=True)
+         "the install stopped with its details pane", OPERATION_TIMEOUT)
+    details = open_details(sidebar, "fixture", "2 résultats")
+    wait(lambda: "Installation de c8268d4 réussie" in read(details),
+         "the reopened details pane did not show the result")
+    print("details_closed_during_install_ok", flush=True)
     close_all(tab)
 
 
-def remove(fiche):
-    keys(fiche, "r")
-    shown = wait(lambda: "Entrée : confirmer" in (text := read(fiche)) and text,
+def remove(details):
+    keys(details, "r")
+    shown = wait(lambda: "Entrée : confirmer" in (text := read(details)) and text,
                  "r did not ask for a confirmation")
     assert "source : massdo/herdr-marketplace-fixture" in shown, shown
-    keys(fiche, "enter")
-    wait(lambda: "Retrait réussi" in read(fiche), "the removal did not succeed", OPERATION_TIMEOUT)
+    keys(details, "enter")
+    wait(lambda: "Retrait réussi" in read(details), "the removal did not succeed", OPERATION_TIMEOUT)
 
 
 def prove_uninstall():
-    sidebar, tab, fiche = fixture_fiche(SHA_A)
-    wait(lambda: "· installé" in read(fiche), "the fiche does not show « installé »")
-    remove(fiche)
+    sidebar, tab, details = fixture_details(SHA_A)
+    wait(lambda: "· installé" in read(details), "the details pane does not show « installé »")
+    remove(details)
     assert fixture_plugin() is None, data("plugin", "list", "--json")
-    wait(lambda: "· non installé" in read(fiche), "the fiche does not show « non installé »")
+    wait(lambda: "· non installé" in read(details), "the details pane does not show « non installé »")
     wait(lambda: "installé · Test fixture." not in (text := read(sidebar)) and "Test fixture." in text,
          "the sidebar still shows « installé »")
     print("uninstall_ok", flush=True)
@@ -480,22 +480,22 @@ def prove_full_journey():
     """Two catalogues in turn: search, read, install A; read, switch to B;
     remove. The registry is checked at each step."""
     assert registry() == set(), registry()
-    sidebar, tab, fiche = fixture_fiche(SHA_A)
-    wait(lambda: "[image : fixture logo]" in read(fiche), "the README was not read")
-    confirm_install(fiche, "Installation")
-    wait(lambda: "Installation de c8268d4 réussie" in read(fiche),
+    sidebar, tab, details = fixture_details(SHA_A)
+    wait(lambda: "[image : fixture logo]" in read(details), "the README was not read")
+    confirm_install(details, "Installation")
+    wait(lambda: "Installation de c8268d4 réussie" in read(details),
          "the install did not succeed", OPERATION_TIMEOUT)
     assert registry() == {(*FIXTURE, "", SHA_A)}, registry()
     close_all(tab)
 
-    sidebar, tab, fiche = fixture_fiche(SHA_B)
-    wait(lambda: "[image : fixture logo]" in read(fiche), "the README was not read")
-    confirm_install(fiche, f"commit installé : {SHA_A}")
-    wait(lambda: "Installation de 1be1b7b réussie" in read(fiche),
+    sidebar, tab, details = fixture_details(SHA_B)
+    wait(lambda: "[image : fixture logo]" in read(details), "the README was not read")
+    confirm_install(details, f"commit installé : {SHA_A}")
+    wait(lambda: "Installation de 1be1b7b réussie" in read(details),
          "the switch did not succeed", OPERATION_TIMEOUT)
     assert registry() == {(*FIXTURE, "", SHA_B)}, registry()
 
-    remove(fiche)
+    remove(details)
     assert registry() == set(), registry()
     print("full_journey_ok", flush=True)
     close_all(tab)
@@ -504,12 +504,12 @@ def prove_full_journey():
 def main():
     check_isolation()
     prove_sidebar()
-    prove_fiche()
+    prove_details()
     prove_install_preview()
     prove_install()
     prove_switch()
     prove_failed_build()
-    prove_fiche_closed_during_install()
+    prove_details_closed_during_install()
     prove_uninstall()
     prove_full_journey()
     print("journey_ok", flush=True)

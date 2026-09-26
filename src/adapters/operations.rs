@@ -75,7 +75,7 @@ impl Operations for FsOperations {
 }
 
 /// Starts this binary with `--run-operation` in a session of its own, with no
-/// terminal: closing the fiche or the sidebar does not stop it.
+/// terminal: closing the details pane or the sidebar does not stop it.
 pub fn spawn_operation(request: &OperationRequest) -> io::Result<()> {
     let json = serde_json::to_string(request).map_err(io::Error::other)?;
     let mut command = Command::new(std::env::current_exe()?);

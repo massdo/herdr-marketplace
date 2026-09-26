@@ -6,12 +6,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use herdr_marketplace::adapters::tui::fiche::{FicheApp, FicheIntent, InstallState};
-use herdr_marketplace::adapters::tui::fiche_view;
+use herdr_marketplace::adapters::tui::details::{DetailsApp, DetailsIntent, InstallState};
+use herdr_marketplace::adapters::tui::details_view;
 use herdr_marketplace::application::ports::{FetchError, Fetcher};
 use herdr_marketplace::application::prepare_install::{InstallPreview, Prepared, prepare_install};
 use herdr_marketplace::domain::compat::Platform;
-use herdr_marketplace::domain::fiche::FicheTarget;
+use herdr_marketplace::domain::details::DetailsTarget;
 use herdr_marketplace::domain::install::{Plan, install_args};
 use herdr_marketplace::domain::source::PluginSource;
 use ratatui::Terminal;
@@ -89,8 +89,8 @@ fn manifest_url(subdir: &str, sha: &str) -> String {
     format!("{RAW}/massdo/herdr-marketplace-fixture/{sha}/{folder}herdr-plugin.toml")
 }
 
-fn target(subdir: &str) -> FicheTarget {
-    FicheTarget {
+fn target(subdir: &str) -> DetailsTarget {
+    DetailsTarget {
         source: PluginSource {
             owner: "massdo".into(),
             repo: "herdr-marketplace-fixture".into(),
@@ -105,7 +105,7 @@ fn target(subdir: &str) -> FicheTarget {
     }
 }
 
-fn prepare(web: &FakeWeb, installed: Vec<serde_json::Value>, target: &FicheTarget) -> Prepared {
+fn prepare(web: &FakeWeb, installed: Vec<serde_json::Value>, target: &DetailsTarget) -> Prepared {
     prepare_install(
         web,
         &FakeHerdr::with_registry(installed),
@@ -163,7 +163,7 @@ fn the_request_is_herdr_plugin_install_with_separate_arguments() {
 }
 
 #[test]
-fn a_root_plugin_preview_reads_the_manifest_at_the_fiche_commit() {
+fn a_root_plugin_preview_reads_the_manifest_at_the_commit_shown() {
     let web = FakeWeb::fixture();
     let preview = preview(prepare(
         &web,
@@ -373,12 +373,12 @@ fn trapped_text_in_the_manifest_never_reaches_the_terminal() {
         "the manifest keeps its text"
     );
 
-    let mut app = FicheApp::new(target(""));
+    let mut app = DetailsApp::new(target(""));
     app.handle_key(key(KeyCode::Char('i')));
     app.install_prepared(1, Prepared::Preview(Box::new(preview)));
     let mut terminal = Terminal::new(TestBackend::new(90, 40)).unwrap();
     terminal
-        .draw(|frame| fiche_view::render(frame, &app))
+        .draw(|frame| details_view::render(frame, &app))
         .unwrap();
     let screen: String = terminal
         .backend()
@@ -395,12 +395,12 @@ fn trapped_text_in_the_manifest_never_reaches_the_terminal() {
 #[test]
 fn the_preview_shows_source_commit_commands_and_warnings() {
     let preview = preview(prepare(&FakeWeb::fixture(), vec![], &target("")));
-    let mut app = FicheApp::new(target(""));
+    let mut app = DetailsApp::new(target(""));
     app.handle_key(key(KeyCode::Char('i')));
     app.install_prepared(1, Prepared::Preview(Box::new(preview)));
     let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
     terminal
-        .draw(|frame| fiche_view::render(frame, &app))
+        .draw(|frame| details_view::render(frame, &app))
         .unwrap();
     let screen: Vec<String> = terminal
         .backend()
@@ -434,18 +434,18 @@ fn the_preview_shows_source_commit_commands_and_warnings() {
 #[test]
 fn nothing_is_requested_without_a_second_explicit_key() {
     let preview = preview(prepare(&FakeWeb::fixture(), vec![], &target("")));
-    let mut app = FicheApp::new(target(""));
+    let mut app = DetailsApp::new(target(""));
     app.intents.clear();
 
     app.handle_key(key(KeyCode::Char('i')));
-    assert_eq!(app.intents, [FicheIntent::PrepareInstall(1)]);
+    assert_eq!(app.intents, [DetailsIntent::PrepareInstall(1)]);
     app.intents.clear();
     app.install_prepared(1, Prepared::Preview(Box::new(preview.clone())));
     assert!(app.showing_preview());
 
     assert!(
         !app.handle_key(key(KeyCode::Esc)),
-        "escape cancels, the fiche stays"
+        "escape cancels, the details pane stays"
     );
     assert_eq!(app.install, InstallState::Idle);
     assert!(app.intents.is_empty(), "cancelling launches nothing");
@@ -456,19 +456,19 @@ fn nothing_is_requested_without_a_second_explicit_key() {
     app.install_prepared(2, Prepared::Preview(Box::new(preview.clone())));
     app.intents.clear();
     app.handle_key(key(KeyCode::Enter));
-    assert_eq!(app.intents, [FicheIntent::Install(preview.args)]);
+    assert_eq!(app.intents, [DetailsIntent::Install(preview.args)]);
 }
 
 #[test]
 fn a_plugin_without_readme_stays_installable() {
-    let mut app = FicheApp::new(target(""));
+    let mut app = DetailsApp::new(target(""));
     app.readme_loaded(
         1,
         Ok(herdr_marketplace::application::load_readme::Readme::NotFound),
     );
     app.intents.clear();
     app.handle_key(key(KeyCode::Char('i')));
-    assert_eq!(app.intents, [FicheIntent::PrepareInstall(1)]);
+    assert_eq!(app.intents, [DetailsIntent::PrepareInstall(1)]);
     let preview = preview(prepare(&FakeWeb::fixture(), vec![], &target("")));
     app.install_prepared(1, Prepared::Preview(Box::new(preview)));
     assert!(app.showing_preview());

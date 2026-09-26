@@ -1,5 +1,5 @@
 # herdr-marketplace: search, read and install Herdr plugins from a sidebar.
-# One binary: the sidebar and fiche panes, plus a --toggle action. Linked
+# One binary: the sidebar and details panes, plus a --toggle action. Linked
 # from a local checkout built with `sh scripts/build.sh`.
 
 id = "herdr-marketplace"
@@ -16,10 +16,10 @@ placement = "split"
 command = ["./target/release/herdr-marketplace"]
 
 [[panes]]
-id = "fiche"
-title = "fiche"
+id = "details"
+title = "details"
 placement = "split"
-command = ["./target/release/herdr-marketplace", "--fiche"]
+command = ["./target/release/herdr-marketplace", "--details"]
 
 [[actions]]
 id = "toggle"

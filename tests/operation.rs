@@ -7,13 +7,13 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use herdr_marketplace::adapters::operations::FsOperations;
-use herdr_marketplace::adapters::tui::fiche::{FicheApp, FicheIntent};
-use herdr_marketplace::adapters::tui::fiche_view;
+use herdr_marketplace::adapters::tui::details::{DetailsApp, DetailsIntent};
+use herdr_marketplace::adapters::tui::details_view;
 use herdr_marketplace::application::ports::{CommandOutput, HerdrCli, Operations};
 use herdr_marketplace::application::run_operation::{
     current_operation, operation_running, run_operation,
 };
-use herdr_marketplace::domain::fiche::FicheTarget;
+use herdr_marketplace::domain::details::DetailsTarget;
 use herdr_marketplace::domain::install::install_args;
 use herdr_marketplace::domain::operation::{
     OperationKind, OperationRecord, OperationRequest, Status, record_file_name,
@@ -103,10 +103,10 @@ fn installed_at(sha: &str) -> Result<String, String> {
     )]))
 }
 
-fn fiche_text(app: &FicheApp) -> String {
+fn details_text(app: &DetailsApp) -> String {
     let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
     terminal
-        .draw(|frame| fiche_view::render(frame, app))
+        .draw(|frame| details_view::render(frame, app))
         .unwrap();
     terminal
         .backend()
@@ -118,8 +118,8 @@ fn fiche_text(app: &FicheApp) -> String {
         .join("\n")
 }
 
-fn target() -> FicheTarget {
-    FicheTarget {
+fn target() -> DetailsTarget {
+    DetailsTarget {
         source: source(),
         commit: SHA_A.into(),
         id: "herdr-marketplace-fixture".into(),
@@ -185,9 +185,9 @@ fn a_non_zero_code_is_a_failure_with_herdr_output_and_the_registry_state() {
         Some(format!("installé à {SHA_B}").as_str())
     );
 
-    let mut app = FicheApp::new(target());
+    let mut app = DetailsApp::new(target());
     app.operation_seen(Some(record));
-    let text = fiche_text(&app);
+    let text = details_text(&app);
     assert!(
         text.contains("Échec de l'installation de c8268d4 (code 1)"),
         "{text}"
@@ -230,7 +230,7 @@ fn a_second_request_during_an_operation_is_refused() {
 }
 
 #[test]
-fn a_fiche_probing_the_lock_does_not_refuse_an_operation() {
+fn a_details_pane_probing_the_lock_does_not_refuse_an_operation() {
     let dir = state_dir();
     let probe = FsOperations::new(dir.clone())
         .try_begin()
@@ -247,7 +247,7 @@ fn a_fiche_probing_the_lock_does_not_refuse_an_operation() {
 }
 
 #[test]
-fn a_new_fiche_reads_the_kept_result_again() {
+fn a_new_details_pane_reads_the_kept_result_again() {
     let dir = state_dir();
     let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
     run_operation(&herdr, &FsOperations::new(dir.clone()), &request(SHA_A));
@@ -257,12 +257,12 @@ fn a_new_fiche_reads_the_kept_result_again() {
     let record = current_operation(&FsOperations::new(dir), &upper).expect("kept result");
     assert_eq!(record.status, Status::Succeeded);
 
-    let mut app = FicheApp::new(target());
+    let mut app = DetailsApp::new(target());
     app.operation_seen(Some(record));
     assert!(
-        fiche_text(&app).contains("Installation de c8268d4 réussie"),
+        details_text(&app).contains("Installation de c8268d4 réussie"),
         "{}",
-        fiche_text(&app)
+        details_text(&app)
     );
 }
 
@@ -277,24 +277,24 @@ fn a_result_left_running_by_a_dead_operation_is_unconfirmed() {
 }
 
 #[test]
-fn the_fiche_shows_the_operation_in_progress_then_reads_the_registry() {
-    let mut app = FicheApp::new(target());
+fn the_details_pane_shows_the_operation_in_progress_then_reads_the_registry() {
+    let mut app = DetailsApp::new(target());
     app.intents.clear();
     app.operation_launched("op-1".into(), OperationKind::Install);
     app.operation_seen(None);
-    assert!(fiche_text(&app).contains("Installation en cours…"));
+    assert!(details_text(&app).contains("Installation en cours…"));
     assert!(app.intents.is_empty());
 
     let mut running = OperationRecord::running(&request(SHA_A));
     running.request.id = "op-1".into();
     app.operation_seen(Some(running.clone()));
-    assert!(fiche_text(&app).contains("en cours"));
+    assert!(details_text(&app).contains("en cours"));
     assert!(app.intents.is_empty());
 
     let mut done = running;
     done.status = Status::Succeeded;
     app.operation_seen(Some(done));
-    assert_eq!(app.intents, [FicheIntent::ReadRegistry(2)]);
+    assert_eq!(app.intents, [DetailsIntent::ReadRegistry(2)]);
 }
 
 #[test]

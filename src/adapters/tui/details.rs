@@ -6,11 +6,11 @@ use super::preview::preview_lines;
 use crate::application::load_readme::Readme;
 use crate::application::prepare_install::{InstallPreview, Prepared};
 use crate::domain::compat::Platform;
-use crate::domain::fiche::FicheTarget;
+use crate::domain::details::DetailsTarget;
 use crate::domain::operation::{OperationKind, OperationRecord, Status};
 use crate::domain::uninstall::RemovalPlan;
 
-/// The fiche's source as the registry shows it.
+/// The source of the details pane as the registry shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstalledView {
     Unknown,
@@ -51,7 +51,7 @@ pub enum RemovalState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FicheIntent {
+pub enum DetailsIntent {
     /// Load the README; the answer carries this request number.
     LoadReadme(u64),
     /// Build the install preview; the answer carries this request number.
@@ -66,11 +66,11 @@ pub enum FicheIntent {
     Uninstall(Vec<String>),
 }
 
-/// Fiche state: the plugin and commit received at opening, its README, and
+/// Details pane state: the plugin and commit received at opening, its README, and
 /// the install or removal request.
 #[derive(Debug, Clone)]
-pub struct FicheApp {
-    pub target: FicheTarget,
+pub struct DetailsApp {
+    pub target: DetailsTarget,
     pub readme: ReadmeState,
     /// Number of the latest README request; older answers are dropped.
     pub request: u64,
@@ -92,15 +92,15 @@ pub struct FicheApp {
     pub registry_request: u64,
     /// Latest kept result of an operation on this source.
     pub operation: Option<OperationRecord>,
-    /// Operation launched from this fiche whose result has not appeared yet.
+    /// Operation launched from this pane whose result has not appeared yet.
     pub launched: Option<(String, OperationKind)>,
     /// Why the last confirmation launched nothing.
     pub notice: Option<String>,
-    pub intents: Vec<FicheIntent>,
+    pub intents: Vec<DetailsIntent>,
 }
 
-impl FicheApp {
-    pub fn new(target: FicheTarget) -> Self {
+impl DetailsApp {
+    pub fn new(target: DetailsTarget) -> Self {
         Self {
             target,
             readme: ReadmeState::Loading,
@@ -121,7 +121,7 @@ impl FicheApp {
             operation: None,
             launched: None,
             notice: None,
-            intents: vec![FicheIntent::LoadReadme(1), FicheIntent::ReadRegistry(1)],
+            intents: vec![DetailsIntent::LoadReadme(1), DetailsIntent::ReadRegistry(1)],
         }
     }
 
@@ -143,7 +143,7 @@ impl FicheApp {
         if was_running && !self.operation_running() {
             self.registry_request += 1;
             self.intents
-                .push(FicheIntent::ReadRegistry(self.registry_request));
+                .push(DetailsIntent::ReadRegistry(self.registry_request));
         }
     }
 
@@ -209,7 +209,7 @@ impl FicheApp {
         self.scroll_by(0);
     }
 
-    /// Returns true when the fiche should close.
+    /// Returns true when the details pane should close.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return key.code == KeyCode::Char('c');
@@ -242,16 +242,17 @@ impl FicheApp {
     fn enter(&mut self) {
         if let InstallState::Preview(preview) = &self.install {
             self.intents
-                .push(FicheIntent::Install(preview.args.clone()));
+                .push(DetailsIntent::Install(preview.args.clone()));
             self.leave_install();
         } else if let RemovalState::Confirm(plan) = &self.removal {
-            self.intents.push(FicheIntent::Uninstall(plan.args.clone()));
+            self.intents
+                .push(DetailsIntent::Uninstall(plan.args.clone()));
             self.removal = RemovalState::Idle;
         } else if matches!(self.readme, ReadmeState::NetworkError(_)) {
             self.request += 1;
             self.readme = ReadmeState::Loading;
             self.lines.clear();
-            self.intents.push(FicheIntent::LoadReadme(self.request));
+            self.intents.push(DetailsIntent::LoadReadme(self.request));
         }
     }
 
@@ -266,7 +267,7 @@ impl FicheApp {
         self.install_request += 1;
         self.install = InstallState::Preparing;
         self.intents
-            .push(FicheIntent::PrepareInstall(self.install_request));
+            .push(DetailsIntent::PrepareInstall(self.install_request));
     }
 
     /// `r` asks for the removal; a second key, Enter, confirms it.
@@ -281,7 +282,7 @@ impl FicheApp {
         self.removal_request += 1;
         self.removal = RemovalState::Preparing;
         self.intents
-            .push(FicheIntent::PrepareRemoval(self.removal_request));
+            .push(DetailsIntent::PrepareRemoval(self.removal_request));
     }
 
     /// Escape out of the preview launches nothing.

@@ -1,4 +1,4 @@
-//! README fiche: loading, Markdown rendering, keyboard and pane handling,
+//! README details pane: loading, Markdown rendering, keyboard and pane handling,
 //! offline.
 
 mod support;
@@ -7,18 +7,18 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use herdr_marketplace::adapters::tui::fiche::{FicheApp, FicheIntent, ReadmeState};
-use herdr_marketplace::adapters::tui::{fiche_view, markdown};
+use herdr_marketplace::adapters::tui::details::{DetailsApp, DetailsIntent, ReadmeState};
+use herdr_marketplace::adapters::tui::{details_view, markdown};
 use herdr_marketplace::application::load_readme::{Readme, load_readme};
-use herdr_marketplace::application::open_fiche::{close_fiche, open_fiche};
+use herdr_marketplace::application::open_details::{close_details, open_details};
 use herdr_marketplace::application::ports::{FetchError, Fetcher};
 use herdr_marketplace::domain::compat::Platform;
-use herdr_marketplace::domain::fiche::FicheTarget;
+use herdr_marketplace::domain::details::DetailsTarget;
 use herdr_marketplace::domain::ids::PaneId;
 use herdr_marketplace::domain::listing::build_listing;
 use herdr_marketplace::domain::registry::parse_registry;
 use herdr_marketplace::domain::source::PluginSource;
-use herdr_marketplace::domain::{FICHE_ENV, FICHE_TOKEN_KEY, SIDEBAR_TOKEN_KEY};
+use herdr_marketplace::domain::{DETAILS_ENV, DETAILS_TOKEN_KEY, SIDEBAR_TOKEN_KEY};
 use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
@@ -80,8 +80,8 @@ fn source(subdir: &str) -> PluginSource {
     }
 }
 
-fn target(subdir: &str) -> FicheTarget {
-    FicheTarget {
+fn target(subdir: &str) -> DetailsTarget {
+    DetailsTarget {
         source: source(subdir),
         commit: SHA_A.into(),
         id: "herdr-marketplace-fixture".into(),
@@ -174,10 +174,10 @@ fn a_missing_readme_is_not_found_and_differs_from_a_network_error() {
 
 #[test]
 fn a_network_error_can_be_retried_and_older_answers_are_dropped() {
-    let mut app = FicheApp::new(target(""));
+    let mut app = DetailsApp::new(target(""));
     assert_eq!(
         app.intents,
-        [FicheIntent::LoadReadme(1), FicheIntent::ReadRegistry(1)]
+        [DetailsIntent::LoadReadme(1), DetailsIntent::ReadRegistry(1)]
     );
     app.intents.clear();
     app.readme_loaded(1, Err("connexion refusée".into()));
@@ -185,7 +185,7 @@ fn a_network_error_can_be_retried_and_older_answers_are_dropped() {
 
     app.handle_key(key(KeyCode::Enter));
     assert_eq!(app.readme, ReadmeState::Loading);
-    assert_eq!(app.intents, [FicheIntent::LoadReadme(2)]);
+    assert_eq!(app.intents, [DetailsIntent::LoadReadme(2)]);
 
     app.readme_loaded(
         1,
@@ -208,7 +208,7 @@ fn a_network_error_can_be_retried_and_older_answers_are_dropped() {
 #[test]
 fn the_whole_readme_is_reachable_with_the_keyboard() {
     let readme: String = (1..=60).map(|index| format!("Line {index}.\n\n")).collect();
-    let mut app = FicheApp::new(target(""));
+    let mut app = DetailsApp::new(target(""));
     app.set_viewport(40, 10);
     app.readme_loaded(
         1,
@@ -234,12 +234,15 @@ fn the_whole_readme_is_reachable_with_the_keyboard() {
         app.handle_key(key(KeyCode::Down));
     }
     assert_eq!(app.scroll, last - 10);
-    assert!(app.handle_key(key(KeyCode::Esc)), "escape closes the fiche");
+    assert!(
+        app.handle_key(key(KeyCode::Esc)),
+        "escape closes the details pane"
+    );
 }
 
 #[test]
 fn the_header_shows_identity_and_a_short_sha_with_the_full_one_on_demand() {
-    let mut app = FicheApp::new(target("alt"));
+    let mut app = DetailsApp::new(target("alt"));
     app.readme_loaded(
         1,
         Ok(Readme::Found {
@@ -247,10 +250,10 @@ fn the_header_shows_identity_and_a_short_sha_with_the_full_one_on_demand() {
             fallback: true,
         }),
     );
-    let screen = |app: &FicheApp| {
+    let screen = |app: &DetailsApp| {
         let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
         terminal
-            .draw(|frame| fiche_view::render(frame, app))
+            .draw(|frame| details_view::render(frame, app))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         buffer
@@ -414,7 +417,7 @@ const TRAPPED: &str = "# Trap\u{1b}[2J\n\nred \u{1b}[31mtext\u{1b}[0m, title \u{
 
 #[test]
 fn control_sequences_of_a_readme_never_reach_the_terminal() {
-    let mut app = FicheApp::new(target(""));
+    let mut app = DetailsApp::new(target(""));
     app.readme_loaded(
         1,
         Ok(Readme::Found {
@@ -424,7 +427,9 @@ fn control_sequences_of_a_readme_never_reach_the_terminal() {
     );
 
     let mut cells = Terminal::new(TestBackend::new(80, 24)).unwrap();
-    cells.draw(|frame| fiche_view::render(frame, &app)).unwrap();
+    cells
+        .draw(|frame| details_view::render(frame, &app))
+        .unwrap();
     let buffer = cells.backend().buffer().clone();
     let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
     assert!(!screen.chars().any(char::is_control), "{screen:?}");
@@ -438,7 +443,9 @@ fn control_sequences_of_a_readme_never_reach_the_terminal() {
         },
     )
     .unwrap();
-    bytes.draw(|frame| fiche_view::render(frame, &app)).unwrap();
+    bytes
+        .draw(|frame| details_view::render(frame, &app))
+        .unwrap();
     let written = String::from_utf8_lossy(&recorder.0.borrow()).into_owned();
     assert!(written.contains("PWNED"), "the text itself stays visible");
     for forbidden in [
@@ -464,26 +471,26 @@ fn opening_b_while_a_is_loading_never_shows_a_under_b() {
     let herdr = FakePanes::new(vec![
         pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
         pane("w1:work", "w1:t1", None),
-        pane("w1:fiche-a", "w1:t1", Some(FICHE_TOKEN_KEY)),
-        pane("w1:fiche-other-tab", "w1:t2", Some(FICHE_TOKEN_KEY)),
+        pane("w1:details-a", "w1:t1", Some(DETAILS_TOKEN_KEY)),
+        pane("w1:details-other-tab", "w1:t2", Some(DETAILS_TOKEN_KEY)),
     ]);
     let b = target("alt");
 
-    open_fiche(&herdr, &PaneId("w1:side".into()), &b).unwrap();
+    open_details(&herdr, &PaneId("w1:side".into()), &b).unwrap();
 
     assert_eq!(
         *herdr.calls.borrow(),
         [
-            "close w1:fiche-a",
-            "open fiche next to w1:work",
-            "identity w1:new herdr_marketplace_fiche",
+            "close w1:details-a",
+            "open details next to w1:work",
+            "identity w1:new herdr_marketplace_details",
             "resize w1:new left",
             "resize w1:new right",
         ]
     );
     let opened = herdr.opened.borrow();
     assert!(opened[0].focus);
-    let handed: FicheTarget = serde_json::from_str(&opened[0].env[FICHE_ENV]).unwrap();
+    let handed: DetailsTarget = serde_json::from_str(&opened[0].env[DETAILS_ENV]).unwrap();
     assert_eq!(handed, b, "B's pane only ever knows B");
 }
 
@@ -492,18 +499,18 @@ fn escape_returns_focus_to_the_sidebar_or_else_to_a_remaining_pane() {
     let herdr = FakePanes::new(vec![
         pane("w1:work", "w1:t1", None),
         pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
-        pane("w1:fiche", "w1:t1", Some(FICHE_TOKEN_KEY)),
+        pane("w1:details", "w1:t1", Some(DETAILS_TOKEN_KEY)),
     ]);
-    close_fiche(&herdr, &PaneId("w1:fiche".into())).unwrap();
-    assert_eq!(*herdr.calls.borrow(), ["focus w1:side", "close w1:fiche"]);
+    close_details(&herdr, &PaneId("w1:details".into())).unwrap();
+    assert_eq!(*herdr.calls.borrow(), ["focus w1:side", "close w1:details"]);
 
     let herdr = FakePanes::new(vec![
         pane("w1:other-tab", "w1:t2", None),
         pane("w1:work", "w1:t1", None),
-        pane("w1:fiche", "w1:t1", Some(FICHE_TOKEN_KEY)),
+        pane("w1:details", "w1:t1", Some(DETAILS_TOKEN_KEY)),
     ]);
-    close_fiche(&herdr, &PaneId("w1:fiche".into())).unwrap();
-    assert_eq!(*herdr.calls.borrow(), ["focus w1:work", "close w1:fiche"]);
+    close_details(&herdr, &PaneId("w1:details".into())).unwrap();
+    assert_eq!(*herdr.calls.borrow(), ["focus w1:work", "close w1:details"]);
 }
 
 #[test]
@@ -530,10 +537,13 @@ fn an_installed_plugin_that_is_incompatible_is_read_at_its_installed_commit() {
         Platform::Macos,
         HERDR,
     );
-    let fiche = FicheTarget::from_row(&listing.rows[0]);
-    assert_eq!(fiche.commit, SHA_B, "installed commit, not the indexed one");
-    assert_eq!(fiche.version.as_deref(), Some("0.9.0"));
-    assert!(!fiche.compatible);
+    let details = DetailsTarget::from_row(&listing.rows[0]);
+    assert_eq!(
+        details.commit, SHA_B,
+        "installed commit, not the indexed one"
+    );
+    assert_eq!(details.version.as_deref(), Some("0.9.0"));
+    assert!(!details.compatible);
 
     let listing = build_listing(
         &catalog(vec![repo(
@@ -546,5 +556,5 @@ fn an_installed_plugin_that_is_incompatible_is_read_at_its_installed_commit() {
         Platform::Macos,
         HERDR,
     );
-    assert_eq!(FicheTarget::from_row(&listing.rows[0]).commit, SHA_A);
+    assert_eq!(DetailsTarget::from_row(&listing.rows[0]).commit, SHA_A);
 }

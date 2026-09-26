@@ -7,12 +7,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use herdr_marketplace::adapters::operations::FsOperations;
-use herdr_marketplace::adapters::tui::fiche::{FicheApp, FicheIntent, RemovalState};
-use herdr_marketplace::adapters::tui::fiche_view;
+use herdr_marketplace::adapters::tui::details::{DetailsApp, DetailsIntent, RemovalState};
+use herdr_marketplace::adapters::tui::details_view;
 use herdr_marketplace::application::ports::{CommandOutput, HerdrCli};
 use herdr_marketplace::application::prepare_removal::prepare_removal;
 use herdr_marketplace::application::run_operation::run_operation;
-use herdr_marketplace::domain::fiche::FicheTarget;
+use herdr_marketplace::domain::details::DetailsTarget;
 use herdr_marketplace::domain::operation::{OperationKind, OperationRequest, Status};
 use herdr_marketplace::domain::registry::parse_registry;
 use herdr_marketplace::domain::source::PluginSource;
@@ -99,8 +99,8 @@ fn removal(
     run_operation(&herdr, &FsOperations::new(dir), &request)
 }
 
-fn target(in_catalog: bool, compatible: bool) -> FicheTarget {
-    FicheTarget {
+fn target(in_catalog: bool, compatible: bool) -> DetailsTarget {
+    DetailsTarget {
         source: source(""),
         commit: SHA_A.into(),
         id: "herdr-marketplace-fixture".into(),
@@ -115,10 +115,10 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
-fn screen(app: &FicheApp) -> String {
+fn screen(app: &DetailsApp) -> String {
     let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
     terminal
-        .draw(|frame| fiche_view::render(frame, app))
+        .draw(|frame| details_view::render(frame, app))
         .unwrap();
     terminal
         .backend()
@@ -186,10 +186,10 @@ fn an_off_catalogue_or_incompatible_plugin_can_be_removed() {
         FakeHerdr::with_registry(vec![fixture(None, "massdo", "herdr-marketplace-fixture")]);
     let plan = prepare_removal(&herdr, &source("")).unwrap();
 
-    let mut app = FicheApp::new(target(false, false));
+    let mut app = DetailsApp::new(target(false, false));
     app.intents.clear();
     app.handle_key(key(KeyCode::Char('r')));
-    assert_eq!(app.intents, [FicheIntent::PrepareRemoval(1)]);
+    assert_eq!(app.intents, [DetailsIntent::PrepareRemoval(1)]);
     app.removal_prepared(1, Ok(plan));
     assert!(matches!(app.removal, RemovalState::Confirm(_)));
 }
@@ -201,7 +201,7 @@ fn a_removal_needs_a_second_explicit_key() {
         &source(""),
     )
     .unwrap();
-    let mut app = FicheApp::new(target(true, true));
+    let mut app = DetailsApp::new(target(true, true));
     app.intents.clear();
     app.handle_key(key(KeyCode::Char('r')));
     app.removal_prepared(1, Ok(plan.clone()));
@@ -219,7 +219,7 @@ fn a_removal_needs_a_second_explicit_key() {
     app.intents.clear();
     assert!(
         !app.handle_key(key(KeyCode::Esc)),
-        "escape cancels, the fiche stays"
+        "escape cancels, the details pane stays"
     );
     assert_eq!(app.removal, RemovalState::Idle);
     assert!(app.intents.is_empty(), "cancelling removes nothing");
@@ -228,7 +228,7 @@ fn a_removal_needs_a_second_explicit_key() {
     app.removal_prepared(2, Ok(plan.clone()));
     app.intents.clear();
     app.handle_key(key(KeyCode::Enter));
-    assert_eq!(app.intents, [FicheIntent::Uninstall(plan.args)]);
+    assert_eq!(app.intents, [DetailsIntent::Uninstall(plan.args)]);
 }
 
 #[test]
@@ -259,7 +259,7 @@ fn a_failed_removal_shows_herdr_output_and_the_registry_state() {
         )])),
     );
     assert_eq!(failed.status, Status::Failed);
-    let mut app = FicheApp::new(target(true, true));
+    let mut app = DetailsApp::new(target(true, true));
     app.operation_seen(Some(failed));
     let shown = screen(&app);
     assert!(shown.contains("Échec du retrait (code 1)"), "{shown}");

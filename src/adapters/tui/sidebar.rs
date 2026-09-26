@@ -11,7 +11,7 @@ use crate::domain::source::PluginSource;
 pub enum Intent {
     /// Load the index and the registry in the background.
     Load,
-    /// Open the fiche of this row.
+    /// Open the details pane of this row.
     Open(Box<Row>),
 }
 
@@ -37,7 +37,7 @@ pub struct SidebarApp {
     /// Rows the list area can show.
     pub page: usize,
     pub intents: Vec<Intent>,
-    /// Why the last fiche did not open.
+    /// Why the last details pane did not open.
     pub notice: Option<String>,
 }
 

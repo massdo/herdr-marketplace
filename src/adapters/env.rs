@@ -3,11 +3,11 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use crate::domain::details::DetailsTarget;
 use crate::domain::error::AppError;
-use crate::domain::fiche::FicheTarget;
 use crate::domain::ids::{PaneId, TabId, WorkspaceId};
 use crate::domain::pane::OriginContext;
-use crate::domain::{DEFAULT_INDEX_URL, FICHE_ENV, INDEX_URL_ENV, PLUGIN_ID};
+use crate::domain::{DEFAULT_INDEX_URL, DETAILS_ENV, INDEX_URL_ENV, PLUGIN_ID};
 
 /// Values read once at process start, then passed as ordinary data.
 #[derive(Debug, Clone)]
@@ -83,13 +83,13 @@ fn state_dir() -> PathBuf {
         .join(PLUGIN_ID)
 }
 
-/// Plugin and commit handed to a fiche pane by the sidebar.
-pub fn fiche_target() -> Result<FicheTarget, AppError> {
-    let raw = env_string(FICHE_ENV).ok_or_else(|| AppError::Io {
-        message: format!("{FICHE_ENV} absent : la fiche s'ouvre depuis la sidebar"),
+/// Plugin and commit handed to a details pane by the sidebar.
+pub fn details_target() -> Result<DetailsTarget, AppError> {
+    let raw = env_string(DETAILS_ENV).ok_or_else(|| AppError::Io {
+        message: format!("{DETAILS_ENV} absent : la fiche s'ouvre depuis la sidebar"),
     })?;
     serde_json::from_str(&raw).map_err(|error| AppError::Io {
-        message: format!("{FICHE_ENV} illisible : {error}"),
+        message: format!("{DETAILS_ENV} illisible : {error}"),
     })
 }
 

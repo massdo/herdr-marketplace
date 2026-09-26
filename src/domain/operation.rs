@@ -1,4 +1,4 @@
-//! Install and removal operations run outside the fiche, and their kept
+//! Install and removal operations run outside the details pane, and their kept
 //! results.
 
 use serde::{Deserialize, Serialize};
@@ -20,7 +20,8 @@ pub struct OperationRequest {
     /// Tells this operation's result from an older one of the same source.
     pub id: String,
     pub kind: OperationKind,
-    /// The fiche's source; the arguments may spell it as the registry does.
+    /// The source shown in the details pane; the arguments may spell it as the
+    /// registry does.
     pub source: PluginSource,
     pub commit: String,
     /// Arguments of `herdr`.

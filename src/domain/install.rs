@@ -2,7 +2,7 @@
 //! Herdr command a confirmed request becomes.
 
 use super::compat::{Platform, is_compatible};
-use super::fiche::FicheTarget;
+use super::details::DetailsTarget;
 use super::index::is_full_sha;
 use super::manifest::Manifest;
 use super::registry::{InstalledPlugin, InstalledSource};
@@ -13,7 +13,7 @@ use super::version::Version;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Plan {
     Install,
-    /// The same source is installed at `from`: move it to the fiche's commit.
+    /// The same source is installed at `from`: move it to the commit shown.
     Switch {
         from: String,
     },
@@ -33,7 +33,7 @@ pub fn install_args(source: &PluginSource, commit: &str) -> Vec<String> {
 }
 
 /// Refusals known before reading the registry or the manifest.
-pub fn check_target(target: &FicheTarget) -> Result<(), String> {
+pub fn check_target(target: &DetailsTarget) -> Result<(), String> {
     let source = &target.source;
     let subdir_ok = source.subdir.is_empty() || source.subdir.split('/').all(is_subdir_segment);
     if !is_github_segment(&source.owner) || !is_github_segment(&source.repo) || !subdir_ok {
@@ -74,11 +74,11 @@ pub fn installed_from<'a>(
     }
 }
 
-/// Decision once the manifest has been read at the fiche's commit. Herdr
+/// Decision once the manifest has been read at the commit shown. Herdr
 /// would silently replace a plugin of the same id from another source, or
 /// refuse a locally linked one: the marketplace refuses both.
 pub fn plan(
-    target: &FicheTarget,
+    target: &DetailsTarget,
     manifest: &Manifest,
     registry: &[InstalledPlugin],
     host: Platform,

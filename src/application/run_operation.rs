@@ -47,8 +47,8 @@ pub fn run_operation<H: HerdrCli, O: Operations>(
     finish(operations, record, status, tail(&output))
 }
 
-/// Fiches probe the lock for an instant to know whether an operation runs.
-/// A short wait tells such a probe from an operation that really runs.
+/// Details panes probe the lock for an instant to know whether an operation
+/// runs. A short wait tells such a probe from an operation that really runs.
 fn begin<O: Operations>(operations: &O) -> Result<Option<O::Guard>, String> {
     for _ in 1..LOCK_ATTEMPTS {
         if let Some(guard) = operations.try_begin()? {

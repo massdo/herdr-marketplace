@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use super::listing::Row;
 use super::source::PluginSource;
 
-/// What a fiche shows, handed over when its pane opens. The fiche keeps it
+/// What a details pane shows, handed over when it opens. The pane keeps it
 /// even if the sidebar closes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FicheTarget {
+pub struct DetailsTarget {
     pub source: PluginSource,
     /// Commit whose README is shown.
     pub commit: String,
@@ -17,7 +17,7 @@ pub struct FicheTarget {
     pub compatible: bool,
 }
 
-impl FicheTarget {
+impl DetailsTarget {
     /// The indexed commit, except for a plugin installed but incompatible or
     /// off the catalogue: that one is shown at its installed commit.
     pub fn from_row(row: &Row) -> Self {
