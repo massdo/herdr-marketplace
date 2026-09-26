@@ -1,5 +1,6 @@
 pub mod details;
 pub mod details_view;
+pub mod focus;
 pub mod markdown;
 pub mod preview;
 pub mod sidebar;
@@ -11,7 +12,9 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crossterm::event::{self, Event, KeyEvent, KeyEventKind, MouseEvent};
+use crossterm::event::{
+    self, DisableFocusChange, EnableFocusChange, Event, KeyEvent, KeyEventKind, MouseEvent,
+};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -43,6 +46,7 @@ use crate::domain::source::PluginSource;
 use crate::domain::uninstall::RemovalPlan;
 
 use self::details::{DetailsApp, DetailsIntent, InstalledView};
+use self::focus::FocusClicks;
 use self::sidebar::{Intent, SidebarApp};
 
 type Screen = Terminal<CrosstermBackend<io::Stdout>>;
@@ -99,6 +103,7 @@ fn sidebar_loop(
     let operations = FsOperations::new(process.state_dir.clone());
     let mut seen_finish = operations.latest_finish();
     let mut last_check = Instant::now();
+    let mut focus = FocusClicks::default();
     loop {
         // An operation that ended since the last look: read the registry again.
         if last_check.elapsed() >= OPERATION_CHECK {
@@ -141,8 +146,11 @@ fn sidebar_loop(
         app.set_page(sidebar_view::page_rows(app, size.width, size.height));
         terminal.draw(|frame| sidebar_view::render(frame, app))?;
         match next_input()? {
-            Some(Input::Key(key)) if app.handle_key(key) => return Ok(()),
-            Some(Input::Mouse(mouse)) => app.handle_mouse(mouse, size.width, size.height),
+            Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),
+            Some((Input::Mouse(mouse), at)) if !focus.swallows(&mouse, at) => {
+                app.handle_mouse(mouse, size.width, size.height)
+            }
+            Some((Input::FocusGained, at)) => focus.focus_gained(at),
             _ => {}
         }
     }
@@ -183,6 +191,7 @@ fn details_loop(
     sender: &Sender<DetailsAnswer>,
     receiver: &Receiver<DetailsAnswer>,
 ) -> Result<(), AppError> {
+    let mut focus = FocusClicks::default();
     loop {
         for intent in std::mem::take(&mut app.intents) {
             let sender = sender.clone();
@@ -269,8 +278,11 @@ fn details_loop(
         app.set_viewport(size.width as usize, page);
         terminal.draw(|frame| details_view::render(frame, app))?;
         match next_input()? {
-            Some(Input::Key(key)) if app.handle_key(key) => return Ok(()),
-            Some(Input::Mouse(mouse)) => app.handle_mouse(mouse, size.width, size.height),
+            Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),
+            Some((Input::Mouse(mouse), at)) if !focus.swallows(&mouse, at) => {
+                app.handle_mouse(mouse, size.width, size.height)
+            }
+            Some((Input::FocusGained, at)) => focus.focus_gained(at),
             _ => {}
         }
     }
@@ -369,17 +381,21 @@ fn installed_view<H: HerdrCli>(herdr: &H, source: &PluginSource) -> InstalledVie
 enum Input {
     Key(KeyEvent),
     Mouse(MouseEvent),
+    FocusGained,
 }
 
-fn next_input() -> Result<Option<Input>, AppError> {
+/// The next input and when it was read.
+fn next_input() -> Result<Option<(Input, Instant)>, AppError> {
     if !event::poll(POLL)? {
         return Ok(None);
     }
-    match event::read()? {
-        Event::Key(key) if key.kind == KeyEventKind::Press => Ok(Some(Input::Key(key))),
-        Event::Mouse(mouse) => Ok(Some(Input::Mouse(mouse))),
-        _ => Ok(None),
-    }
+    let input = match event::read()? {
+        Event::Key(key) if key.kind == KeyEventKind::Press => Input::Key(key),
+        Event::Mouse(mouse) => Input::Mouse(mouse),
+        Event::FocusGained => Input::FocusGained,
+        _ => return Ok(None),
+    };
+    Ok(Some((input, Instant::now())))
 }
 
 /// Clicks and the wheel, in SGR encoding. Unlike crossterm's
@@ -403,12 +419,17 @@ impl Command for DisableMouse {
 fn setup() -> Result<Screen, AppError> {
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouse)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouse, EnableFocusChange)?;
     Terminal::new(CrosstermBackend::new(stdout)).map_err(AppError::from)
 }
 
 fn teardown(terminal: &mut Screen) -> io::Result<()> {
-    execute!(terminal.backend_mut(), DisableMouse, LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        DisableFocusChange,
+        DisableMouse,
+        LeaveAlternateScreen
+    )?;
     disable_raw_mode()?;
     terminal.show_cursor()?;
     Ok(())

@@ -49,7 +49,9 @@ description = "Marketplace"
 
 ## Full journey
 
-Everything works with the mouse or the keyboard.
+Everything works with the mouse or the keyboard. A click on a pane without
+the focus only gives it the focus: clicking the sidebar to type a search
+never opens a plugin.
 
 1. **Search.** The catalog loads when the sidebar opens. Type: the list
    filters on every key, over the name, id, description, owner/repo and

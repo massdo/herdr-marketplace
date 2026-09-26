@@ -346,10 +346,18 @@ def prove_details():
     wait(lambda: focused() is not None and focused() in others(), "focus did not go to a remaining pane")
     print("details_outlives_sidebar_ok", flush=True)
 
-    # One click on a plugin of the sidebar opens its details, as in VS Code.
+    # A click on the sidebar without the focus only focuses it, so that a
+    # search can be typed; then one click on a plugin opens its details.
     sidebar = open_sidebar()
     wait(lambda: "in catalog" in read(sidebar), "the catalogue did not load")
+    herdr("pane", "focus", "--pane", sidebar, "--direction", "right")
+    wait(lambda: focused() != sidebar, "the focus did not leave the sidebar")
     before = {p["pane_id"] for p in panes()}
+    click_text(sidebar, "Terminal Browser")
+    wait(lambda: focused() == sidebar, "a click did not focus the sidebar")
+    time.sleep(1)
+    assert not details_panes(tab), "the click that focused the sidebar opened a plugin"
+    print("focus_click_ok", flush=True)
     click_text(sidebar, "Terminal Browser")
     details = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] not in before), None),
                    "a click on a plugin did not open its details pane")
