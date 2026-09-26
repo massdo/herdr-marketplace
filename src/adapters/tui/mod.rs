@@ -30,12 +30,14 @@ use crate::application::open_details::{close_details, open_details};
 use crate::application::ports::{HerdrCli, HerdrPort, Operations};
 use crate::application::prepare_install::{Prepared, prepare_install};
 use crate::application::prepare_removal::prepare_removal;
-use crate::application::run_operation::{current_operation, operation_running};
+use crate::application::run_operation::current_operation;
 use crate::domain::compat::Platform;
 use crate::domain::details::DetailsTarget;
 use crate::domain::error::AppError;
 use crate::domain::install::installed_from;
-use crate::domain::operation::{OperationKind, OperationRequest};
+use crate::domain::operation::{
+    Confirmation, OperationKind, OperationRecord, OperationRequest, Status,
+};
 use crate::domain::registry::InstalledPlugin;
 use crate::domain::source::PluginSource;
 use crate::domain::uninstall::RemovalPlan;
@@ -58,6 +60,7 @@ enum DetailsAnswer {
     Install(u64, Prepared),
     Registry(u64, InstalledView),
     Removal(u64, Box<Result<RemovalPlan, String>>),
+    Operation(Box<OperationRecord>),
 }
 
 const POLL: Duration = Duration::from_millis(100);
@@ -203,11 +206,33 @@ fn details_loop(
                         let _ = sender.send(DetailsAnswer::Install(request, prepared));
                     });
                 }
-                DetailsIntent::Install(args) => {
-                    launch(app, operations, OperationKind::Install, args)
+                DetailsIntent::Install(preview) => {
+                    let confirmation = Confirmation::Install {
+                        target,
+                        manifest: Box::new(preview.manifest),
+                        plan: preview.plan,
+                    };
+                    launch(
+                        app,
+                        operations,
+                        sender,
+                        OperationKind::Install,
+                        preview.args,
+                        confirmation,
+                    )
                 }
-                DetailsIntent::Uninstall(args) => {
-                    launch(app, operations, OperationKind::Uninstall, args)
+                DetailsIntent::Uninstall(plan) => {
+                    let confirmation = Confirmation::Uninstall {
+                        installed: plan.installed,
+                    };
+                    launch(
+                        app,
+                        operations,
+                        sender,
+                        OperationKind::Uninstall,
+                        plan.args,
+                        confirmation,
+                    )
                 }
                 DetailsIntent::ReadRegistry(request) => {
                     thread::spawn(move || {
@@ -235,6 +260,7 @@ fn details_loop(
                     app.registry_read(request, installed)
                 }
                 DetailsAnswer::Removal(request, plan) => app.removal_prepared(request, *plan),
+                DetailsAnswer::Operation(record) => app.operation_finished(*record),
             }
         }
         app.operation_seen(current_operation(operations, &app.target.source));
@@ -252,11 +278,27 @@ fn details_loop(
 
 /// Starts a confirmed request outside the details pane, unless an operation
 /// runs.
-fn launch(app: &mut DetailsApp, operations: &FsOperations, kind: OperationKind, args: Vec<String>) {
-    if operation_running(operations) {
-        app.operation_refused("Another marketplace operation is running: request refused".into());
-        return;
-    }
+fn launch(
+    app: &mut DetailsApp,
+    operations: &FsOperations,
+    sender: Sender<DetailsAnswer>,
+    kind: OperationKind,
+    args: Vec<String>,
+    confirmation: Confirmation,
+) {
+    let guard = match operations.try_begin() {
+        Ok(Some(guard)) => guard,
+        Ok(None) => {
+            app.operation_refused(
+                "Another marketplace operation is running: request refused".into(),
+            );
+            return;
+        }
+        Err(error) => {
+            app.operation_refused(format!("Could not reserve the operation: {error}"));
+            return;
+        }
+    };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis())
@@ -267,9 +309,45 @@ fn launch(app: &mut DetailsApp, operations: &FsOperations, kind: OperationKind, 
         source: app.target.source.clone(),
         commit: app.target.commit.clone(),
         args,
+        confirmation: Some(confirmation),
     };
-    match spawn_operation(&request) {
-        Ok(()) => app.operation_launched(request.id, kind),
+    match std::env::current_exe().and_then(|binary| spawn_operation(&request, guard, &binary)) {
+        Ok(child) => {
+            app.operation_launched(request.id.clone(), kind);
+            thread::spawn(move || {
+                let result = child
+                    .wait_with_output()
+                    .map_err(|error| error.to_string())
+                    .and_then(|output| {
+                        serde_json::from_slice::<OperationRecord>(&output.stdout).map_err(|error| {
+                            format!("{error}: {}", String::from_utf8_lossy(&output.stderr))
+                        })
+                    })
+                    .and_then(|record| {
+                        if record.request == request {
+                            Ok(record)
+                        } else {
+                            Err("worker returned another operation's result".into())
+                        }
+                    });
+                let record = result.unwrap_or_else(|error| {
+                    let mut record = OperationRecord::running(&request);
+                    record.status = Status::Unconfirmed;
+                    record.output =
+                        "the operation stopped without reporting its result; check the registry"
+                            .into();
+                    record.persistence_error = Some(error);
+                    record.finished_unix_ms = Some(
+                        SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .map(|elapsed| elapsed.as_millis() as u64)
+                            .unwrap_or(0),
+                    );
+                    record
+                });
+                let _ = sender.send(DetailsAnswer::Operation(Box::new(record)));
+            });
+        }
         Err(error) => app.operation_refused(format!("Could not start: {error}")),
     }
 }

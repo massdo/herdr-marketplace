@@ -3,7 +3,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::install::installed_from;
+use super::details::DetailsTarget;
+use super::install::{Plan, installed_from};
+use super::manifest::Manifest;
 use super::registry::InstalledPlugin;
 use super::source::PluginSource;
 
@@ -12,6 +14,19 @@ use super::source::PluginSource;
 pub enum OperationKind {
     Install,
     Uninstall,
+}
+
+/// The state the user reviewed, checked again under the operation lock.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Confirmation {
+    Install {
+        target: DetailsTarget,
+        manifest: Box<Manifest>,
+        plan: Plan,
+    },
+    Uninstall {
+        installed: InstalledPlugin,
+    },
 }
 
 /// A confirmed request, handed to the process that runs it.
@@ -26,6 +41,9 @@ pub struct OperationRequest {
     pub commit: String,
     /// Arguments of `herdr`.
     pub args: Vec<String>,
+    /// Old result files remain readable; execution requires a confirmation.
+    #[serde(default)]
+    pub confirmation: Option<Confirmation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +69,11 @@ pub struct OperationRecord {
     /// State of the source in the registry read after the command.
     pub registry_after: Option<String>,
     pub finished_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub worker_pid: Option<u32>,
+    /// Returned to an open pane even when saving the result failed.
+    #[serde(default)]
+    pub persistence_error: Option<String>,
 }
 
 impl OperationRecord {
@@ -62,6 +85,8 @@ impl OperationRecord {
             output: String::new(),
             registry_after: None,
             finished_unix_ms: None,
+            worker_pid: None,
+            persistence_error: None,
         }
     }
 }

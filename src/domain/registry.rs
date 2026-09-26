@@ -1,10 +1,10 @@
 //! Herdr plugin registry, as printed by `herdr plugin list --json`.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::source::PluginSource;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstalledPlugin {
     pub plugin_id: String,
     pub name: String,
@@ -15,7 +15,7 @@ pub struct InstalledPlugin {
     pub source: InstalledSource,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InstalledSource {
     Local,
     /// Owner, repo and subdir exactly as Herdr recorded them.

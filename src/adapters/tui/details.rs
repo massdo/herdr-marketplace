@@ -56,14 +56,14 @@ pub enum DetailsIntent {
     LoadReadme(u64),
     /// Build the install preview; the answer carries this request number.
     PrepareInstall(u64),
-    /// Confirmed request: the arguments of `herdr`.
-    Install(Vec<String>),
+    /// Confirmed preview, including the state the user reviewed.
+    Install(Box<InstallPreview>),
     /// Read the registry; the answer carries this request number.
     ReadRegistry(u64),
     /// Find the installed plugin to remove; the answer carries this number.
     PrepareRemoval(u64),
-    /// Confirmed removal: the arguments of `herdr`.
-    Uninstall(Vec<String>),
+    /// Confirmed removal and the exact installed plugin the user reviewed.
+    Uninstall(Box<RemovalPlan>),
 }
 
 /// Details pane state: the plugin and commit received at opening, its README, and
@@ -134,6 +134,18 @@ impl DetailsApp {
     /// Latest kept result for this source, looked at on every tick. When an
     /// operation ends, the registry is read again.
     pub fn operation_seen(&mut self, record: Option<OperationRecord>) {
+        // Keep a result received directly from the worker when persistence
+        // failed. An old file must not replace it with Running again.
+        if self.operation.as_ref().is_some_and(|current| {
+            current.persistence_error.is_some()
+                && record.as_ref().is_none_or(|saved| {
+                    saved.request.id == current.request.id
+                        || (saved.status != Status::Running
+                            && saved.finished_unix_ms <= current.finished_unix_ms)
+                })
+        }) {
+            return;
+        }
         let was_running = self.operation_running();
         let launched = self.launched.as_ref().map(|(id, _)| id);
         if record.as_ref().map(|record| &record.request.id) == launched {
@@ -147,6 +159,16 @@ impl DetailsApp {
         }
     }
 
+    /// The worker exited, including before it could create a result file.
+    pub fn operation_finished(&mut self, record: OperationRecord) {
+        self.launched = None;
+        self.operation = Some(record);
+        self.scroll = 0;
+        self.registry_request += 1;
+        self.intents
+            .push(DetailsIntent::ReadRegistry(self.registry_request));
+    }
+
     pub fn operation_launched(&mut self, id: String, kind: OperationKind) {
         self.launched = Some((id, kind));
         self.notice = None;
@@ -154,6 +176,7 @@ impl DetailsApp {
 
     pub fn operation_refused(&mut self, reason: String) {
         self.notice = Some(reason);
+        self.scroll = 0;
     }
 
     pub fn operation_running(&self) -> bool {
@@ -198,6 +221,7 @@ impl DetailsApp {
             Ok(plan) => RemovalState::Confirm(Box::new(plan)),
             Err(reason) => RemovalState::Refused(reason),
         };
+        self.preview_scroll = 0;
     }
 
     pub fn set_viewport(&mut self, width: usize, page: usize) {
@@ -205,7 +229,7 @@ impl DetailsApp {
             self.width = width;
             self.render();
         }
-        self.page = page.max(1);
+        self.page = page;
         self.scroll_by(0);
     }
 
@@ -239,14 +263,19 @@ impl DetailsApp {
         matches!(self.install, InstallState::Preview(_))
     }
 
+    pub fn showing_confirmation(&self) -> bool {
+        self.showing_preview() || matches!(self.removal, RemovalState::Confirm(_))
+    }
+
     fn enter(&mut self) {
+        if self.showing_confirmation() && (self.page == 0 || self.width == 0) {
+            return;
+        }
         if let InstallState::Preview(preview) = &self.install {
-            self.intents
-                .push(DetailsIntent::Install(preview.args.clone()));
+            self.intents.push(DetailsIntent::Install(preview.clone()));
             self.leave_install();
         } else if let RemovalState::Confirm(plan) = &self.removal {
-            self.intents
-                .push(DetailsIntent::Uninstall(plan.args.clone()));
+            self.intents.push(DetailsIntent::Uninstall(plan.clone()));
             self.removal = RemovalState::Idle;
         } else if matches!(self.readme, ReadmeState::NetworkError(_)) {
             self.request += 1;
@@ -264,6 +293,7 @@ impl DetailsApp {
             return;
         }
         self.removal = RemovalState::Idle;
+        self.scroll = 0;
         self.install_request += 1;
         self.install = InstallState::Preparing;
         self.intents
@@ -279,6 +309,7 @@ impl DetailsApp {
             return;
         }
         self.leave_install();
+        self.scroll = 0;
         self.removal_request += 1;
         self.removal = RemovalState::Preparing;
         self.intents
@@ -305,10 +336,12 @@ impl DetailsApp {
     }
 
     fn scroll_by(&mut self, delta: isize) {
-        let (scroll, len) = if self.showing_preview() {
-            (&mut self.preview_scroll, self.preview.len())
+        let (prefix, content) = super::details_view::body_lines(self, self.width);
+        let len = prefix.len() + content.len();
+        let scroll = if self.showing_confirmation() {
+            &mut self.preview_scroll
         } else {
-            (&mut self.scroll, self.lines.len())
+            &mut self.scroll
         };
         let max = len.saturating_sub(self.page);
         *scroll = (*scroll as isize)

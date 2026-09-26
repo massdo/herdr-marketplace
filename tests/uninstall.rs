@@ -13,7 +13,7 @@ use herdr_marketplace::application::ports::{CommandOutput, HerdrCli};
 use herdr_marketplace::application::prepare_removal::prepare_removal;
 use herdr_marketplace::application::run_operation::run_operation;
 use herdr_marketplace::domain::details::DetailsTarget;
-use herdr_marketplace::domain::operation::{OperationKind, OperationRequest, Status};
+use herdr_marketplace::domain::operation::{Confirmation, OperationKind, OperationRequest, Status};
 use herdr_marketplace::domain::registry::parse_registry;
 use herdr_marketplace::domain::source::PluginSource;
 use herdr_marketplace::domain::uninstall::plan_removal;
@@ -88,6 +88,10 @@ fn removal(
     let request = OperationRequest {
         id: "op-removal".into(),
         kind: OperationKind::Uninstall,
+        confirmation: Some(Confirmation::Uninstall {
+            installed: installed(vec![fixture(None, "massdo", "herdr-marketplace-fixture")])
+                .remove(0),
+        }),
         source: source(""),
         commit: SHA_A.into(),
         args: vec![
@@ -225,7 +229,7 @@ fn a_removal_needs_a_second_explicit_key() {
     app.removal_prepared(2, Ok(plan.clone()));
     app.intents.clear();
     app.handle_key(key(KeyCode::Enter));
-    assert_eq!(app.intents, [DetailsIntent::Uninstall(plan.args)]);
+    assert_eq!(app.intents, [DetailsIntent::Uninstall(Box::new(plan))]);
 }
 
 #[test]
@@ -279,4 +283,70 @@ fn an_unreadable_registry_after_a_failure_is_an_unknown_state() {
         "{:?}",
         failed.registry_after
     );
+}
+
+#[test]
+fn a_removal_is_refused_if_the_installed_commit_changed_after_confirmation() {
+    let confirmed = installed(vec![fixture(None, "massdo", "herdr-marketplace-fixture")]).remove(0);
+    let herdr = FakeUninstall {
+        registry: RefCell::new(Ok(registry(vec![github_plugin(
+            "herdr-marketplace-fixture",
+            "massdo",
+            "herdr-marketplace-fixture",
+            None,
+            SHA_B,
+        )]))),
+        code: Some(0),
+        after: Ok(registry(vec![])),
+    };
+    let request = OperationRequest {
+        id: "stale-removal".into(),
+        kind: OperationKind::Uninstall,
+        source: source(""),
+        commit: SHA_A.into(),
+        args: vec!["plugin".into(), "uninstall".into(), source("").to_string()],
+        confirmation: Some(Confirmation::Uninstall {
+            installed: confirmed,
+        }),
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "herdr-marketplace-stale-removal-{}",
+        std::process::id()
+    ));
+    let record = run_operation(&herdr, &FsOperations::new(dir.clone()), &request);
+    assert_eq!(record.status, Status::Refused);
+    assert!(record.output.contains("changed since the preview"));
+    assert!(
+        herdr.plugin_list().unwrap().contains(SHA_B),
+        "nothing was removed"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_removal_confirmation_scrolls_to_its_last_line_in_a_short_pane() {
+    let plan = plan_removal(
+        &installed(vec![fixture(None, "massdo", "herdr-marketplace-fixture")]),
+        &source(""),
+    )
+    .unwrap();
+    let mut app = DetailsApp::new(target(true, true));
+    app.handle_key(key(KeyCode::Char('r')));
+    app.removal_prepared(1, Ok(plan));
+    let page = details_view::page_rows(&app, 40, 8);
+    app.set_viewport(40, page);
+    app.handle_key(key(KeyCode::End));
+    assert!(app.preview_scroll > 0);
+    let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+    terminal
+        .draw(|frame| details_view::render(frame, &app))
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("Herdr also deletes its checkout."), "{text}");
 }

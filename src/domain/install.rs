@@ -1,6 +1,8 @@
 //! Install rules: which requests the marketplace accepts, and the exact
 //! Herdr command a confirmed request becomes.
 
+use serde::{Deserialize, Serialize};
+
 use super::compat::{Platform, is_compatible};
 use super::details::DetailsTarget;
 use super::index::is_full_sha;
@@ -10,7 +12,7 @@ use super::source::{PluginSource, is_github_segment, is_subdir_segment};
 use super::version::Version;
 
 /// What confirming the preview does.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Plan {
     Install,
     /// The same source is installed at `from`: move it to the commit shown.

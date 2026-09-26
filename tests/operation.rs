@@ -10,13 +10,11 @@ use herdr_marketplace::adapters::operations::FsOperations;
 use herdr_marketplace::adapters::tui::details::{DetailsApp, DetailsIntent};
 use herdr_marketplace::adapters::tui::details_view;
 use herdr_marketplace::application::ports::{CommandOutput, HerdrCli, Operations};
-use herdr_marketplace::application::run_operation::{
-    current_operation, operation_running, run_operation,
-};
+use herdr_marketplace::application::run_operation::{current_operation, run_operation};
 use herdr_marketplace::domain::details::DetailsTarget;
 use herdr_marketplace::domain::install::install_args;
 use herdr_marketplace::domain::operation::{
-    OperationKind, OperationRecord, OperationRequest, Status, record_file_name,
+    Confirmation, OperationKind, OperationRecord, OperationRequest, Status, record_file_name,
 };
 use herdr_marketplace::domain::source::PluginSource;
 use ratatui::Terminal;
@@ -90,6 +88,23 @@ fn request(commit: &str) -> OperationRequest {
         source: source(),
         commit: commit.into(),
         args: install_args(&source(), commit),
+        confirmation: Some(Confirmation::Install {
+            target: DetailsTarget {
+                commit: commit.into(),
+                ..target()
+            },
+            manifest: herdr_marketplace::domain::manifest::parse_manifest(
+                r#"
+id = "herdr-marketplace-fixture"
+name = "fixture"
+version = "1.0.0"
+min_herdr_version = "0.9.1"
+"#,
+            )
+            .unwrap()
+            .into(),
+            plan: herdr_marketplace::domain::install::Plan::Install,
+        }),
     }
 }
 
@@ -218,32 +233,44 @@ fn a_second_request_during_an_operation_is_refused() {
     let dir = state_dir();
     let operations = FsOperations::new(dir.clone());
     let running = operations.try_begin().unwrap().expect("the lock is free");
-    assert!(operation_running(&FsOperations::new(dir.clone())));
+    let winner = OperationRecord::running(&request(SHA_A));
+    operations.save(&winner).unwrap();
 
     let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
     let record = run_operation(&herdr, &FsOperations::new(dir.clone()), &request(SHA_A));
     assert_eq!(record.status, Status::Refused);
     assert!(herdr.ran.borrow().is_empty(), "nothing ran");
+    assert_eq!(
+        operations.load(&source()),
+        Some(winner),
+        "the loser must not overwrite the winner"
+    );
 
     drop(running);
-    assert!(!operation_running(&operations));
+    assert!(operations.try_begin().unwrap().is_some());
 }
 
 #[test]
 fn a_details_pane_probing_the_lock_does_not_refuse_an_operation() {
-    let dir = state_dir();
-    let probe = FsOperations::new(dir.clone())
-        .try_begin()
-        .unwrap()
-        .expect("the lock is free");
-    let release = std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        drop(probe);
-    });
+    let operations = FsOperations::new(state_dir());
+    let mut running = OperationRecord::running(&request(SHA_A));
+    running.worker_pid = Some(std::process::id());
+    operations.save(&running).unwrap();
+    for _ in 0..100 {
+        assert_eq!(
+            current_operation(&operations, &source()).unwrap().status,
+            Status::Running
+        );
+        assert!(
+            operations.try_begin().unwrap().is_some(),
+            "a reader takes no reservation"
+        );
+    }
     let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
-    let record = run_operation(&herdr, &FsOperations::new(dir), &request(SHA_A));
-    release.join().unwrap();
-    assert_eq!(record.status, Status::Succeeded);
+    assert_eq!(
+        run_operation(&herdr, &operations, &request(SHA_A)).status,
+        Status::Succeeded
+    );
 }
 
 #[test]
@@ -312,4 +339,234 @@ fn results_are_kept_per_source_whatever_the_case_of_owner_and_repo() {
         record_file_name(&alt),
         "massdo%2Fherdr-marketplace-fixture%2Falt.json"
     );
+}
+
+#[test]
+fn a_stale_install_preview_cannot_replace_a_new_source_or_local_link() {
+    let other = github_plugin("herdr-marketplace-fixture", "other", "plugin", None, SHA_B);
+    let mut local = other.clone();
+    local["source"] = serde_json::json!({"kind": "local"});
+    for installed in [other, local] {
+        let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
+        *herdr.registry.borrow_mut() = Ok(registry(vec![installed]));
+        let record = run_operation(&herdr, &FsOperations::new(state_dir()), &request(SHA_A));
+        assert_eq!(record.status, Status::Refused);
+        assert!(herdr.ran.borrow().is_empty());
+    }
+}
+
+#[test]
+fn a_changed_switch_commit_or_install_plan_needs_a_new_confirmation() {
+    use herdr_marketplace::domain::install::Plan;
+    for confirmed in [
+        Plan::Install,
+        Plan::Switch {
+            from: "d".repeat(40),
+        },
+    ] {
+        let mut request = request(SHA_A);
+        if let Some(Confirmation::Install { plan, .. }) = &mut request.confirmation {
+            *plan = confirmed;
+        }
+        let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
+        *herdr.registry.borrow_mut() = installed_at(SHA_B);
+        let record = run_operation(&herdr, &FsOperations::new(state_dir()), &request);
+        assert_eq!(record.status, Status::Refused);
+        assert!(record.output.contains("changed since the preview"));
+        assert!(herdr.ran.borrow().is_empty());
+    }
+}
+
+#[test]
+fn a_confirmed_switch_still_runs_when_the_registry_matches() {
+    let mut request = request(SHA_A);
+    if let Some(Confirmation::Install { plan, .. }) = &mut request.confirmation {
+        *plan = herdr_marketplace::domain::install::Plan::Switch { from: SHA_B.into() };
+    }
+    let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
+    *herdr.registry.borrow_mut() = installed_at(SHA_B);
+    assert_eq!(
+        run_operation(&herdr, &FsOperations::new(state_dir()), &request).status,
+        Status::Succeeded
+    );
+    assert_eq!(herdr.ran.borrow().len(), 1);
+}
+
+#[test]
+fn an_unreadable_registry_or_unconfirmed_arguments_never_run() {
+    for case in 0..3 {
+        let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
+        let mut request = request(SHA_A);
+        match case {
+            0 => *herdr.registry.borrow_mut() = Err("socket closed".into()),
+            1 => request.args[2] = "other/plugin".into(),
+            _ => request.confirmation = None,
+        }
+        assert_eq!(
+            run_operation(&herdr, &FsOperations::new(state_dir()), &request).status,
+            Status::Refused
+        );
+        assert!(herdr.ran.borrow().is_empty());
+    }
+}
+
+struct FailingSave {
+    inner: FsOperations,
+    calls: std::cell::Cell<usize>,
+    fail_at: usize,
+}
+
+impl Operations for FailingSave {
+    type Guard = std::fs::File;
+    fn try_begin(&self) -> Result<Option<Self::Guard>, String> {
+        self.inner.try_begin()
+    }
+    fn load(&self, source: &PluginSource) -> Option<OperationRecord> {
+        self.inner.load(source)
+    }
+    fn save(&self, record: &OperationRecord) -> Result<(), String> {
+        self.calls.set(self.calls.get() + 1);
+        if self.calls.get() == self.fail_at {
+            Err("disk full".into())
+        } else {
+            self.inner.save(record)
+        }
+    }
+    fn latest_finish(&self) -> u64 {
+        self.inner.latest_finish()
+    }
+    fn worker_running(&self, pid: u32) -> bool {
+        self.inner.worker_running(pid)
+    }
+}
+
+#[test]
+fn a_failed_initial_save_runs_nothing_and_clears_the_launch_marker() {
+    let operations = FailingSave {
+        inner: FsOperations::new(state_dir()),
+        calls: 0.into(),
+        fail_at: 1,
+    };
+    let old = OperationRecord {
+        status: Status::Succeeded,
+        finished_unix_ms: Some(1),
+        ..OperationRecord::running(&request(SHA_B))
+    };
+    operations.inner.save(&old).unwrap();
+    let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
+    let request = request(SHA_A);
+    let record = run_operation(&herdr, &operations, &request);
+    assert_eq!(record.status, Status::Refused);
+    assert_eq!(record.persistence_error.as_deref(), Some("disk full"));
+    assert!(herdr.ran.borrow().is_empty());
+    let mut app = DetailsApp::new(target());
+    app.operation_launched(request.id, request.kind);
+    app.operation_finished(record);
+    app.operation_seen(operations.load(&source()));
+    assert!(!app.operation_running());
+    assert!(details_text(&app).contains("disk full"));
+}
+
+#[test]
+fn a_failed_final_save_is_reported_and_not_replaced_by_the_running_file() {
+    let operations = FailingSave {
+        inner: FsOperations::new(state_dir()),
+        calls: 0.into(),
+        fail_at: 2,
+    };
+    let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
+    let record = run_operation(&herdr, &operations, &request(SHA_A));
+    assert_eq!(
+        record.status,
+        Status::Succeeded,
+        "the registry confirmed the installation"
+    );
+    assert_eq!(record.persistence_error.as_deref(), Some("disk full"));
+    assert_eq!(operations.load(&source()).unwrap().status, Status::Running);
+    let mut app = DetailsApp::new(target());
+    app.operation_finished(record);
+    app.operation_seen(operations.load(&source()));
+    assert!(!app.operation_running());
+    assert!(details_text(&app).contains("Could not save result: disk full"));
+}
+
+#[test]
+fn contention_is_refused_on_the_first_attempt_even_if_the_next_attempt_would_succeed() {
+    struct BusyOnce {
+        inner: FsOperations,
+        attempts: std::cell::Cell<usize>,
+    }
+    impl Operations for BusyOnce {
+        type Guard = std::fs::File;
+        fn try_begin(&self) -> Result<Option<Self::Guard>, String> {
+            self.attempts.set(self.attempts.get() + 1);
+            if self.attempts.get() == 1 {
+                Ok(None)
+            } else {
+                self.inner.try_begin()
+            }
+        }
+        fn load(&self, source: &PluginSource) -> Option<OperationRecord> {
+            self.inner.load(source)
+        }
+        fn save(&self, record: &OperationRecord) -> Result<(), String> {
+            self.inner.save(record)
+        }
+        fn latest_finish(&self) -> u64 {
+            self.inner.latest_finish()
+        }
+        fn worker_running(&self, pid: u32) -> bool {
+            self.inner.worker_running(pid)
+        }
+    }
+    let operations = BusyOnce {
+        inner: FsOperations::new(state_dir()),
+        attempts: 0.into(),
+    };
+    let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
+    assert_eq!(
+        run_operation(&herdr, &operations, &request(SHA_A)).status,
+        Status::Refused
+    );
+    assert_eq!(operations.attempts.get(), 1);
+    assert!(herdr.ran.borrow().is_empty());
+}
+
+#[test]
+fn operation_output_and_the_readme_share_a_scrollable_body() {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use herdr_marketplace::application::load_readme::Readme;
+    let mut app = DetailsApp::new(target());
+    app.readme_loaded(
+        1,
+        Ok(Readme::Found {
+            text: "Last README line".into(),
+            fallback: false,
+        }),
+    );
+    let mut record = OperationRecord::running(&request(SHA_A));
+    record.status = Status::Failed;
+    record.output = (0..30).map(|i| format!("diagnostic {i}\n")).collect();
+    app.operation_seen(Some(record));
+    let page = details_view::page_rows(&app, 44, 10);
+    app.set_viewport(44, page);
+    let screen = |app: &DetailsApp| {
+        let mut terminal = Terminal::new(TestBackend::new(44, 10)).unwrap();
+        terminal
+            .draw(|frame| details_view::render(frame, app))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    assert!(screen(&app).contains("diagnostic 0"));
+    app.handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+    assert!(screen(&app).contains("diagnostic 4"));
+    app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+    assert!(screen(&app).contains("diagnostic 29"));
+    assert!(screen(&app).contains("Last README line"));
 }

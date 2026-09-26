@@ -1,12 +1,13 @@
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io;
+use std::io::{self, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::thread;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::UNIX_EPOCH;
 
 use crate::application::ports::Operations;
-use crate::domain::operation::{OperationRecord, OperationRequest, record_file_name};
+use crate::domain::operation::{OperationRecord, OperationRequest, Status, record_file_name};
 use crate::domain::source::PluginSource;
 
 /// Results under `<state dir>/operations`, one JSON file per source, and
@@ -66,29 +67,77 @@ impl Operations for FsOperations {
         entries
             .flatten()
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".json"))
-            .filter_map(|entry| fs::read_to_string(entry.path()).ok())
-            .filter_map(|text| serde_json::from_str::<OperationRecord>(&text).ok())
-            .filter_map(|record| record.finished_unix_ms)
+            .filter_map(|entry| {
+                let text = fs::read_to_string(entry.path()).ok()?;
+                let record: OperationRecord = serde_json::from_str(&text).ok()?;
+                record.finished_unix_ms.or_else(|| {
+                    // A failed final write or dead worker must also refresh
+                    // the sidebar, even if it never observed Running.
+                    if record.status == Status::Running
+                        && !record
+                            .worker_pid
+                            .is_some_and(|pid| self.worker_running(pid))
+                    {
+                        Some(
+                            entry
+                                .metadata()
+                                .ok()?
+                                .modified()
+                                .ok()?
+                                .duration_since(UNIX_EPOCH)
+                                .ok()?
+                                .as_millis() as u64,
+                        )
+                    } else {
+                        None
+                    }
+                })
+            })
             .max()
             .unwrap_or(0)
+    }
+
+    fn worker_running(&self, pid: u32) -> bool {
+        let Ok(pid) = i32::try_from(pid) else {
+            return false;
+        };
+        if pid <= 0 {
+            return false;
+        }
+        // SAFETY: signal 0 only checks whether the process exists.
+        unsafe {
+            libc::kill(pid, 0) == 0
+                || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+        }
     }
 }
 
 /// Starts this binary with `--run-operation` in a session of its own, with no
 /// terminal: closing the details pane or the sidebar does not stop it.
-pub fn spawn_operation(request: &OperationRequest) -> io::Result<()> {
-    let json = serde_json::to_string(request).map_err(io::Error::other)?;
-    let mut command = Command::new(std::env::current_exe()?);
+/// `guard` is already locked by the confirming pane. Its open file
+/// description is inherited across exec, leaving no unlocked launch gap.
+pub fn spawn_operation(
+    request: &OperationRequest,
+    guard: File,
+    binary: &Path,
+) -> io::Result<Child> {
+    let json = serde_json::to_vec(request).map_err(io::Error::other)?;
+    let fd = guard.as_raw_fd();
+    let mut command = Command::new(binary);
     command
         .arg("--run-operation")
-        .arg(json)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    // SAFETY: setsid only changes the session of the child between fork and
-    // exec; it allocates nothing and touches no shared state.
+        .arg("-")
+        .arg(fd.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // SAFETY: these libc calls allocate nothing and change only the child.
+    // The captured descriptor stays open until spawn returns.
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                return Err(io::Error::last_os_error());
+            }
             if libc::setsid() == -1 {
                 return Err(io::Error::last_os_error());
             }
@@ -96,8 +145,25 @@ pub fn spawn_operation(request: &OperationRequest) -> io::Result<()> {
         });
     }
     let mut child = command.spawn()?;
-    thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+    // The confirmed manifest can exceed the OS argument size limit. Closing
+    // stdin after writing also lets the worker proceed if the pane closes.
+    child.stdin.take().expect("piped stdin").write_all(&json)?;
+    Ok(child)
+}
+
+/// Own the inherited reservation. Further inheritance is explicit in the
+/// Herdr command adapter. A bad descriptor is an ordinary startup error.
+pub fn inherited_lock(fd: i32) -> io::Result<File> {
+    if fd < 3 {
+        return Err(io::Error::other("invalid operation lock descriptor"));
+    }
+    // SAFETY: fcntl validates fd; only a successful duplicate becomes owned.
+    unsafe {
+        let copy = libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3);
+        if copy == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        libc::close(fd);
+        Ok(File::from_raw_fd(copy))
+    }
 }

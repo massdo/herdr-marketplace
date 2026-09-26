@@ -3,11 +3,11 @@
 
 use std::collections::HashSet;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::version::Version;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
     pub id: String,
     pub name: String,
@@ -23,14 +23,14 @@ pub struct Manifest {
 }
 
 /// A build or startup command, limited to some platforms or not.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Step {
     pub command: Vec<String>,
     pub platforms: Option<Vec<String>>,
 }
 
 /// An action, an event hook or a pane: its id (or event name) and command.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hook {
     pub name: String,
     pub command: Vec<String>,

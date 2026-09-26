@@ -456,7 +456,7 @@ fn nothing_is_requested_without_a_second_explicit_key() {
     app.install_prepared(2, Prepared::Preview(Box::new(preview.clone())));
     app.intents.clear();
     app.handle_key(key(KeyCode::Enter));
-    assert_eq!(app.intents, [DetailsIntent::Install(preview.args)]);
+    assert_eq!(app.intents, [DetailsIntent::Install(Box::new(preview))]);
 }
 
 #[test]
@@ -472,4 +472,59 @@ fn a_plugin_without_readme_stays_installable() {
     let preview = preview(prepare(&FakeWeb::fixture(), vec![], &target("")));
     app.install_prepared(1, Prepared::Preview(Box::new(preview)));
     assert!(app.showing_preview());
+}
+
+#[test]
+fn a_short_pane_keeps_the_preview_reachable_after_a_long_operation_error() {
+    use herdr_marketplace::domain::operation::{
+        OperationKind, OperationRecord, OperationRequest, Status,
+    };
+    let preview = preview(prepare(&FakeWeb::fixture(), vec![], &target("")));
+    let mut app = DetailsApp::new(target(""));
+    let request = OperationRequest {
+        id: "old".into(),
+        kind: OperationKind::Install,
+        source: app.target.source.clone(),
+        commit: SHA_A.into(),
+        args: vec![],
+        confirmation: None,
+    };
+    let mut record = OperationRecord::running(&request);
+    record.status = Status::Failed;
+    record.output = "old build error with a long explanation\n".repeat(30);
+    app.operation_seen(Some(record));
+    app.handle_key(key(KeyCode::Char('i')));
+    app.install_prepared(1, Prepared::Preview(Box::new(preview)));
+    let page = details_view::page_rows(&app, 44, 10);
+    assert!(page > 0, "history must not consume the entire pane");
+    app.set_viewport(44, page);
+    let screen = |app: &DetailsApp| {
+        let mut terminal = Terminal::new(TestBackend::new(44, 10)).unwrap();
+        terminal
+            .draw(|frame| details_view::render(frame, app))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    };
+    assert!(screen(&app).contains("id: herdr-marketplace-fixture"));
+    assert!(!screen(&app).contains("old build error"));
+    app.handle_key(key(KeyCode::End));
+    assert!(app.preview_scroll > 0);
+    assert!(
+        screen(&app).contains("build downloads."),
+        "{}",
+        screen(&app)
+    );
+    app.set_viewport(44, 0);
+    app.intents.clear();
+    app.handle_key(key(KeyCode::Enter));
+    assert!(
+        app.intents.is_empty(),
+        "a hidden confirmation cannot execute"
+    );
 }

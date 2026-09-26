@@ -12,59 +12,79 @@ use crate::domain::text::clean;
 const FOOTER: &str = "i: install · r: remove · s: full SHA · Esc: close · ↑↓ PgUp PgDn Home End";
 const PREVIEW_FOOTER: &str = "Enter: confirm · Esc: cancel · ↑↓ PgUp PgDn";
 
-/// README lines a `width` × `height` pane shows.
+/// Body lines visible after the compact identity header and footer.
 pub fn page_rows(app: &DetailsApp, width: u16, height: u16) -> usize {
-    (height as usize).saturating_sub(header(app, width as usize).len() + 1)
+    let header = header(app, width as usize)
+        .len()
+        .min(height.saturating_sub(2) as usize);
+    (height as usize).saturating_sub(header + 1)
 }
 
 pub fn render(frame: &mut Frame, app: &DetailsApp) {
     let area = frame.area();
     let width = area.width as usize;
     let mut lines = header(app, width);
-    let body_height = (area.height as usize).saturating_sub(lines.len() + 1);
-    let mut body = match &app.readme {
-        _ if app.showing_preview() => app
-            .preview
-            .iter()
-            .skip(app.preview_scroll)
-            .take(body_height)
-            .cloned()
-            .collect(),
-        _ if matches!(app.removal, RemovalState::Confirm(_)) => removal_lines(app, width),
-        ReadmeState::Loading => vec![Line::styled("Loading README…", muted())],
-        ReadmeState::NotFound => vec![Line::styled(
-            "README.md not found",
-            Style::default().fg(WARN),
-        )],
-        ReadmeState::NetworkError(error) => {
-            let mut lines = vec![Line::styled("Network error", Style::default().fg(ERROR))];
-            lines.extend(
-                wrap(&clean(error), width)
-                    .into_iter()
-                    .map(|line| Line::styled(line, muted())),
-            );
-            lines.push(Line::default());
-            lines.push(Line::styled("Enter: retry", bold()));
-            lines
-        }
-        ReadmeState::Found { .. } => app
-            .lines
-            .iter()
-            .skip(app.scroll)
-            .take(body_height)
-            .cloned()
-            .collect(),
+    lines.truncate(area.height.saturating_sub(2) as usize);
+    let body_height = page_rows(app, area.width, area.height);
+    let scroll = if app.showing_confirmation() {
+        app.preview_scroll
+    } else {
+        app.scroll
     };
-    body.truncate(body_height);
+    let (prefix, content) = body_lines(app, width);
+    let mut body: Vec<_> = prefix
+        .into_iter()
+        .chain(content.iter().cloned())
+        .skip(scroll)
+        .take(body_height)
+        .collect();
     body.resize(body_height, Line::default());
     lines.extend(body);
-    let footer = if app.showing_preview() || matches!(app.removal, RemovalState::Confirm(_)) {
-        PREVIEW_FOOTER
+    let footer = if app.showing_confirmation() {
+        if body_height == 0 {
+            "Enlarge pane to confirm · Esc: cancel"
+        } else {
+            PREVIEW_FOOTER
+        }
     } else {
         FOOTER
     };
     lines.push(Line::styled(ellipsize(footer, width), muted()));
     frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// All variable-length content scrolls. A confirmation starts at its first
+/// line and is never pushed below old operation output.
+pub(super) fn body_lines(app: &DetailsApp, width: usize) -> (Vec<Line<'static>>, &[Line<'static>]) {
+    if app.showing_preview() {
+        return (Vec::new(), &app.preview);
+    }
+    if matches!(app.removal, RemovalState::Confirm(_)) {
+        return (removal_lines(app, width), &[]);
+    }
+    let mut lines = notices(app, width);
+    lines.extend(operation_lines(app, width));
+    if !lines.is_empty() {
+        lines.push(Line::default());
+    }
+    match &app.readme {
+        ReadmeState::Loading => lines.push(Line::styled("Loading README…", muted())),
+        ReadmeState::NotFound => lines.push(Line::styled(
+            "README.md not found",
+            Style::default().fg(WARN),
+        )),
+        ReadmeState::NetworkError(error) => {
+            lines.push(Line::styled("Network error", Style::default().fg(ERROR)));
+            lines.extend(
+                wrap(&clean(error), width)
+                    .into_iter()
+                    .map(|line| Line::styled(line, muted())),
+            );
+            lines.push(Line::styled("Enter: retry", bold()));
+        }
+        ReadmeState::Found { .. } => return (lines, &app.lines),
+    }
+    (lines, &[])
 }
 
 /// What the removal will do, before its confirmation.
@@ -136,6 +156,16 @@ fn header(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
             width,
         ),
     ];
+    if let Some(status) = operation_lines(app, width).into_iter().next() {
+        lines.push(fit(status, width));
+    }
+    lines.push(Line::styled("─".repeat(width), Style::default().fg(MUTED)));
+    lines
+}
+
+fn notices(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
+    let target = &app.target;
+    let mut lines = Vec::new();
     if let ReadmeState::Found { fallback: true, .. } = app.readme {
         let notice = format!(
             "No README.md in {}/: showing the repository root README.md",
@@ -176,13 +206,8 @@ fn header(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
                 .map(|line| Line::styled(line, Style::default().fg(ERROR))),
         );
     }
-    lines.extend(operation_lines(app, width));
-    lines.push(Line::styled("─".repeat(width), Style::default().fg(MUTED)));
     lines
 }
-
-/// Last output lines of a failed or unconfirmed operation.
-const OUTPUT_LINES: usize = 8;
 
 /// State of the latest operation on this source: running, succeeded,
 /// failed, unconfirmed or refused. Herdr's output is cleaned and cut.
@@ -238,14 +263,20 @@ fn operation_lines(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
             .map(clean)
             .filter(|line| !line.trim().is_empty())
             .collect();
-        let start = output.len().saturating_sub(OUTPUT_LINES);
-        for line in &output[start..] {
+        for line in &output {
             lines.extend(
                 wrap(line, width)
                     .into_iter()
                     .map(|line| Line::styled(line, muted())),
             );
         }
+    }
+    if let Some(error) = &record.persistence_error {
+        lines.extend(
+            wrap(&format!("Could not save result: {}", clean(error)), width)
+                .into_iter()
+                .map(|line| Line::styled(line, Style::default().fg(ERROR))),
+        );
     }
     lines
 }

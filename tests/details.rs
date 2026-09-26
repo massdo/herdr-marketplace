@@ -273,10 +273,10 @@ fn the_header_shows_identity_and_a_short_sha_with_the_full_one_on_demand() {
     );
     assert!(lines[2].starts_with("commit c8268d4 "), "{lines:#?}");
     assert!(
-        lines[3].starts_with("No README.md in alt/: showing the repository root README.md"),
+        lines[4].starts_with("No README.md in alt/: showing the repository root README.md"),
         "{lines:#?}"
     );
-    assert!(lines[5].starts_with("Root README"), "{lines:#?}");
+    assert!(lines[6].starts_with("Root README"), "{lines:#?}");
 
     app.handle_key(key(KeyCode::Char('s')));
     assert!(

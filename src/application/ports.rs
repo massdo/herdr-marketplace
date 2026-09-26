@@ -56,6 +56,8 @@ pub trait Operations {
     fn try_begin(&self) -> Result<Option<Self::Guard>, String>;
     fn load(&self, source: &PluginSource) -> Option<OperationRecord>;
     fn save(&self, record: &OperationRecord) -> Result<(), String>;
+    /// Observes a worker without taking the operation lock.
+    fn worker_running(&self, pid: u32) -> bool;
     /// Latest end time among the kept results, in Unix milliseconds.
     fn latest_finish(&self) -> u64;
 }
