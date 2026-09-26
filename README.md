@@ -63,11 +63,16 @@ never opens a plugin.
    relevance: a match in the name first, then in the id, a topic or
    owner/repo, then in the description; the most starred first among equals.
    The wheel scrolls the list; ↑↓, Page Up/Down, Home and End move the
-   selection; Esc clears the search, then closes the sidebar. Each plugin
-   shows its name, stars, owner/repo, the start of its description, and the
-   marks "installed", "incompatible" or "not in catalog". Incompatible
-   plugins that are not installed are hidden; the sidebar says how many match
-   the search.
+   selection. Each plugin shows its name, stars, owner/repo, the start of its
+   description, and the marks "installed", "incompatible" or "not in
+   catalog". Incompatible plugins that are not installed are hidden; the
+   sidebar says how many match the search.
+   Under the search box, the **All** and **Installed** filters, as in VS
+   Code, show how many plugins match; a click or Tab switches between them,
+   and `@installed` typed in the search shows the installed plugins too.
+   Installed means installed from GitHub: locally linked plugins are not
+   listed. The × in the search box empties it; Esc empties the search, then
+   returns to All, then closes the sidebar.
 2. **Read.** A click on a plugin, or Enter, opens its details in a pane next
    to the sidebar: its README at the catalog's commit, drawn the way GitHub
    shows it (see [README pages](#readme-pages)). The wheel, ↑↓, Page Up/Down,

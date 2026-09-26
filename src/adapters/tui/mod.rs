@@ -158,7 +158,11 @@ fn sidebar_loop(
             Some((Input::Mouse(mouse), at)) if !focus.swallows(&mouse, at) => {
                 app.handle_mouse(mouse, size.width, size.height)
             }
-            Some((Input::FocusGained, at)) => focus.focus_gained(at),
+            Some((Input::FocusGained, at)) => {
+                focus.focus_gained(at);
+                app.focus(true);
+            }
+            Some((Input::FocusLost, _)) => app.focus(false),
             _ => {}
         }
     }
@@ -464,6 +468,7 @@ enum Input {
     Key(KeyEvent),
     Mouse(MouseEvent),
     FocusGained,
+    FocusLost,
 }
 
 /// The next input and when it was read.
@@ -475,6 +480,7 @@ fn next_input() -> Result<Option<(Input, Instant)>, AppError> {
         Event::Key(key) if key.kind == KeyEventKind::Press => Input::Key(key),
         Event::Mouse(mouse) => Input::Mouse(mouse),
         Event::FocusGained => Input::FocusGained,
+        Event::FocusLost => Input::FocusLost,
         _ => return Ok(None),
     };
     Ok(Some((input, Instant::now())))

@@ -3,7 +3,7 @@
 mod support;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use herdr_marketplace::adapters::tui::sidebar::{Intent, LoadState, SidebarApp};
+use herdr_marketplace::adapters::tui::sidebar::{Counts, Filter, Intent, LoadState, SidebarApp};
 use herdr_marketplace::adapters::tui::sidebar_view;
 use herdr_marketplace::application::load_catalog::LoadedCatalog;
 use herdr_marketplace::application::load_listing::LoadedListing;
@@ -286,7 +286,7 @@ fn a_row_shows_the_name_owner_repo_marks_and_description() {
     );
     app.set_page(2);
 
-    let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 16)).unwrap();
     terminal
         .draw(|frame| sidebar_view::render(frame, &app))
         .unwrap();
@@ -299,34 +299,37 @@ fn a_row_shows_the_name_owner_repo_marks_and_description() {
         .collect();
     let screen = text.join("\n");
 
+    assert!(text[0].starts_with("╭──"), "{screen}");
     assert!(
-        text[0].starts_with("> Search name, topic, author…"),
+        text[1].starts_with("│ Search name, topic, author") && text[1].ends_with(" │"),
         "{screen}"
     );
-    assert!(text[1].starts_with("2 plugins in catalog"), "{screen}");
+    assert!(text[2].starts_with("╰──"), "{screen}");
+    assert!(text[3].starts_with(" All 2   Installed 1 "), "{screen}");
     assert!(
-        text[2].starts_with("1 incompatible plugin hidden"),
+        text[4].starts_with("1 incompatible plugin hidden"),
         "{screen}"
     );
+    assert_eq!(text[5], "─".repeat(40), "a line sets the list apart");
     assert!(
-        text[3].starts_with("Terminal Browser") && text[3].contains("★ 3403"),
-        "{screen}"
-    );
-    assert!(
-        text[4].starts_with("zenbu-labs/terminal-browser/herdr-plugin"),
-        "{screen}"
-    );
-    assert!(
-        text[5].starts_with("Open a browser inside herdr[31m"),
-        "{screen}"
-    );
-    assert!(text[6].starts_with("Next Agent"), "{screen}");
-    assert!(
-        text[7].starts_with("martin-ro/herdr-next-agent"),
+        text[6].starts_with("Terminal Browser") && text[6].contains("★ 3403"),
         "{screen}"
     );
     assert!(
-        text[8].starts_with("installed · incompatible · Jump"),
+        text[7].starts_with("zenbu-labs/terminal-browser/herdr-plugin"),
+        "{screen}"
+    );
+    assert!(
+        text[8].starts_with("Open a browser inside herdr[31m"),
+        "{screen}"
+    );
+    assert!(text[9].starts_with("Next Agent"), "{screen}");
+    assert!(
+        text[10].starts_with("martin-ro/herdr-next-agent"),
+        "{screen}"
+    );
+    assert!(
+        text[11].starts_with("installed · incompatible · Jump"),
         "{screen}"
     );
     assert!(!screen.contains('\u{1b}'), "{screen:?}");
@@ -335,42 +338,43 @@ fn a_row_shows_the_name_owner_repo_marks_and_description() {
 #[test]
 fn one_click_on_a_plugin_selects_it_and_opens_its_details() {
     let mut app = loaded_app();
-    // 40 × 12: search and counter lines, 3 plugins of 3 lines, footer.
-    app.set_page(sidebar_view::page_rows(&app, 40, 12));
+    // 40 × 15: search box, filters and separator, 3 plugins of 3 lines,
+    // footer.
+    app.set_page(sidebar_view::page_rows(&app, 40, 15));
     assert_eq!(app.page, 3);
-    app.handle_mouse(click(5, 2 + 3 + 1), 40, 12);
+    app.handle_mouse(click(5, 5 + 3 + 1), 40, 15);
     assert_eq!(selected_repo(&app), "plugin-01");
     match app.intents.as_slice() {
         [Intent::Open(row)] => assert_eq!(row.entry.source.repo, "plugin-01"),
         other => panic!("{other:?}"),
     }
     app.intents.clear();
-    for row in [0, 1, 11] {
-        app.handle_mouse(click(5, row), 40, 12);
+    for row in [0, 1, 4, 14] {
+        app.handle_mouse(click(5, row), 40, 15);
     }
     assert!(
         app.intents.is_empty(),
-        "search, counter and footer open nothing"
+        "search, separator and footer open nothing"
     );
 }
 
 #[test]
 fn the_wheel_scrolls_the_list_without_moving_the_selection() {
     let mut app = loaded_app();
-    app.set_page(sidebar_view::page_rows(&app, 40, 12));
-    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 5), 40, 12);
-    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 5), 40, 12);
+    app.set_page(sidebar_view::page_rows(&app, 40, 15));
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 15);
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 15);
     assert_eq!(app.offset, 2);
     assert_eq!(selected_repo(&app), "plugin-00");
-    app.set_page(sidebar_view::page_rows(&app, 40, 12));
+    app.set_page(sidebar_view::page_rows(&app, 40, 15));
     assert_eq!(app.offset, 2, "drawing again keeps the scrolled list");
-    app.handle_mouse(click(5, 2), 40, 12);
+    app.handle_mouse(click(5, 5), 40, 15);
     assert_eq!(selected_repo(&app), "plugin-02", "the first plugin shown");
     for _ in 0..20 {
-        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 5), 40, 12);
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 15);
     }
     assert_eq!(app.offset, 9, "no further than the last page");
-    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 5), 40, 12);
+    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 7), 40, 15);
     assert_eq!(app.offset, 8);
 }
 
@@ -399,4 +403,125 @@ fn a_click_on_retry_loads_the_catalogue_again() {
     app.handle_mouse(click(3, retry as u16), 40, 12);
     assert_eq!(app.state, LoadState::Loading);
     assert_eq!(app.intents, [Intent::Load]);
+}
+
+/// Twelve plugins, the fourth and the tenth installed.
+fn installed_app() -> SidebarApp {
+    let repos = (0..12)
+        .map(|index| {
+            repo(
+                "acme",
+                &format!("plugin-{index:02}"),
+                100 - index,
+                vec![manifest(
+                    "herdr-plugin.toml",
+                    &format!("acme.plugin-{index:02}"),
+                )],
+            )
+        })
+        .collect();
+    ready(
+        repos,
+        vec![
+            github_plugin("acme.plugin-03", "acme", "plugin-03", None, SHA_A),
+            github_plugin("acme.plugin-09", "acme", "plugin-09", None, SHA_A),
+        ],
+    )
+}
+
+#[test]
+fn the_installed_filter_shows_only_installed_plugins() {
+    let mut app = installed_app();
+    assert_eq!(
+        app.counts,
+        Counts {
+            all: 12,
+            installed: 2
+        }
+    );
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.filter, Filter::Installed);
+    assert_eq!(visible_repos(&app), ["plugin-03", "plugin-09"]);
+    assert_eq!(
+        selected_repo(&app),
+        "plugin-03",
+        "starts from its first plugin"
+    );
+    type_text(&mut app, "09");
+    assert_eq!(visible_repos(&app), ["plugin-09"]);
+    assert_eq!(
+        app.counts,
+        Counts {
+            all: 1,
+            installed: 1
+        },
+        "counts follow the search"
+    );
+    app.handle_key(key(KeyCode::Tab));
+    assert_eq!(app.filter, Filter::All);
+}
+
+#[test]
+fn at_installed_typed_in_the_search_switches_the_filter_as_in_vs_code() {
+    let mut app = installed_app();
+    type_text(&mut app, "@installed");
+    assert_eq!(app.filter, Filter::Installed);
+    assert_eq!(app.query, "", "the word leaves the search");
+    type_text(&mut app, " 03");
+    assert_eq!(visible_repos(&app), ["plugin-03"]);
+}
+
+#[test]
+fn a_click_on_a_filter_tab_switches_it() {
+    let mut app = installed_app();
+    app.set_page(sidebar_view::page_rows(&app, 40, 15));
+    // " All 12   Installed 2 ": the second tab starts at column 9.
+    app.handle_mouse(click(12, 3), 40, 15);
+    assert_eq!(app.filter, Filter::Installed);
+    app.handle_mouse(click(2, 3), 40, 15);
+    assert_eq!(app.filter, Filter::All);
+    assert!(app.intents.is_empty());
+}
+
+#[test]
+fn escape_clears_the_search_then_the_filter_then_closes() {
+    let mut app = installed_app();
+    app.handle_key(key(KeyCode::Tab));
+    type_text(&mut app, "03");
+    assert!(!app.handle_key(key(KeyCode::Esc)));
+    assert_eq!((app.query.as_str(), app.filter), ("", Filter::Installed));
+    assert!(!app.handle_key(key(KeyCode::Esc)));
+    assert_eq!(app.filter, Filter::All);
+    assert!(app.handle_key(key(KeyCode::Esc)));
+}
+
+#[test]
+fn the_search_box_empties_with_its_cross_and_shows_the_focus() {
+    let mut app = installed_app();
+    type_text(&mut app, "plugin-1");
+    let draw = |app: &SidebarApp| {
+        let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+        terminal
+            .draw(|frame| sidebar_view::render(frame, app))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    };
+    let buffer = draw(&app);
+    let middle: String = (0..30)
+        .map(|x| buffer[(x, 1)].symbol().to_string())
+        .collect();
+    assert_eq!(middle, "│ plugin-1▏                × │");
+    assert_eq!(
+        buffer[(0, 0)].fg,
+        herdr_marketplace::adapters::tui::style::ACCENT
+    );
+    app.focus(false);
+    let buffer = draw(&app);
+    assert_eq!(
+        buffer[(0, 0)].fg,
+        herdr_marketplace::adapters::tui::style::MUTED
+    );
+    app.handle_mouse(click(26, 1), 30, 12);
+    assert_eq!(app.query, "");
+    assert_eq!(app.visible.len(), 12);
 }

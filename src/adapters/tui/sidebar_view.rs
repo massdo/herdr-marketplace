@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
-use super::sidebar::{LoadState, SidebarApp};
+use super::sidebar::{Filter, LoadState, SidebarApp};
 use super::style::{
     ACCENT, ERROR, MUTED, OK, SELECTION_BG, SELECTION_FG, Tone, WARN, bold, button_text, ellipsize,
     ellipsize_middle, muted, wrap,
@@ -14,9 +14,11 @@ use crate::domain::text::clean;
 
 /// Terminal lines per plugin: name, owner/repo, marks and description.
 pub const ROW_HEIGHT: usize = 3;
-const PLACEHOLDER: &str = "Search name, topic, author…";
-const FOOTER: &str = "Click/Enter: open · Esc: close";
+const PLACEHOLDER: &str = "Search name, topic, author";
+const FOOTER: &str = "↵ open · ⇥ filter · Esc close";
 const RETRY: &str = "Retry";
+/// The narrowest pane that draws the search box around its text.
+const BOX_WIDTH: usize = 8;
 
 /// What a click lands on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +26,9 @@ pub enum Hit {
     /// This position in the list of results.
     Row(usize),
     Retry,
+    Filter(Filter),
+    /// The × that empties the search.
+    Clear,
 }
 
 /// Plugins the list area of a `width` × `height` pane shows.
@@ -52,6 +57,21 @@ pub fn render(frame: &mut Frame, app: &SidebarApp) {
 /// What a click at `column`, `row` of a `width` × `height` pane lands on,
 /// laid out as `render` draws it.
 pub fn hit(app: &SidebarApp, width: u16, height: u16, column: u16, row: u16) -> Option<Hit> {
+    let (cells, line) = (column as usize, row as usize);
+    let boxed = box_height(width as usize);
+    if boxed == 3
+        && line == 1
+        && !app.query.is_empty()
+        && (width as usize - 4..width as usize - 1).contains(&cells)
+    {
+        return Some(Hit::Clear);
+    }
+    if line == boxed && matches!(app.state, LoadState::Ready(_)) {
+        return tab_cells(app)
+            .into_iter()
+            .find(|(_, start, end)| (*start..*end).contains(&cells))
+            .map(|(filter, _, _)| Hit::Filter(filter));
+    }
     let top = header(app, width as usize).len();
     let list_height = (height as usize).saturating_sub(top + 1);
     let line = (row as usize)
@@ -72,30 +92,14 @@ pub fn hit(app: &SidebarApp, width: u16, height: u16, column: u16, row: u16) -> 
     }
 }
 
+/// The search box, the filters with their counts, notes, then a line that
+/// sets the list apart.
 fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
-    let search = if app.query.is_empty() {
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(ACCENT)),
-            Span::styled(ellipsize(PLACEHOLDER, width.saturating_sub(2)), muted()),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("> ", Style::default().fg(ACCENT)),
-            Span::raw(ellipsize(&clean(&app.query), width.saturating_sub(2))),
-        ])
-    };
-    let mut lines = vec![search];
+    let mut lines = search_box(app, width);
     if let LoadState::Ready(loaded) = &app.state {
-        let count = app.visible.len();
-        let plural = if count == 1 { "" } else { "s" };
-        let counter = if app.query.trim().is_empty() {
-            format!("{count} plugin{plural} in catalog")
-        } else {
-            format!("{count} result{plural}")
-        };
-        lines.push(Line::styled(ellipsize(&counter, width), muted()));
+        lines.push(tabs(app, width));
         let hidden = app.hidden;
-        if hidden > 0 {
+        if hidden > 0 && app.filter == Filter::All {
             let plural = if hidden == 1 { "" } else { "s" };
             lines.push(Line::styled(
                 ellipsize(
@@ -119,7 +123,105 @@ fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
                 .map(|line| Line::styled(line, Style::default().fg(ERROR))),
         );
     }
+    lines.push(Line::styled("─".repeat(width), muted()));
     lines
+}
+
+fn box_height(width: usize) -> usize {
+    if width >= BOX_WIDTH { 3 } else { 1 }
+}
+
+/// An input field: a frame, colored while the pane has the focus, around
+/// the placeholder, or the search with its caret and its × to empty it.
+fn search_box(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
+    let frame = Style::default().fg(if app.focused { ACCENT } else { MUTED });
+    let caret = Span::styled("▏", Style::default().fg(ACCENT));
+    if box_height(width) == 1 {
+        let text = if app.query.is_empty() {
+            Span::styled(ellipsize(PLACEHOLDER, width), muted())
+        } else {
+            Span::raw(tail(&clean(&app.query), width.saturating_sub(1)))
+        };
+        return vec![Line::from(vec![text, caret])];
+    }
+    let inner = width - 4;
+    let mut middle = vec![Span::styled("│ ", frame)];
+    if app.query.is_empty() {
+        let placeholder = ellipsize(PLACEHOLDER, inner);
+        let pad = inner.saturating_sub(placeholder.width());
+        middle.push(Span::styled(placeholder, muted()));
+        middle.push(Span::raw(" ".repeat(pad)));
+    } else {
+        let query = tail(&clean(&app.query), inner.saturating_sub(3));
+        let pad = inner.saturating_sub(query.width() + 2);
+        middle.push(Span::raw(query));
+        middle.push(if app.focused { caret } else { Span::raw(" ") });
+        middle.push(Span::raw(" ".repeat(pad)));
+        middle.push(Span::styled("×", muted()));
+    }
+    middle.push(Span::styled(" │", frame));
+    vec![
+        Line::styled(format!("╭{}╮", "─".repeat(width - 2)), frame),
+        Line::from(middle),
+        Line::styled(format!("╰{}╯", "─".repeat(width - 2)), frame),
+    ]
+}
+
+/// The last `width` cells of `text`: the end of a long search stays in view.
+fn tail(text: &str, width: usize) -> String {
+    let mut kept: Vec<char> = Vec::new();
+    let mut used = 0;
+    for ch in text.chars().rev() {
+        let cells = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + cells > width {
+            break;
+        }
+        used += cells;
+        kept.push(ch);
+    }
+    kept.into_iter().rev().collect()
+}
+
+/// Filter tabs and the columns each covers; the one shown is filled.
+fn tab_cells(app: &SidebarApp) -> Vec<(Filter, usize, usize)> {
+    let mut cells = Vec::new();
+    let mut used = 0;
+    for (filter, label) in tab_labels(app) {
+        let start = if cells.is_empty() { 0 } else { used + 1 };
+        let end = start + label.width();
+        cells.push((filter, start, end));
+        used = end;
+    }
+    cells
+}
+
+fn tab_labels(app: &SidebarApp) -> [(Filter, String); 2] {
+    [
+        (Filter::All, format!(" All {} ", app.counts.all)),
+        (
+            Filter::Installed,
+            format!(" Installed {} ", app.counts.installed),
+        ),
+    ]
+}
+
+fn tabs(app: &SidebarApp, width: usize) -> Line<'static> {
+    let mut spans = Vec::new();
+    let mut used = 0;
+    for ((filter, label), (_, start, end)) in tab_labels(app).into_iter().zip(tab_cells(app)) {
+        if end > width {
+            break;
+        }
+        spans.push(Span::raw(" ".repeat(start - used)));
+        let tone = if filter == app.filter {
+            Tone::Primary
+        } else {
+            Tone::Plain
+        };
+        spans.push(Span::styled(label, tone.style()));
+        used = end;
+    }
+    Line::from(spans)
 }
 
 /// The error, then a Retry button on the last line.
@@ -140,7 +242,12 @@ fn failure(error: &str, width: usize) -> Vec<Line<'static>> {
 
 fn list(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     if app.visible.is_empty() {
-        return vec![Line::styled("No matching plugin", muted())];
+        let empty = if app.filter == Filter::Installed && app.query.trim().is_empty() {
+            "No plugin installed from GitHub"
+        } else {
+            "No matching plugin"
+        };
+        return vec![Line::styled(ellipsize(empty, width), muted())];
     }
     let rows = app.rows();
     let selected = app.selected_position();

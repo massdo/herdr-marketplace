@@ -16,6 +16,33 @@ pub enum Intent {
     Open(Box<Row>),
 }
 
+/// Which plugins the list shows, as the filters of VS Code's extensions view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Filter {
+    #[default]
+    All,
+    Installed,
+}
+
+impl Filter {
+    fn other(self) -> Self {
+        match self {
+            Self::All => Self::Installed,
+            Self::Installed => Self::All,
+        }
+    }
+}
+
+/// Typed in the search, as in VS Code, it shows the installed plugins.
+pub const INSTALLED_TOKEN: &str = "@installed";
+
+/// Plugins matching the query, under each filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Counts {
+    pub all: usize,
+    pub installed: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadState {
     Loading,
@@ -29,7 +56,12 @@ pub enum LoadState {
 pub struct SidebarApp {
     pub state: LoadState,
     pub query: String,
-    /// Positions in `rows()` that match the query, most relevant first.
+    pub filter: Filter,
+    pub counts: Counts,
+    /// The pane has the focus: the search box is outlined in color.
+    pub focused: bool,
+    /// Positions in `rows()` that match the query and the filter, most
+    /// relevant first.
     pub visible: Vec<usize>,
     /// Incompatible plugins left out of the list that match the query.
     pub hidden: usize,
@@ -55,6 +87,9 @@ impl SidebarApp {
         Self {
             state: LoadState::Loading,
             query: String::new(),
+            filter: Filter::All,
+            counts: Counts::default(),
+            focused: true,
             visible: Vec::new(),
             hidden: 0,
             selected: None,
@@ -102,13 +137,17 @@ impl SidebarApp {
             return key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c');
         }
         match key.code {
-            KeyCode::Esc if self.query.is_empty() => return true,
-            KeyCode::Esc => {
+            // Esc backs out one step: the search, the filter, the sidebar.
+            KeyCode::Esc if !self.query.is_empty() => {
                 self.query.clear();
                 self.search_changed();
             }
+            KeyCode::Esc if self.filter != Filter::All => self.set_filter(Filter::All),
+            KeyCode::Esc => return true,
+            KeyCode::Tab | KeyCode::BackTab => self.set_filter(self.filter.other()),
             KeyCode::Char(ch) => {
                 self.query.push(ch);
+                self.take_filter_token();
                 self.search_changed();
             }
             KeyCode::Backspace => {
@@ -139,6 +178,11 @@ impl SidebarApp {
                         self.enter();
                     }
                     Some(Hit::Retry) => self.enter(),
+                    Some(Hit::Filter(filter)) => self.set_filter(filter),
+                    Some(Hit::Clear) => {
+                        self.query.clear();
+                        self.search_changed();
+                    }
                     None => {}
                 }
             }
@@ -146,6 +190,16 @@ impl SidebarApp {
             MouseEventKind::ScrollUp => self.scroll_by(-1),
             _ => {}
         }
+    }
+
+    pub fn focus(&mut self, focused: bool) {
+        self.focused = focused;
+    }
+
+    /// Another filter starts from its first plugin, as a new search does.
+    pub fn set_filter(&mut self, filter: Filter) {
+        self.filter = filter;
+        self.search_changed();
     }
 
     pub fn selected_row(&self) -> Option<&Row> {
@@ -187,6 +241,26 @@ impl SidebarApp {
         }
     }
 
+    /// `@installed` typed as a word switches the filter and leaves the
+    /// search.
+    fn take_filter_token(&mut self) {
+        let words: Vec<&str> = self.query.split(' ').collect();
+        if !words
+            .iter()
+            .any(|word| word.eq_ignore_ascii_case(INSTALLED_TOKEN))
+        {
+            return;
+        }
+        self.query = words
+            .into_iter()
+            .filter(|word| !word.eq_ignore_ascii_case(INSTALLED_TOKEN))
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim_start()
+            .to_string();
+        self.filter = Filter::Installed;
+    }
+
     /// A new search starts from its most relevant result.
     fn search_changed(&mut self) {
         self.selected = None;
@@ -198,10 +272,23 @@ impl SidebarApp {
             LoadState::Ready(loaded) => (&loaded.listing.rows[..], &loaded.listing.hidden[..]),
             _ => (&[], &[]),
         };
-        let (visible, hidden): (Vec<usize>, Vec<usize>) =
+        let (all, hidden): (Vec<usize>, Vec<usize>) =
             search(rows.iter().map(|row| &row.entry).chain(hidden), &self.query)
                 .into_iter()
                 .partition(|&position| position < rows.len());
+        let installed: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|&index| rows[index].installed.is_some())
+            .collect();
+        self.counts = Counts {
+            all: all.len(),
+            installed: installed.len(),
+        };
+        let visible = match self.filter {
+            Filter::All => all,
+            Filter::Installed => installed,
+        };
         let first = visible
             .first()
             .map(|&index| rows[index].entry.source.clone());

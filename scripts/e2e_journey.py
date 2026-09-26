@@ -4,6 +4,7 @@
 import fcntl
 import json
 import os
+import re
 import pty
 import struct
 import subprocess
@@ -106,6 +107,11 @@ def panes():
 
 def read(pane):
     return herdr("pane", "read", pane, "--source", "visible", "--format", "text")
+
+
+def listed(text):
+    """The filters, with their counts, show once the catalogue is loaded."""
+    return re.search(r" All \d+ +Installed \d+", text) is not None
 
 
 def keys(pane, *names):
@@ -224,8 +230,8 @@ def prove_sidebar():
     count = write_catalog(SHA_A)
     before = others()
     sidebar = open_sidebar()
-    shown = wait(lambda: "in catalog" in (text := read(sidebar)) and text, "the catalogue did not load")
-    assert f"{count - 1} plugins in catalog" in shown, shown
+    shown = wait(lambda: listed(text := read(sidebar)) and text, "the catalogue did not load")
+    assert f" All {count - 1} " in shown and " Installed 0" in shown, shown
     assert "Search name, topic, author" in shown, shown
     assert "1 incompatible plugin hidden" in shown, shown
     # 30 inner columns: a long owner/repo/subdir loses its middle, never its ends.
@@ -239,23 +245,23 @@ def prove_sidebar():
     print("sidebar_open_ok", flush=True)
 
     type_text(sidebar, "fixture")
-    shown = wait(lambda: "2 results" in (text := read(sidebar)) and text, "the search did not filter")
+    shown = wait(lambda: " All 2 " in (text := read(sidebar)) and text, "the search did not filter")
     assert "Terminal Browser" not in shown, shown
     assert "massdo/herdr-ma…tplace-fixture" in shown, shown
     assert "massdo/herdr-ma…ce-fixture/alt" in shown, shown
     type_text(sidebar, "jk")
-    wait(lambda: "> fixturejk" in read(sidebar), "j and k did not reach the search")
+    wait(lambda: "│ fixturejk" in read(sidebar), "j and k did not reach the search")
     keys(sidebar, "backspace", "backspace")
-    wait(lambda: "2 results" in read(sidebar), "backspace did not restore the search")
+    wait(lambda: " All 2 " in read(sidebar), "backspace did not restore the search")
     print("search_ok", flush=True)
 
     # Typing never reloads: without the index file, the search still works.
     INDEX.unlink()
     type_text(sidebar, " (alt)")
-    shown = wait(lambda: "1 result" in (text := read(sidebar)) and text, "the search stopped working")
+    shown = wait(lambda: " All 1 " in (text := read(sidebar)) and text, "the search stopped working")
     assert "Loading failed" not in shown, shown
     keys(sidebar, "esc")
-    wait(lambda: f"{count - 1} plugins in catalog" in read(sidebar), "esc did not clear the search")
+    wait(lambda: f" All {count - 1} " in read(sidebar), "esc did not clear the search")
     print("typing_without_network_ok", flush=True)
 
     type_text(sidebar, END)
@@ -274,7 +280,7 @@ def prove_sidebar():
     assert "Retry (Enter)" in shown, shown
     write_catalog(SHA_A)
     keys(sidebar, "enter")
-    wait(lambda: f"{count - 1} plugins in catalog" in read(sidebar), "the retry did not load the catalogue")
+    wait(lambda: f" All {count - 1} " in read(sidebar), "the retry did not load the catalogue")
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
     print("retry_ok", flush=True)
@@ -305,10 +311,10 @@ def open_details(sidebar, query, expected_results):
 def prove_details():
     write_catalog(SHA_A)
     sidebar = open_sidebar()
-    wait(lambda: "in catalog" in read(sidebar), "the catalogue did not load")
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
     tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
 
-    details = open_details(sidebar, "terminal browser", "1 result")
+    details = open_details(sidebar, "terminal browser", " All 1 ")
     shown = wait(lambda: "open-split" in (text := read(details)) and text,
                  "the terminal-browser README was not rendered")
     assert "zenbu-labs/terminal-browser/herdr-plugin" in shown, shown
@@ -324,7 +330,7 @@ def prove_details():
     wait(lambda: focused() == sidebar, "focus did not return to the sidebar")
     print("details_escape_ok", flush=True)
 
-    details = open_details(sidebar, "fixture", "2 results")
+    details = open_details(sidebar, "fixture", " All 2 ")
     shown = wait(lambda: "[image: fixture logo]" in (text := read(details)) and text,
                  "the fixture README was not rendered")
     assert "massdo/herdr-marketplace-fixture" in shown and f"commit {SHA_A[:7]}" in shown, shown
@@ -335,7 +341,7 @@ def prove_details():
     print("details_last_line_ok", flush=True)
 
     type_text(sidebar, "fixture")
-    wait(lambda: "2 results" in read(sidebar), "search fixture did not settle")
+    wait(lambda: " All 2 " in read(sidebar), "search fixture did not settle")
     keys(sidebar, "down", "enter")
     alt = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != details), None),
                "Enter on the alt source did not open its details pane")
@@ -357,7 +363,7 @@ def prove_details():
     # A click on the sidebar without the focus only focuses it, so that a
     # search can be typed; then one click on a plugin opens its details.
     sidebar = open_sidebar()
-    wait(lambda: "in catalog" in read(sidebar), "the catalogue did not load")
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
     herdr("pane", "focus", "--pane", sidebar, "--direction", "right")
     wait(lambda: focused() != sidebar, "the focus did not leave the sidebar")
     before = {p["pane_id"] for p in panes()}
@@ -396,9 +402,9 @@ def fixture_log():
 def prove_install_preview():
     write_catalog(SHA_A)
     sidebar = open_sidebar()
-    wait(lambda: "in catalog" in read(sidebar), "the catalogue did not load")
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
     tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
-    details = open_details(sidebar, "fixture", "2 results")
+    details = open_details(sidebar, "fixture", " All 2 ")
     wait(lambda: "[image: fixture logo]" in read(details), "the fixture README was not rendered")
     before = registry()
 
@@ -435,9 +441,9 @@ def fixture_details(sha):
     """Sidebar on a catalogue with the fixture at `sha`, and the root fixture's details pane."""
     write_catalog(sha)
     sidebar = open_sidebar()
-    wait(lambda: "in catalog" in read(sidebar), "the catalogue did not load")
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
     tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
-    details = open_details(sidebar, "fixture", "2 results")
+    details = open_details(sidebar, "fixture", " All 2 ")
     wait(lambda: f"commit {sha[:7]}" in read(details), "the fixture details pane did not open")
     return sidebar, tab, details
 
@@ -476,6 +482,18 @@ def prove_install():
     wait(lambda: "· installed" in read(details), "the details pane does not show 'installed'")
     wait(lambda: "installed · Test fixture." in read(sidebar), "the sidebar does not show 'installed'")
     print("install_from_details_ok", flush=True)
+
+    # The Installed filter, as in VS Code: the first click focuses the
+    # sidebar, the second switches the filter.
+    click_text(sidebar, "Installed 1")
+    wait(lambda: focused() == sidebar, "a click did not focus the sidebar")
+    click_text(sidebar, "Installed 1")
+    shown = wait(lambda: "Terminal Browser" not in (text := read(sidebar)) and text,
+                 "the Installed filter did not apply")
+    assert "herdr-marketplace fixture" in shown and "installed · Test fixture." in shown, shown
+    type_text(sidebar, "\t")
+    wait(lambda: "Terminal Browser" in read(sidebar), "Tab did not return to all plugins")
+    print("installed_filter_ok", flush=True)
     close_all(tab)
 
 
@@ -511,7 +529,7 @@ def prove_details_closed_during_install():
     wait(lambda: not details_panes(tab), "escape did not close the details pane")
     wait(lambda: (*FIXTURE, "", SHA_A) in registry(),
          "the install stopped with its details pane", OPERATION_TIMEOUT)
-    details = open_details(sidebar, "fixture", "2 results")
+    details = open_details(sidebar, "fixture", " All 2 ")
     wait(lambda: "Install of c8268d4 succeeded" in read(details),
          "the reopened details pane did not show the result")
     print("details_closed_during_install_ok", flush=True)
@@ -580,10 +598,10 @@ def prove_readme():
     kitty graphics protocol; a relative link and the GitHub button open."""
     write_catalog(SHA_A)
     sidebar = open_sidebar()
-    wait(lambda: "in catalog" in read(sidebar), "the catalogue did not load")
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
     tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
     sent = CLIENT_LOG.stat().st_size
-    details = open_details(sidebar, "herdr-sidebar", "1 result")
+    details = open_details(sidebar, "herdr-sidebar", " All 1 ")
     wait(lambda: "The sidebar your terminal was missing" in read(details),
          "the herdr-sidebar README was not rendered")
     wait(lambda: b"\x1b_Ga=t" in CLIENT_LOG.read_bytes()[sent:],
