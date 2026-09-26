@@ -1,4 +1,6 @@
 use std::io::Read;
+use std::os::unix::ffi::OsStringExt;
+use std::path::Path;
 use std::time::Duration;
 
 use crate::application::ports::{FetchError, Fetcher};
@@ -31,7 +33,18 @@ impl Default for HttpFetcher {
 impl Fetcher for HttpFetcher {
     fn fetch(&self, url: &str, limit: u64) -> Result<Vec<u8>, FetchError> {
         if let Some(path) = url.strip_prefix("file://") {
-            return read_file(path, limit);
+            let path = path
+                .strip_prefix("localhost/")
+                .map_or_else(|| path.to_string(), |path| format!("/{path}"));
+            if !path.starts_with('/') {
+                return Err(FetchError::Failed(
+                    "file URL must have a local absolute path".into(),
+                ));
+            }
+            let path = path.split(['?', '#']).next().unwrap_or_default();
+            let path =
+                std::ffi::OsString::from_vec(percent_encoding::percent_decode_str(path).collect());
+            return read_file(Path::new(&path), limit);
         }
         if !url.starts_with("http://") && !url.starts_with("https://") {
             return Err(FetchError::Failed(format!("unsupported URL: {url}")));
@@ -49,17 +62,20 @@ impl Fetcher for HttpFetcher {
     }
 }
 
-fn read_file(path: &str, limit: u64) -> Result<Vec<u8>, FetchError> {
+fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>, FetchError> {
     let file = std::fs::File::open(path).map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => FetchError::NotFound,
-        _ => FetchError::Failed(format!("{path}: {error}")),
+        _ => FetchError::Failed(format!("{}: {error}", path.display())),
     })?;
     let mut body = Vec::new();
     file.take(limit + 1)
         .read_to_end(&mut body)
-        .map_err(|error| FetchError::Failed(format!("{path}: {error}")))?;
+        .map_err(|error| FetchError::Failed(format!("{}: {error}", path.display())))?;
     if body.len() as u64 > limit {
-        return Err(FetchError::Failed(format!("{path}: file too large")));
+        return Err(FetchError::Failed(format!(
+            "{}: file too large",
+            path.display()
+        )));
     }
     Ok(body)
 }

@@ -532,6 +532,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "libc",
+ "percent-encoding",
  "pulldown-cmark",
  "ratatui",
  "serde",

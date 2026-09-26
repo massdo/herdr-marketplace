@@ -599,3 +599,29 @@ fn temp_file(name: &str, body: &[u8]) -> PathBuf {
     std::fs::write(&path, body).unwrap();
     path
 }
+
+#[test]
+fn file_urls_decode_spaces_unicode_and_reserved_filename_characters() {
+    use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+    let path = temp_file("my café #100%.json", b"catalog");
+    let encoded = path
+        .to_str()
+        .unwrap()
+        .split('/')
+        .map(|segment| utf8_percent_encode(segment, NON_ALPHANUMERIC).to_string())
+        .collect::<Vec<_>>()
+        .join("/");
+    for authority in ["", "localhost"] {
+        let url = format!("file://{authority}{encoded}");
+        assert_eq!(HttpFetcher::new().fetch(&url, 1024).unwrap(), b"catalog");
+        assert!(matches!(
+            HttpFetcher::new().fetch(&url, 2),
+            Err(FetchError::Failed(_))
+        ));
+    }
+    assert!(matches!(
+        HttpFetcher::new().fetch("file://remote/tmp/index.json", 1024),
+        Err(FetchError::Failed(_))
+    ));
+    std::fs::remove_file(path).unwrap();
+}
