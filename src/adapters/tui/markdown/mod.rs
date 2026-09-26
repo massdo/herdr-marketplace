@@ -26,6 +26,8 @@ const CHIP_BG: Color = Color::Rgb(0x3d, 0x44, 0x4d);
 /// Text of a quote, GitHub's grey.
 const QUOTE: Color = Color::Rgb(0x9d, 0xa5, 0xb0);
 const LIST_MARKERS: [&str; 3] = ["• ", "◦ ", "▪ "];
+/// Images the HTML makes this narrow are icons, left in the text.
+const ICON_PIXELS: u32 = 48;
 
 /// A README laid out for a width.
 #[derive(Debug, Clone, Default)]
@@ -556,7 +558,7 @@ impl<'a> Renderer<'a> {
                 }
             }
             "br" => self.flush(),
-            "p" | "div" | "center" => {
+            "p" | "div" | "center" | "td" | "th" => {
                 self.flush();
                 let centered = name == "center"
                     || html::attribute(attributes, "align")
@@ -596,7 +598,7 @@ impl<'a> Renderer<'a> {
                 self.open_links.pop();
             }
             "picture" => self.picture = None,
-            "p" | "div" | "center" => {
+            "p" | "div" | "center" | "td" | "th" => {
                 self.flush();
                 if let Some(open) = self.centered.iter().rposition(|(open, _)| open == name) {
                     self.centered.truncate(open);
@@ -617,7 +619,6 @@ impl<'a> Renderer<'a> {
                 self.blank();
             }
             "li" | "tr" | "ul" | "ol" => self.flush(),
-            "td" | "th" => self.text(" "),
             _ => {}
         }
     }
@@ -709,8 +710,10 @@ impl<'a> Renderer<'a> {
         });
     }
 
-    /// Lays out the pending inline content. A paragraph of images only draws
-    /// them; badges, and images among text, become small labels.
+    /// Lays out the pending inline content. Images take their own lines, as
+    /// a browser shows those wider than the text around them; badges, icons
+    /// and images without an address stay labels in the text, unless they are
+    /// all a paragraph has.
     fn flush(&mut self) {
         let pieces = std::mem::take(&mut self.pieces);
         if pieces.is_empty() {
@@ -719,32 +722,33 @@ impl<'a> Renderer<'a> {
         let pictures_only = pieces.iter().all(|piece| match piece {
             Piece::Image { .. } => true,
             Piece::Text { text, .. } => text.trim().is_empty(),
-        }) && pieces.iter().any(|piece| {
-            matches!(piece, Piece::Image { url, .. } if !url.as_deref().is_some_and(is_badge))
         });
-        if !pictures_only {
-            let segments = self.segments(pieces);
-            self.push_text(segments);
-            return;
-        }
-        let mut labels = Vec::new();
+        let mut text = Vec::new();
         for piece in pieces {
-            if let Piece::Image {
-                url,
-                alt,
-                hint,
-                link,
-            } = &piece
-                && !url.as_deref().is_some_and(is_badge)
-            {
-                let before = self.segments(std::mem::take(&mut labels));
-                self.push_text(before);
-                self.picture(url.clone(), alt, *hint, *link);
-            } else {
-                labels.push(piece);
+            let block = match &piece {
+                Piece::Image {
+                    url: Some(url),
+                    hint,
+                    ..
+                } => !is_badge(url) && hint.is_none_or(|width| width > ICON_PIXELS),
+                Piece::Image { url: None, .. } => pictures_only,
+                Piece::Text { .. } => false,
+            };
+            match piece {
+                Piece::Image {
+                    url,
+                    alt,
+                    hint,
+                    link,
+                } if block => {
+                    let before = self.segments(std::mem::take(&mut text));
+                    self.push_text(before);
+                    self.picture(url, &alt, hint, link);
+                }
+                piece => text.push(piece),
             }
         }
-        let after = self.segments(labels);
+        let after = self.segments(text);
         self.push_text(after);
     }
 

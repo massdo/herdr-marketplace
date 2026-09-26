@@ -4,7 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::text::Line;
 
 use super::details_view;
-use super::graphics::Pictures;
+use super::graphics::{Graphics, Pictures};
 use super::markdown::{self, LinkArea};
 use super::preview::preview_lines;
 use super::style::Tone;
@@ -248,6 +248,12 @@ impl DetailsApp {
             Err(error) => ReadmeState::NetworkError(error),
         };
         self.scroll = 0;
+        self.render();
+    }
+
+    /// The terminal is known: images are laid out again, drawn this way.
+    pub fn set_graphics(&mut self, graphics: Graphics) {
+        self.pictures.decide(graphics);
         self.render();
     }
 

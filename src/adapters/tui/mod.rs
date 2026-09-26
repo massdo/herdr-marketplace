@@ -51,6 +51,7 @@ use crate::domain::uninstall::RemovalPlan;
 
 use self::details::{DetailsApp, DetailsIntent, InstalledView};
 use self::focus::FocusClicks;
+use self::graphics::Probe;
 use self::sidebar::{Intent, SidebarApp};
 
 type Screen = Terminal<CrosstermBackend<io::Stdout>>;
@@ -184,8 +185,15 @@ pub fn run_details(process: ProcessEnv, target: DetailsTarget) -> Result<(), App
     let (sender, receiver) = mpsc::channel();
     let mut terminal = setup()?;
     // Before the event reader starts: the answers come on the input.
-    app.pictures.graphics = Some(graphics::detect());
-    let result = details_loop(&mut terminal, &mut app, &operations, &sender, &receiver);
+    let probe = graphics::probe();
+    let result = details_loop(
+        &mut terminal,
+        &mut app,
+        probe,
+        &operations,
+        &sender,
+        &receiver,
+    );
     let _ = teardown(&mut terminal);
     if let Some(pane_id) = process.own_pane_id {
         let _ = close_details(&herdr, &pane_id);
@@ -196,12 +204,31 @@ pub fn run_details(process: ProcessEnv, target: DetailsTarget) -> Result<(), App
 fn details_loop(
     terminal: &mut Screen,
     app: &mut DetailsApp,
+    probe: Probe,
     operations: &FsOperations,
     sender: &Sender<DetailsAnswer>,
     receiver: &Receiver<DetailsAnswer>,
 ) -> Result<(), AppError> {
     let mut focus = FocusClicks::default();
+    let started = Instant::now();
+    let mut waiting = match probe {
+        Probe::Known(graphics) => {
+            app.set_graphics(graphics);
+            None
+        }
+        Probe::Waiting { fallback } => Some(fallback),
+    };
     loop {
+        // Herdr gives a new pane its size in pixels with its first layout.
+        if let Some(fallback) = waiting {
+            let window = crossterm::terminal::window_size()
+                .ok()
+                .map(|size| (size.columns, size.rows, size.width, size.height));
+            if let Some(graphics) = graphics::settle(window, started.elapsed(), fallback) {
+                app.set_graphics(graphics);
+                waiting = None;
+            }
+        }
         for intent in std::mem::take(&mut app.intents) {
             let sender = sender.clone();
             let target = app.target.clone();

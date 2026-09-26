@@ -12,8 +12,8 @@ use herdr_marketplace::adapters::images::{Picture, decode};
 use herdr_marketplace::adapters::tui::details::{DetailsApp, DetailsIntent};
 use herdr_marketplace::adapters::tui::details_view;
 use herdr_marketplace::adapters::tui::graphics::{
-    Graphics, PictureState, Pictures, block_lines, fit, from_replies, image_id, kitty_row,
-    kitty_transmit,
+    Graphics, LAYOUT_WAIT, PictureState, Pictures, Probe, block_lines, fit, from_replies, image_id,
+    kitty_row, kitty_transmit, settle,
 };
 use herdr_marketplace::adapters::tui::markdown::{Rendered, render_readme};
 use herdr_marketplace::application::load_readme::Readme;
@@ -179,29 +179,51 @@ fn github_pages_and_anchors_are_github_ones() {
 
 #[test]
 fn the_terminal_answers_decide_how_images_are_drawn() {
-    let kitty = b"\x1b_Gi=31;OK\x1b\\\x1b[6;17;8t\x1b[?62;22c";
+    let kitty = Graphics::Kitty {
+        cell_width: 8,
+        cell_height: 17,
+    };
+    let answers = b"\x1b_Gi=31;OK\x1b\\\x1b[6;17;8t\x1b[?62;22c";
+    assert_eq!(from_replies(answers, None), Probe::Known(kitty));
     assert_eq!(
-        from_replies(kitty, None),
-        Graphics::Kitty {
-            cell_width: 8,
-            cell_height: 17
-        }
+        from_replies(b"\x1b[?62;22c", None),
+        Probe::Known(Graphics::Blocks)
     );
-    // Herdr with its kitty graphics off still answers the query, but no
-    // cell size: its client would not draw the images.
+    assert_eq!(from_replies(b"", None), Probe::Known(Graphics::Blocks));
+    assert_eq!(
+        from_replies(answers, Some("blocks")),
+        Probe::Known(Graphics::Blocks)
+    );
+    assert_eq!(
+        from_replies(answers, Some("off")),
+        Probe::Known(Graphics::Off)
+    );
+    // Herdr accepts kitty images, but a pane it just opened has no pixel
+    // size yet: the decision waits for its first layout.
+    let fallback = Graphics::Blocks;
     assert_eq!(
         from_replies(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22c", None),
-        Graphics::Blocks
+        Probe::Waiting { fallback }
     );
-    assert_eq!(from_replies(b"\x1b[?62;22c", None), Graphics::Blocks);
-    assert_eq!(from_replies(b"", None), Graphics::Blocks);
-    assert_eq!(from_replies(kitty, Some("blocks")), Graphics::Blocks);
-    assert_eq!(from_replies(kitty, Some("off")), Graphics::Off);
+    assert_eq!(
+        settle(Some((73, 49, 0, 0)), LAYOUT_WAIT / 2, fallback),
+        None
+    );
+    assert_eq!(
+        settle(Some((73, 49, 1168, 1666)), LAYOUT_WAIT / 2, fallback),
+        Some(Graphics::Kitty {
+            cell_width: 16,
+            cell_height: 34
+        })
+    );
+    assert_eq!(settle(None, LAYOUT_WAIT, fallback), Some(Graphics::Blocks));
     assert_eq!(
         from_replies(b"", Some("kitty")),
-        Graphics::Kitty {
-            cell_width: 8,
-            cell_height: 16
+        Probe::Waiting {
+            fallback: Graphics::Kitty {
+                cell_width: 8,
+                cell_height: 16
+            }
         }
     );
 }
@@ -322,7 +344,18 @@ fn pictures_load_once_and_kitty_images_follow_the_layout() {
 
     let mut off = Pictures::new(Graphics::Off);
     assert!(!off.request(url), "no download when images are off");
-    assert!(!Pictures::default().request(url));
+    let mut undecided = Pictures::default();
+    assert!(
+        undecided.request(url),
+        "images download while the terminal is probed"
+    );
+    undecided.loaded(url, Ok(picture(160, 80)));
+    assert!(
+        undecided.lines(url, None, 40).is_none(),
+        "but are drawn once it is known"
+    );
+    undecided.decide(Graphics::Blocks);
+    assert!(undecided.lines(url, None, 40).is_some());
     pictures.loaded("https://example.com/broken.png", Err("404".into()));
     assert!(
         pictures
@@ -627,7 +660,7 @@ fn open_on_github_opens_the_plugin_folder_at_the_commit() {
 #[test]
 fn the_details_pane_asks_for_the_images_once_and_draws_them_when_they_arrive() {
     let mut app = DetailsApp::new(target());
-    app.pictures.graphics = Some(Graphics::Blocks);
+    app.set_graphics(Graphics::Blocks);
     app.set_viewport(60, details_view::page_rows(&app, 60, 20));
     app.intents.clear();
     app.readme_loaded(
@@ -649,4 +682,41 @@ fn the_details_pane_asks_for_the_images_once_and_draws_them_when_they_arrive() {
         .filter(|line| line.spans.iter().any(|span| span.content == "▀"))
         .count();
     assert_eq!(blocks, 2 * 4, "twice the same image of 15 × 4 cells");
+}
+
+#[test]
+fn images_take_their_own_lines_and_icons_stay_in_the_text() {
+    let mut pictures = Pictures::new(Graphics::Blocks);
+    let rendered = render(
+        concat!(
+            "<table><tr>",
+            "<td align=\"center\"><img src=\"a.png\" alt=\"A\" width=\"250\"><br><b>A</b> caption</td>",
+            "<td align=\"center\"><img src=\"b.png\" alt=\"B\" width=\"250\"><br><b>B</b> caption</td>",
+            "</tr></table>\n\n",
+            "Text with an <img src=\"icon.png\" alt=\"icon\" width=\"16\"> inside.",
+        ),
+        40,
+        &mut pictures,
+    );
+    let text: Vec<String> = texts(&rendered.lines)
+        .into_iter()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let trimmed: Vec<&str> = text.iter().map(|line| line.trim()).collect();
+    assert_eq!(
+        trimmed,
+        [
+            "[image: A]",
+            "A caption",
+            "[image: B]",
+            "B caption",
+            "Text with an \u{a0}icon\u{a0} inside."
+        ],
+        "each image of a table cell on its own lines, its caption under it"
+    );
+    assert!(
+        text[0].starts_with("               "),
+        "cells centered: {text:#?}"
+    );
+    assert_eq!(rendered.images.len(), 2, "an icon stays a label");
 }

@@ -23,6 +23,8 @@ pub const IMAGES_ENV: &str = "HERDR_MARKETPLACE_IMAGES";
 pub const QUERY: &str = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t\x1b[c";
 /// Images a README may load.
 pub const MAX_PICTURES: usize = 16;
+/// How long a new pane waits for Herdr to give it its size in pixels.
+pub const LAYOUT_WAIT: Duration = Duration::from_secs(3);
 /// Rows an image may take, so that a tall one does not fill the pane.
 const MAX_ROWS: usize = 28;
 /// GitHub's README column, in pixels: wider images are shrunk to it.
@@ -56,36 +58,82 @@ impl Graphics {
     }
 }
 
-/// How this pane draws images: `IMAGES_ENV` first, then the terminal's
-/// answers. Herdr answers the graphics query from its own terminal, and the
-/// cell size only when it draws images for its client.
-pub fn detect() -> Graphics {
-    let forced = std::env::var(IMAGES_ENV).ok();
-    match forced.as_deref().map(str::trim) {
-        Some("off") => return Graphics::Off,
-        Some("blocks") => return Graphics::Blocks,
-        _ => {}
-    }
-    from_replies(&ask_terminal(Duration::from_millis(500)), forced.as_deref())
+/// What a pane learns of its terminal when it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Probe {
+    Known(Graphics),
+    /// Herdr draws kitty images, but gives a new pane its size in pixels
+    /// only with its first layout: `settle` decides then, or falls back.
+    Waiting {
+        fallback: Graphics,
+    },
 }
 
-/// What the answers to `QUERY` allow.
-pub fn from_replies(replies: &[u8], forced: Option<&str>) -> Graphics {
+/// How this pane draws images: `IMAGES_ENV` first, then the terminal's
+/// answers.
+pub fn probe() -> Probe {
+    let forced = std::env::var(IMAGES_ENV).ok();
+    match forced.as_deref().map(str::trim) {
+        Some("off") => Probe::Known(Graphics::Off),
+        Some("blocks") => Probe::Known(Graphics::Blocks),
+        _ => from_replies(&ask_terminal(Duration::from_millis(500)), forced.as_deref()),
+    }
+}
+
+/// What the answers to `QUERY` allow. Herdr answers the graphics query from
+/// its own terminal whatever its client, and the cell size only once it
+/// knows the pane's pixels, which it gives only to clients it draws images
+/// for.
+pub fn from_replies(replies: &[u8], forced: Option<&str>) -> Probe {
     let text = String::from_utf8_lossy(replies);
     let kitty = text.contains("\x1b_Gi=31;OK");
-    let cell = cell_size(&text);
-    match (forced.map(str::trim), kitty, cell) {
-        (Some("off"), _, _) => Graphics::Off,
-        (Some("blocks"), _, _) => Graphics::Blocks,
-        (Some("kitty"), _, cell) | (_, true, cell @ Some(_)) => {
-            let (cell_width, cell_height) = cell.unwrap_or((8, 16));
-            Graphics::Kitty {
-                cell_width,
-                cell_height,
-            }
-        }
-        _ => Graphics::Blocks,
+    let forced = forced.map(str::trim);
+    match (forced, kitty, cell_size(&text)) {
+        (Some("off"), _, _) => Probe::Known(Graphics::Off),
+        (Some("blocks"), _, _) => Probe::Known(Graphics::Blocks),
+        (Some("kitty"), _, Some((cell_width, cell_height)))
+        | (_, true, Some((cell_width, cell_height))) => Probe::Known(Graphics::Kitty {
+            cell_width,
+            cell_height,
+        }),
+        (Some("kitty"), _, None) => Probe::Waiting {
+            fallback: Graphics::Kitty {
+                cell_width: 8,
+                cell_height: 16,
+            },
+        },
+        (_, true, None) => Probe::Waiting {
+            fallback: Graphics::Blocks,
+        },
+        _ => Probe::Known(Graphics::Blocks),
     }
+}
+
+/// Kitty images once the pane has its size in pixels, `columns` × `rows`
+/// cells in `width` × `height` pixels; `fallback` after `LAYOUT_WAIT`.
+pub fn settle(
+    window: Option<(u16, u16, u16, u16)>,
+    waited: Duration,
+    fallback: Graphics,
+) -> Option<Graphics> {
+    match window
+        .and_then(|(columns, rows, width, height)| cell_from_window(columns, rows, width, height))
+    {
+        Some((cell_width, cell_height)) => Some(Graphics::Kitty {
+            cell_width,
+            cell_height,
+        }),
+        None => (waited >= LAYOUT_WAIT).then_some(fallback),
+    }
+}
+
+/// Cell size in pixels of a window, when its pixels are known.
+pub fn cell_from_window(columns: u16, rows: u16, width: u16, height: u16) -> Option<(u16, u16)> {
+    if columns == 0 || rows == 0 {
+        return None;
+    }
+    let cell = (width / columns, height / rows);
+    (cell.0 > 0 && cell.1 > 0).then_some(cell)
 }
 
 /// `ESC [ 6 ; height ; width t`.
@@ -278,7 +326,9 @@ pub enum PictureState {
 /// layout, and the kitty images the terminal holds.
 #[derive(Debug, Clone, Default)]
 pub struct Pictures {
-    pub graphics: Option<Graphics>,
+    /// How images are drawn; `None` until the terminal is known, when they
+    /// already download but show their alternative text.
+    graphics: Option<Graphics>,
     states: HashMap<String, PictureState>,
     blocks: HashMap<(String, u16, u16), Vec<Line<'static>>>,
     sent: HashSet<u32>,
@@ -294,13 +344,17 @@ impl Pictures {
         }
     }
 
-    fn graphics(&self) -> Graphics {
-        self.graphics.unwrap_or(Graphics::Off)
+    pub fn graphics(&self) -> Option<Graphics> {
+        self.graphics
+    }
+
+    pub fn decide(&mut self, graphics: Graphics) {
+        self.graphics = Some(graphics);
     }
 
     /// Marks `url` as loading; true when its download must start.
     pub fn request(&mut self, url: &str) -> bool {
-        if self.graphics() == Graphics::Off
+        if self.graphics == Some(Graphics::Off)
             || self.states.contains_key(url)
             || self.states.len() >= MAX_PICTURES
         {
@@ -335,7 +389,7 @@ impl Pictures {
         hint: Option<u32>,
         room: usize,
     ) -> Option<Vec<Line<'static>>> {
-        let graphics = self.graphics();
+        let graphics = self.graphics?;
         let Some(PictureState::Ready(picture)) = self.states.get(url) else {
             return None;
         };
