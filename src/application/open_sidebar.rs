@@ -39,7 +39,7 @@ pub fn open_sidebar<H: HerdrPort>(herdr: &H, origin: &OriginContext) -> Result<P
             Ok(()) => error,
             Err(AppError::Uncertain { .. }) => AppError::uncertain(
                 "plugin.pane.close",
-                "sidebar ouverte mais une étape suivante a échoué et sa fermeture n'est pas confirmée",
+                "sidebar opened but a later step failed and close was not confirmed",
             ),
             Err(_) => error,
         }

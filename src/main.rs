@@ -27,7 +27,7 @@ fn run() -> Result<(), AppError> {
             Ok(())
         }
         Some(other) => Err(AppError::Io {
-            message: format!("argument inconnu : {other}"),
+            message: format!("unknown argument: {other}"),
         }),
         None => tui::run_sidebar(env::load()?),
     }
@@ -46,7 +46,7 @@ fn operation(request: Option<&String>) -> Result<(), AppError> {
     let request: OperationRequest = request
         .and_then(|json| serde_json::from_str(json).ok())
         .ok_or_else(|| AppError::Io {
-            message: "requête d'opération illisible".into(),
+            message: "unreadable operation request".into(),
         })?;
     let process = env::load()?;
     run_operation(

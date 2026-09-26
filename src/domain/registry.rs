@@ -79,13 +79,13 @@ struct RawSource {
 /// Every installed plugin, or why the registry cannot be read.
 pub fn parse_registry(json: &str) -> Result<Vec<InstalledPlugin>, String> {
     let response: Response = serde_json::from_str(json)
-        .map_err(|error| format!("réponse de herdr plugin list illisible : {error}"))?;
+        .map_err(|error| format!("unreadable answer from herdr plugin list: {error}"))?;
     if let Some(error) = response.error {
-        return Err(format!("herdr plugin list a répondu une erreur : {error}"));
+        return Err(format!("herdr plugin list answered an error: {error}"));
     }
     let result = response
         .result
-        .ok_or("réponse de herdr plugin list sans résultat")?;
+        .ok_or("herdr plugin list answered no result")?;
     result.plugins.into_iter().map(installed).collect()
 }
 
@@ -103,12 +103,12 @@ fn installed(raw: RawPlugin) -> Result<InstalledPlugin, String> {
             },
             _ => {
                 return Err(format!(
-                    "plugin {} installé depuis GitHub sans owner/repo",
+                    "plugin {} installed from GitHub without owner/repo",
                     raw.plugin_id
                 ));
             }
         },
-        Some(other) => return Err(format!("source de plugin inconnue : {other}")),
+        Some(other) => return Err(format!("unknown plugin source: {other}")),
     };
     Ok(InstalledPlugin {
         plugin_id: raw.plugin_id,

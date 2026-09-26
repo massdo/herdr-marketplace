@@ -67,8 +67,8 @@ impl OperationRecord {
 }
 
 /// An install succeeds when Herdr answers 0 and the registry shows the
-/// source at the commit; code 0 without that is « résultat non confirmé »,
-/// never a success. A removal succeeds when Herdr answers 0 and the source is
+/// source at the commit; code 0 without that is an unconfirmed result, never
+/// a success. A removal succeeds when Herdr answers 0 and the source is
 /// gone from the registry; anything else is a failure.
 pub fn operation_status(
     exit_code: Option<i32>,
@@ -106,13 +106,13 @@ pub fn registry_state(
     source: &PluginSource,
 ) -> String {
     match registry {
-        Err(error) => format!("état inconnu, registre illisible : {error}"),
+        Err(error) => format!("unknown state, unreadable registry: {error}"),
         Ok(registry) => match installed_from(registry, source) {
             Ok(Some(plugin)) => format!(
-                "installé à {}",
-                plugin.resolved_commit().unwrap_or("un commit inconnu")
+                "installed at {}",
+                plugin.resolved_commit().unwrap_or("an unknown commit")
             ),
-            Ok(None) => "non installé".to_string(),
+            Ok(None) => "not installed".to_string(),
             Err(error) => error,
         },
     }

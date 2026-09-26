@@ -35,11 +35,11 @@ impl Operations for FsOperations {
             .create(true)
             .truncate(false)
             .open(&path)
-            .map_err(|error| format!("{} : {error}", path.display()))?;
+            .map_err(|error| format!("{}: {error}", path.display()))?;
         match file.try_lock() {
             Ok(()) => Ok(Some(file)),
             Err(TryLockError::WouldBlock) => Ok(None),
-            Err(TryLockError::Error(error)) => Err(format!("{} : {error}", path.display())),
+            Err(TryLockError::Error(error)) => Err(format!("{}: {error}", path.display())),
         }
     }
 

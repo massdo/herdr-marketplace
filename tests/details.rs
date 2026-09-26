@@ -180,7 +180,7 @@ fn a_network_error_can_be_retried_and_older_answers_are_dropped() {
         [DetailsIntent::LoadReadme(1), DetailsIntent::ReadRegistry(1)]
     );
     app.intents.clear();
-    app.readme_loaded(1, Err("connexion refusée".into()));
+    app.readme_loaded(1, Err("connection refused".into()));
     assert!(matches!(app.readme, ReadmeState::NetworkError(_)));
 
     app.handle_key(key(KeyCode::Enter));
@@ -273,7 +273,7 @@ fn the_header_shows_identity_and_a_short_sha_with_the_full_one_on_demand() {
     );
     assert!(lines[2].starts_with("commit c8268d4 "), "{lines:#?}");
     assert!(
-        lines[3].starts_with("Pas de README.md dans alt/ : README.md racine du dépôt affiché"),
+        lines[3].starts_with("No README.md in alt/: showing the repository root README.md"),
         "{lines:#?}"
     );
     assert!(lines[5].starts_with("Root README"), "{lines:#?}");
@@ -387,10 +387,10 @@ fn every_listed_markdown_element_is_rendered() {
     has("──────────┼──────");
     has("a         │     1");
     has("long cell │    22");
-    has("[image : diagram]");
-    has("[image : logo]");
+    has("[image: diagram]");
+    has("[image: logo]");
     has("kept text & more");
-    has("Inline [image : small icon] and span text.");
+    has("Inline [image: small icon] and span text.");
 }
 
 #[test]

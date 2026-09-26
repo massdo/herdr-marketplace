@@ -14,7 +14,7 @@ use crate::domain::text::clean;
 
 /// Terminal lines per plugin: name, owner/repo, marks and description.
 pub const ROW_HEIGHT: usize = 3;
-const FOOTER: &str = "Entrée fiche · Échap fermer";
+const FOOTER: &str = "Enter: details · Esc: close";
 
 /// Plugins the list area of a `width` × `height` pane shows.
 pub fn page_rows(app: &SidebarApp, width: u16, height: u16) -> usize {
@@ -28,7 +28,7 @@ pub fn render(frame: &mut Frame, app: &SidebarApp) {
     let mut lines = header(app, width);
     let list_height = (area.height as usize).saturating_sub(lines.len() + 1);
     let mut body = match &app.state {
-        LoadState::Loading => vec![Line::styled("Chargement du catalogue…", muted())],
+        LoadState::Loading => vec![Line::styled("Loading catalog…", muted())],
         LoadState::Failed(error) => failure(error, width),
         LoadState::Ready(_) => list(app, width),
     };
@@ -43,7 +43,7 @@ fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     let search = if app.query.is_empty() {
         Line::from(vec![
             Span::styled("> ", Style::default().fg(ACCENT)),
-            Span::styled("Rechercher un plugin", muted()),
+            Span::styled("Search plugins", muted()),
         ])
     } else {
         Line::from(vec![
@@ -54,17 +54,17 @@ fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     let mut lines = vec![search];
     if let LoadState::Ready(loaded) = &app.state {
         let count = app.visible.len();
-        let plural = if count > 1 { "s" } else { "" };
+        let plural = if count == 1 { "" } else { "s" };
         lines.push(Line::styled(
-            ellipsize(&format!("{count} résultat{plural}"), width),
+            ellipsize(&format!("{count} result{plural}"), width),
             muted(),
         ));
         let hidden = loaded.listing.hidden_incompatible;
         if hidden > 0 {
-            let plural = if hidden > 1 { "s" } else { "" };
+            let plural = if hidden == 1 { "" } else { "s" };
             lines.push(Line::styled(
                 ellipsize(
-                    &format!("{hidden} incompatible{plural} masqué{plural}"),
+                    &format!("{hidden} incompatible plugin{plural} hidden"),
                     width,
                 ),
                 muted(),
@@ -72,10 +72,7 @@ fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
         }
         if loaded.registry_error.is_some() {
             lines.push(Line::styled(
-                ellipsize(
-                    "Registre Herdr illisible : état d'installation inconnu",
-                    width,
-                ),
+                ellipsize("Herdr registry unreadable: install state unknown", width),
                 Style::default().fg(WARN),
             ));
         }
@@ -91,23 +88,20 @@ fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
 }
 
 fn failure(error: &str, width: usize) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::styled(
-        "Échec du chargement",
-        Style::default().fg(ERROR),
-    )];
+    let mut lines = vec![Line::styled("Loading failed", Style::default().fg(ERROR))];
     lines.extend(
         wrap(&clean(error), width)
             .into_iter()
             .map(|line| Line::styled(line, muted())),
     );
     lines.push(Line::default());
-    lines.push(Line::styled("Entrée : réessayer", bold()));
+    lines.push(Line::styled("Enter: retry", bold()));
     lines
 }
 
 fn list(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     if app.visible.is_empty() {
-        return vec![Line::styled("Aucun plugin ne correspond", muted())];
+        return vec![Line::styled("No matching plugin", muted())];
     }
     let rows = app.rows();
     let selected = app.selected_position();
@@ -180,13 +174,13 @@ fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
 fn marks(row: &Row) -> Vec<(&'static str, ratatui::style::Color)> {
     let mut marks = Vec::new();
     if row.installed.is_some() {
-        marks.push(("installé", OK));
+        marks.push(("installed", OK));
     }
     if !row.compatible {
         marks.push(("incompatible", WARN));
     }
     if !row.in_catalog {
-        marks.push(("hors catalogue", WARN));
+        marks.push(("not in catalog", WARN));
     }
     marks
 }

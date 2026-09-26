@@ -23,7 +23,7 @@ pub enum FetchError {
 impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotFound => write!(f, "introuvable"),
+            Self::NotFound => write!(f, "not found"),
             Self::Failed(detail) => write!(f, "{detail}"),
         }
     }

@@ -143,7 +143,7 @@ fn code_zero_confirmed_by_the_registry_is_a_success() {
     assert_eq!(record.exit_code, Some(0));
     assert_eq!(
         record.registry_after.as_deref(),
-        Some(format!("installé à {SHA_A}").as_str())
+        Some(format!("installed at {SHA_A}").as_str())
     );
     assert_eq!(
         *herdr.ran.borrow(),
@@ -182,18 +182,18 @@ fn a_non_zero_code_is_a_failure_with_herdr_output_and_the_registry_state() {
     assert!(record.output.contains("plugin build failed"));
     assert_eq!(
         record.registry_after.as_deref(),
-        Some(format!("installé à {SHA_B}").as_str())
+        Some(format!("installed at {SHA_B}").as_str())
     );
 
     let mut app = DetailsApp::new(target());
     app.operation_seen(Some(record));
     let text = details_text(&app);
     assert!(
-        text.contains("Échec de l'installation de c8268d4 (code 1)"),
+        text.contains("Install of c8268d4 failed (code 1)"),
         "{text}"
     );
     assert!(
-        text.contains(&format!("Registre : installé à {SHA_B}")),
+        text.contains(&format!("Registry: installed at {SHA_B}")),
         "{text}"
     );
     assert!(text.contains("Plugin was not installed."), "{text}");
@@ -202,15 +202,15 @@ fn a_non_zero_code_is_a_failure_with_herdr_output_and_the_registry_state() {
 #[test]
 fn an_unreadable_registry_after_the_command_leaves_the_state_unknown() {
     let operations = FsOperations::new(state_dir());
-    let herdr = FakeInstall::new(Some(0), "", Err("socket fermé".into()));
+    let herdr = FakeInstall::new(Some(0), "", Err("socket closed".into()));
     let record = run_operation(&herdr, &operations, &request(SHA_A));
     assert_eq!(record.status, Status::Unconfirmed);
-    assert!(record.registry_after.unwrap().starts_with("état inconnu"));
+    assert!(record.registry_after.unwrap().starts_with("unknown state"));
 
-    let herdr = FakeInstall::new(Some(1), "boom", Err("socket fermé".into()));
+    let herdr = FakeInstall::new(Some(1), "boom", Err("socket closed".into()));
     let record = run_operation(&herdr, &operations, &request(SHA_A));
     assert_eq!(record.status, Status::Failed);
-    assert!(record.registry_after.unwrap().starts_with("état inconnu"));
+    assert!(record.registry_after.unwrap().starts_with("unknown state"));
 }
 
 #[test]
@@ -260,7 +260,7 @@ fn a_new_details_pane_reads_the_kept_result_again() {
     let mut app = DetailsApp::new(target());
     app.operation_seen(Some(record));
     assert!(
-        details_text(&app).contains("Installation de c8268d4 réussie"),
+        details_text(&app).contains("Install of c8268d4 succeeded"),
         "{}",
         details_text(&app)
     );
@@ -282,13 +282,13 @@ fn the_details_pane_shows_the_operation_in_progress_then_reads_the_registry() {
     app.intents.clear();
     app.operation_launched("op-1".into(), OperationKind::Install);
     app.operation_seen(None);
-    assert!(details_text(&app).contains("Installation en cours…"));
+    assert!(details_text(&app).contains("Installing…"));
     assert!(app.intents.is_empty());
 
     let mut running = OperationRecord::running(&request(SHA_A));
     running.request.id = "op-1".into();
     app.operation_seen(Some(running.clone()));
-    assert!(details_text(&app).contains("en cours"));
+    assert!(details_text(&app).contains("Installing c8268d4…"));
     assert!(app.intents.is_empty());
 
     let mut done = running;

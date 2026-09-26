@@ -36,13 +36,14 @@ impl HerdrSocket {
             "params": params,
         });
         let line = roundtrip(&self.path, &request.to_string(), method)?;
-        let value: Value = serde_json::from_str(line.trim())
-            .map_err(|error| AppError::uncertain(method, format!("réponse non JSON : {error}")))?;
+        let value: Value = serde_json::from_str(line.trim()).map_err(|error| {
+            AppError::uncertain(method, format!("response is not JSON: {error}"))
+        })?;
         let got_id = value.get("id").and_then(Value::as_str);
         if got_id != Some(id.as_str()) {
             return Err(AppError::uncertain(
                 method,
-                format!("l'id de réponse {got_id:?} ne correspond pas à la requête"),
+                format!("response id {got_id:?} does not match request"),
             ));
         }
         if let Some(error) = value.get("error") {
@@ -54,14 +55,14 @@ impl HerdrSocket {
             let message = error
                 .get("message")
                 .and_then(Value::as_str)
-                .unwrap_or("erreur Herdr")
+                .unwrap_or("herdr error")
                 .to_string();
             return Err(AppError::herdr(method, code, message));
         }
         value
             .get("result")
             .cloned()
-            .ok_or_else(|| AppError::uncertain(method, "réponse sans result ni error"))
+            .ok_or_else(|| AppError::uncertain(method, "response has neither result nor error"))
     }
 }
 
@@ -81,7 +82,7 @@ impl HerdrPort for HerdrSocket {
             .get("layout")
             .cloned()
             .ok_or_else(|| AppError::SnapshotUnreadable {
-                detail: "pane.layout sans layout".into(),
+                detail: "pane.layout result has no layout".into(),
             })?;
         serde_json::from_value(layout).map_err(|error| AppError::SnapshotUnreadable {
             detail: error.to_string(),
@@ -110,7 +111,10 @@ impl HerdrPort for HerdrSocket {
             .and_then(Value::as_str)
             .filter(|id| !id.trim().is_empty())
             .ok_or_else(|| {
-                AppError::uncertain("plugin.pane.open", "réponse sans plugin_pane.pane.pane_id")
+                AppError::uncertain(
+                    "plugin.pane.open",
+                    "response has no plugin_pane.pane.pane_id",
+                )
             })?;
         Ok(OpenedPane {
             pane_id: PaneId(pane_id.to_string()),
@@ -201,7 +205,7 @@ fn roundtrip(path: &Path, request: &str, method: &str) -> Result<String, AppErro
     if !line.ends_with('\n') {
         return Err(AppError::uncertain(
             method,
-            "réponse du socket vide, incomplète ou trop longue",
+            "socket response is empty, incomplete or exceeds the response limit",
         ));
     }
     Ok(line)

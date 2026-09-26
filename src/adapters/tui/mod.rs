@@ -122,7 +122,7 @@ fn sidebar_loop(
                     };
                     app.notice = opened
                         .err()
-                        .map(|error| format!("Fiche non ouverte : {error}"));
+                        .map(|error| format!("Details not opened: {error}"));
                 }
             }
         }
@@ -254,9 +254,7 @@ fn details_loop(
 /// runs.
 fn launch(app: &mut DetailsApp, operations: &FsOperations, kind: OperationKind, args: Vec<String>) {
     if operation_running(operations) {
-        app.operation_refused(
-            "Une opération de la marketplace est déjà en cours : demande refusée".into(),
-        );
+        app.operation_refused("Another marketplace operation is running: request refused".into());
         return;
     }
     let now = SystemTime::now()
@@ -272,7 +270,7 @@ fn launch(app: &mut DetailsApp, operations: &FsOperations, kind: OperationKind, 
     };
     match spawn_operation(&request) {
         Ok(()) => app.operation_launched(request.id, kind),
-        Err(error) => app.operation_refused(format!("Lancement impossible : {error}")),
+        Err(error) => app.operation_refused(format!("Could not start: {error}")),
     }
 }
 

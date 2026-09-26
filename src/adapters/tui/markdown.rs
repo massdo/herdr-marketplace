@@ -470,7 +470,7 @@ fn image(alt: &str) -> Span<'static> {
     let text = if alt.is_empty() {
         "[image]".to_string()
     } else {
-        format!("[image : {alt}]")
+        format!("[image: {alt}]")
     };
     Span::styled(text, Style::default().fg(MUTED))
 }
@@ -544,7 +544,7 @@ fn split_cells(text: &str, width: usize) -> Vec<String> {
     parts
 }
 
-/// HTML reduced to its text: `<img>` becomes `[image : alt]`, `<br>` and
+/// HTML reduced to its text: `<img>` becomes `[image: alt]`, `<br>` and
 /// block ends become line breaks, comments and every other tag disappear.
 fn html_text(html: &str) -> String {
     let mut out = String::new();

@@ -37,16 +37,16 @@ pub fn check_target(target: &DetailsTarget) -> Result<(), String> {
     let source = &target.source;
     let subdir_ok = source.subdir.is_empty() || source.subdir.split('/').all(is_subdir_segment);
     if !is_github_segment(&source.owner) || !is_github_segment(&source.repo) || !subdir_ok {
-        return Err(format!("source refusée par les règles de Herdr : {source}"));
+        return Err(format!("source rejected by Herdr's rules: {source}"));
     }
     if !is_full_sha(&target.commit) {
-        return Err(format!("SHA invalide : {}", target.commit));
+        return Err(format!("invalid SHA: {}", target.commit));
     }
     if !target.in_catalog {
-        return Err("plugin absent du catalogue : seul le retrait est possible".into());
+        return Err("plugin not in the catalog: it can only be removed".into());
     }
     if !target.compatible {
-        return Err("plugin incompatible : seul le retrait est possible".into());
+        return Err("incompatible plugin: it can only be removed".into());
     }
     Ok(())
 }
@@ -68,9 +68,7 @@ pub fn installed_from<'a>(
     match found.as_slice() {
         [] => Ok(None),
         [one] => Ok(Some(one)),
-        _ => Err(format!(
-            "plusieurs plugins installés correspondent à {source}"
-        )),
+        _ => Err(format!("several installed plugins match {source}")),
     }
 }
 
@@ -86,7 +84,7 @@ pub fn plan(
 ) -> Result<Plan, String> {
     if manifest.id != target.id.trim() {
         return Err(format!(
-            "le manifeste au commit visé déclare l'id {}, l'index annonce {}",
+            "the manifest at this commit declares id {}, the index announces {}",
             manifest.id, target.id
         ));
     }
@@ -97,7 +95,7 @@ pub fn plan(
         herdr,
     ) {
         return Err(format!(
-            "plugin incompatible : plateformes {:?}, Herdr {} minimum",
+            "incompatible plugin: platforms {:?}, Herdr {} or newer",
             manifest.platforms.as_deref().unwrap_or_default(),
             manifest.min_herdr_version
         ));
@@ -105,7 +103,7 @@ pub fn plan(
     if let Some(installed) = installed_from(registry, &target.source)? {
         if installed.plugin_id != manifest.id {
             return Err(format!(
-                "{} est installé sous l'id {}, le manifeste visé déclare {}",
+                "{} is installed as {}, the manifest at this commit declares {}",
                 target.source, installed.plugin_id, manifest.id
             ));
         }
@@ -119,11 +117,11 @@ pub fn plan(
         .map(|plugin| &plugin.source)
     {
         Some(InstalledSource::Local) => Err(format!(
-            "l'id {} est déjà lié en local : Herdr refuserait l'installation",
+            "id {} is already linked locally: Herdr would refuse the install",
             manifest.id
         )),
         Some(InstalledSource::Github { source, .. }) => Err(format!(
-            "l'id {} est déjà installé depuis {source} : Herdr le remplacerait",
+            "id {} is already installed from {source}: Herdr would replace it",
             manifest.id
         )),
         None => Ok(Plan::Install),

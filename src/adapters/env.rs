@@ -67,7 +67,7 @@ pub fn socket_path() -> Result<PathBuf, AppError> {
         return Ok(PathBuf::from(path));
     }
     let home = env::var_os("HOME").ok_or(AppError::Io {
-        message: "HOME et HERDR_SOCKET_PATH sont absents".into(),
+        message: "HOME is unset and HERDR_SOCKET_PATH is missing".into(),
     })?;
     Ok(PathBuf::from(home).join(".config/herdr/herdr.sock"))
 }
@@ -86,10 +86,10 @@ fn state_dir() -> PathBuf {
 /// Plugin and commit handed to a details pane by the sidebar.
 pub fn details_target() -> Result<DetailsTarget, AppError> {
     let raw = env_string(DETAILS_ENV).ok_or_else(|| AppError::Io {
-        message: format!("{DETAILS_ENV} absent : la fiche s'ouvre depuis la sidebar"),
+        message: format!("{DETAILS_ENV} is missing: the details pane opens from the sidebar"),
     })?;
     serde_json::from_str(&raw).map_err(|error| AppError::Io {
-        message: format!("{DETAILS_ENV} illisible : {error}"),
+        message: format!("{DETAILS_ENV} is unreadable: {error}"),
     })
 }
 

@@ -9,9 +9,8 @@ use super::style::{ERROR, MUTED, OK, WARN, bold, ellipsize, ellipsize_middle, mu
 use crate::domain::operation::{OperationKind, Status};
 use crate::domain::text::clean;
 
-const FOOTER: &str =
-    "i : installer · r : retirer · s : SHA complet · Échap : fermer · ↑↓ PgPréc PgSuiv Début Fin";
-const PREVIEW_FOOTER: &str = "Entrée : confirmer · Échap : annuler · ↑↓ PgPréc PgSuiv";
+const FOOTER: &str = "i: install · r: remove · s: full SHA · Esc: close · ↑↓ PgUp PgDn Home End";
+const PREVIEW_FOOTER: &str = "Enter: confirm · Esc: cancel · ↑↓ PgUp PgDn";
 
 /// README lines a `width` × `height` pane shows.
 pub fn page_rows(app: &DetailsApp, width: u16, height: u16) -> usize {
@@ -32,20 +31,20 @@ pub fn render(frame: &mut Frame, app: &DetailsApp) {
             .cloned()
             .collect(),
         _ if matches!(app.removal, RemovalState::Confirm(_)) => removal_lines(app, width),
-        ReadmeState::Loading => vec![Line::styled("Chargement du README…", muted())],
+        ReadmeState::Loading => vec![Line::styled("Loading README…", muted())],
         ReadmeState::NotFound => vec![Line::styled(
-            "README.md introuvable",
+            "README.md not found",
             Style::default().fg(WARN),
         )],
         ReadmeState::NetworkError(error) => {
-            let mut lines = vec![Line::styled("Erreur réseau", Style::default().fg(ERROR))];
+            let mut lines = vec![Line::styled("Network error", Style::default().fg(ERROR))];
             lines.extend(
                 wrap(&clean(error), width)
                     .into_iter()
                     .map(|line| Line::styled(line, muted())),
             );
             lines.push(Line::default());
-            lines.push(Line::styled("Entrée : réessayer", bold()));
+            lines.push(Line::styled("Enter: retry", bold()));
             lines
         }
         ReadmeState::Found { .. } => app
@@ -78,15 +77,15 @@ fn removal_lines(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
         .github_source()
         .map(ToString::to_string)
         .unwrap_or_default();
-    let mut lines = vec![Line::styled("Retrait", bold().fg(ERROR))];
+    let mut lines = vec![Line::styled("Remove", bold().fg(ERROR))];
     for text in [
-        format!("id : {}", installed.plugin_id),
-        format!("source : {source}"),
+        format!("id: {}", installed.plugin_id),
+        format!("source: {source}"),
         format!(
-            "commit installé : {}",
+            "installed commit: {}",
             installed.resolved_commit().unwrap_or_default()
         ),
-        "Herdr supprimera aussi son checkout.".to_string(),
+        "Herdr also deletes its checkout.".to_string(),
     ] {
         lines.extend(wrap(&clean(&text), width).into_iter().map(Line::raw));
     }
@@ -103,7 +102,7 @@ fn header(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
         title.push(Span::styled("  incompatible", Style::default().fg(WARN)));
     }
     if !target.in_catalog {
-        title.push(Span::styled("  hors catalogue", Style::default().fg(WARN)));
+        title.push(Span::styled("  not in catalog", Style::default().fg(WARN)));
     }
     let commit = if app.full_sha {
         target.commit.clone()
@@ -113,14 +112,14 @@ fn header(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
     let installed = match &app.installed {
         InstalledView::Unknown => Span::raw(""),
         InstalledView::At(sha) if *sha == target.commit => {
-            Span::styled(" · installé", Style::default().fg(OK))
+            Span::styled(" · installed", Style::default().fg(OK))
         }
         InstalledView::At(sha) => Span::styled(
-            format!(" · installé à {}", short(sha)),
+            format!(" · installed at {}", short(sha)),
             Style::default().fg(OK),
         ),
-        InstalledView::NotInstalled => Span::styled(" · non installé", muted()),
-        InstalledView::Uncertain(_) => Span::styled(" · état inconnu", Style::default().fg(WARN)),
+        InstalledView::NotInstalled => Span::styled(" · not installed", muted()),
+        InstalledView::Uncertain(_) => Span::styled(" · unknown state", Style::default().fg(WARN)),
     };
     let mut lines = vec![
         fit(Line::from(title), width),
@@ -132,14 +131,14 @@ fn header(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
             Line::from(vec![
                 Span::raw(format!("commit {}", clean(&commit))),
                 installed,
-                Span::styled("  (s : SHA complet)", muted()),
+                Span::styled("  (s: full SHA)", muted()),
             ]),
             width,
         ),
     ];
     if let ReadmeState::Found { fallback: true, .. } = app.readme {
         let notice = format!(
-            "Pas de README.md dans {}/ : README.md racine du dépôt affiché",
+            "No README.md in {}/: showing the repository root README.md",
             clean(&target.source.subdir)
         );
         lines.extend(
@@ -149,16 +148,17 @@ fn header(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
         );
     }
     let status = match (&app.install, &app.removal) {
-        (InstallState::Preparing, _) => Some(("Préparation de l'aperçu…".to_string(), MUTED)),
-        (InstallState::UpToDate, _) => {
-            Some(("Installé : ce commit est déjà installé".to_string(), OK))
-        }
+        (InstallState::Preparing, _) => Some(("Preparing preview…".to_string(), MUTED)),
+        (InstallState::UpToDate, _) => Some((
+            "Installed: this commit is already installed".to_string(),
+            OK,
+        )),
         (InstallState::Refused(reason), _) => {
-            Some((format!("Installation refusée : {}", clean(reason)), ERROR))
+            Some((format!("Install refused: {}", clean(reason)), ERROR))
         }
-        (_, RemovalState::Preparing) => Some(("Préparation du retrait…".to_string(), MUTED)),
+        (_, RemovalState::Preparing) => Some(("Preparing removal…".to_string(), MUTED)),
         (_, RemovalState::Refused(reason)) => {
-            Some((format!("Retrait impossible : {}", clean(reason)), ERROR))
+            Some((format!("Cannot remove: {}", clean(reason)), ERROR))
         }
         _ => None,
     };
@@ -189,8 +189,8 @@ const OUTPUT_LINES: usize = 8;
 fn operation_lines(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
     if let Some((_, kind)) = &app.launched {
         let text = match kind {
-            OperationKind::Install => "Installation en cours…",
-            OperationKind::Uninstall => "Retrait en cours…",
+            OperationKind::Install => "Installing…",
+            OperationKind::Uninstall => "Removing…",
         };
         return vec![Line::styled(text, Style::default().fg(WARN))];
     }
@@ -202,35 +202,27 @@ fn operation_lines(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
     let registry = record
         .registry_after
         .as_deref()
-        .map(|state| format!("Registre : {}", clean(state)));
+        .map(|state| format!("Registry: {}", clean(state)));
     let code = record
         .exit_code
-        .map_or("sans code de sortie".to_string(), |code| {
-            format!("code {code}")
-        });
+        .map_or("no exit code".to_string(), |code| format!("code {code}"));
     let (headline, color, details) = match (record.status, install) {
-        (Status::Running, true) => (format!("Installation de {sha} en cours…"), WARN, None),
-        (Status::Running, false) => ("Retrait en cours…".to_string(), WARN, None),
-        (Status::Succeeded, true) => (format!("Installation de {sha} réussie"), OK, None),
-        (Status::Succeeded, false) => ("Retrait réussi".to_string(), OK, registry),
-        (Status::Failed, true) => (
-            format!("Échec de l'installation de {sha} ({code})"),
-            ERROR,
-            registry,
-        ),
-        (Status::Failed, false) => (format!("Échec du retrait ({code})"), ERROR, registry),
+        (Status::Running, true) => (format!("Installing {sha}…"), WARN, None),
+        (Status::Running, false) => ("Removing…".to_string(), WARN, None),
+        (Status::Succeeded, true) => (format!("Install of {sha} succeeded"), OK, None),
+        (Status::Succeeded, false) => ("Removal succeeded".to_string(), OK, registry),
+        (Status::Failed, true) => (format!("Install of {sha} failed ({code})"), ERROR, registry),
+        (Status::Failed, false) => (format!("Removal failed ({code})"), ERROR, registry),
         (Status::Unconfirmed, true) => (
-            format!("Installation de {sha} : résultat non confirmé"),
+            format!("Install of {sha}: result not confirmed"),
             WARN,
             registry,
         ),
-        (Status::Unconfirmed, false) => (
-            "Retrait : résultat non confirmé".to_string(),
-            WARN,
-            registry,
-        ),
-        (Status::Refused, true) => (format!("Installation de {sha} refusée"), ERROR, None),
-        (Status::Refused, false) => ("Retrait refusé".to_string(), ERROR, None),
+        (Status::Unconfirmed, false) => {
+            ("Removal: result not confirmed".to_string(), WARN, registry)
+        }
+        (Status::Refused, true) => (format!("Install of {sha} refused"), ERROR, None),
+        (Status::Refused, false) => ("Removal refused".to_string(), ERROR, None),
     };
     let mut lines: Vec<Line<'static>> = wrap(&headline, width)
         .into_iter()

@@ -14,7 +14,7 @@ pub const MANIFEST_LIMIT: u64 = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Prepared {
-    /// Same source, same commit: « Installé », nothing to do.
+    /// Same source, same commit: already installed, nothing to do.
     UpToDate,
     Preview(Box<InstallPreview>),
     Refused(String),
@@ -58,9 +58,9 @@ fn preview<F: Fetcher, H: HerdrCli>(
         .version()
         .ok()
         .and_then(|output| Version::from_herdr_output(&output))
-        .ok_or("version de Herdr indéterminable")?;
+        .ok_or("cannot determine the Herdr version")?;
     let registry =
-        read_registry(herdr).map_err(|error| format!("registre Herdr illisible : {error}"))?;
+        read_registry(herdr).map_err(|error| format!("unreadable Herdr registry: {error}"))?;
     let installed = installed_from(&registry, &target.source)?.cloned();
     if installed
         .as_ref()
@@ -91,9 +91,9 @@ fn read_manifest<F: Fetcher>(fetcher: &F, target: &DetailsTarget) -> Result<Mani
     let body = fetcher
         .fetch(&url, MANIFEST_LIMIT)
         .map_err(|error| match error {
-            FetchError::NotFound => "herdr-plugin.toml introuvable au commit visé".to_string(),
-            FetchError::Failed(detail) => format!("erreur réseau : {detail}"),
+            FetchError::NotFound => "herdr-plugin.toml not found at this commit".to_string(),
+            FetchError::Failed(detail) => format!("network error: {detail}"),
         })?;
     parse_manifest(&String::from_utf8_lossy(&body))
-        .map_err(|error| format!("herdr-plugin.toml invalide : {error}"))
+        .map_err(|error| format!("invalid herdr-plugin.toml: {error}"))
 }

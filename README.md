@@ -1,21 +1,21 @@
 # herdr-marketplace
 
-La marketplace des plugins Herdr, dans une sidebar : chercher un plugin du
-catalogue public, lire son README, l'installer, le passer au commit du
-catalogue ou le retirer, sans quitter Herdr ni taper de commande
-`herdr plugin`. Le comportement suit celui de la marketplace d'extensions de
-VS Code, dans les limites d'un terminal.
+The Herdr plugin marketplace, in a sidebar: search the public plugin
+catalog, read a plugin's README, install it, move it to the catalog's commit
+or remove it, without leaving Herdr or typing `herdr plugin` commands. It
+behaves like the VS Code extensions marketplace, within the limits of a
+terminal.
 
-## Prérequis
+## Requirements
 
 - Herdr **0.9.1**
-- Rust **1.89** (édition 2024), pour construire le binaire. Si le Cargo de
-  Homebrew passe avant la chaîne installée par rustup, lancez d'abord
-  `export PATH="$HOME/.cargo/bin:$PATH"`.
-- macOS ou Linux, `git` (Herdr s'en sert pour installer les plugins) et un
-  accès réseau (catalogue, README et manifestes viennent de GitHub).
+- Rust **1.89** (edition 2024) to build the binary. If Homebrew's Cargo comes
+  before the toolchain installed by rustup, run
+  `export PATH="$HOME/.cargo/bin:$PATH"` first.
+- macOS or Linux, `git` (Herdr uses it to install plugins) and network access
+  (the catalog, READMEs and manifests come from GitHub).
 
-## Lier le checkout local
+## Link the local checkout
 
 ```sh
 git clone https://github.com/massdo/herdr-marketplace
@@ -24,21 +24,20 @@ sh scripts/build.sh
 herdr plugin link "$PWD" --enabled
 ```
 
-`scripts/build.sh` compile `target/release/herdr-marketplace`, que le
-manifeste `herdr-plugin.toml` utilise. Après une mise à jour du checkout,
-relancez-le.
+`scripts/build.sh` builds `target/release/herdr-marketplace`, which the
+`herdr-plugin.toml` manifest runs. Run it again after updating the checkout.
 
-## Ouvrir la marketplace
+## Open the marketplace
 
-Depuis un pane Herdr :
+From a Herdr pane:
 
 ```sh
 herdr plugin action invoke herdr-marketplace.toggle
 ```
 
-La sidebar s'ouvre à gauche de l'onglet courant, sur environ 32 colonnes ; la
-même commande la referme. Pour un raccourci, ajoutez vous-même à votre
-`config.toml` :
+The sidebar opens on the left of the current tab, about 32 columns wide; the
+same command closes it. For a shortcut, add this to your `config.toml`
+yourself:
 
 ```toml
 [[keys.command]]
@@ -48,52 +47,48 @@ command = "herdr-marketplace.toggle"
 description = "Marketplace"
 ```
 
-## Parcours complet
+## Full journey
 
-1. **Chercher.** Le catalogue se charge à l'ouverture de la sidebar. Tapez :
-   la liste se filtre à chaque lettre, sur le nom, l'id, la description,
-   owner/repo et les topics. ↑↓, Page préc./suiv., Début et Fin déplacent la
-   sélection ; Échap efface la recherche, puis ferme la sidebar. Chaque
-   plugin montre son nom, ses étoiles, owner/repo et le début de sa
-   description, et les marques « installé », « incompatible » ou « hors
-   catalogue ». Les plugins incompatibles non installés sont masqués ; la
-   sidebar indique combien.
-2. **Lire.** Entrée ouvre la fiche du plugin dans un pane voisin : son README
-   rendu, au commit du catalogue. ↑↓, Page préc./suiv., Début et Fin le
-   parcourent ; `s` affiche le SHA complet ; Échap ferme la fiche.
-3. **Installer.** Dans la fiche, `i` ouvre l'aperçu : source, SHA complet,
-   commandes de build et de démarrage, événements, actions et panes. Entrée
-   confirme, Échap annule sans rien lancer. L'installation continue si vous
-   fermez la fiche ; en la rouvrant, vous retrouvez son résultat, confirmé par
-   le registre Herdr.
-4. **Changer de commit.** Pour un plugin déjà installé à un autre commit, `i`
-   propose de passer au commit du catalogue et affiche les deux SHA.
-5. **Retirer.** Dans la fiche d'un plugin installé, `r` puis Entrée.
+1. **Search.** The catalog loads when the sidebar opens. Type: the list
+   filters on every key, over the name, id, description, owner/repo and
+   topics. ↑↓, Page Up/Down, Home and End move the selection; Esc clears the
+   search, then closes the sidebar. Each plugin shows its name, stars,
+   owner/repo, the start of its description, and the marks "installed",
+   "incompatible" or "not in catalog". Incompatible plugins that are not
+   installed are hidden; the sidebar says how many.
+2. **Read.** Enter opens the plugin's details in a pane next to it: its README,
+   rendered, at the catalog's commit. ↑↓, Page Up/Down, Home and End scroll
+   it; `s` shows the full SHA; Esc closes the details pane.
+3. **Install.** In the details pane, `i` opens the preview: source, full SHA,
+   build and startup commands, events, actions and panes. Enter confirms, Esc
+   cancels without running anything. The install goes on if you close the
+   details pane; reopen it to see the result, confirmed by the Herdr registry.
+4. **Switch commit.** For a plugin already installed at another commit, `i`
+   offers to move it to the catalog's commit and shows both SHAs.
+5. **Remove.** In the details pane of an installed plugin, `r` then Enter.
 
-Une seule installation ou un seul retrait à la fois. Les plugins liés en local,
-comme la marketplace elle-même, ne sont ni listés ni retirés.
+One install or removal at a time. Locally linked plugins, such as the
+marketplace itself, are neither listed nor removed.
 
-## Catalogue
+## Catalog
 
-La source est l'index public `https://assets.herdr.dev/plugins/index.json`,
-rechargé à chaque ouverture de la sidebar. La variable
-`HERDR_MARKETPLACE_INDEX_URL` la remplace par une autre URL http(s) ou
-`file://`.
+The source is the public index `https://assets.herdr.dev/plugins/index.json`,
+loaded again every time the sidebar opens. `HERDR_MARKETPLACE_INDEX_URL`
+replaces it with another http(s) or `file://` URL.
 
-## Vérifications
+## Checks
 
-- `sh scripts/check.sh` : format, lint et tests, hors ligne.
-- `cargo test -- --ignored` : chargement de l'index réel, par le réseau.
-- `sh scripts/e2e.sh` : le parcours complet dans un profil Herdr jetable
-  (serveur, configuration et état isolés sous `/tmp`), jamais dans votre
-  session quotidienne. Il installe le plugin de test
-  `massdo/herdr-marketplace-fixture` depuis GitHub.
+- `sh scripts/check.sh`: format, lint and tests, offline.
+- `cargo test -- --ignored`: loads the real index over the network.
+- `sh scripts/e2e.sh`: the full journey in a disposable Herdr profile (server,
+  configuration and state isolated under `/tmp`), never in your daily session.
+  It installs the test plugin `massdo/herdr-marketplace-fixture` from GitHub.
 
-## Limites de la V1
+## V1 limits
 
-Pas de Windows, pas de souris, un seul tri (étoiles), pas de choix de version,
-pas de rafraîchissement du catalogue sidebar ouverte. La marketplace
-s'utilise liée depuis un checkout local.
+No Windows, no mouse, a single sort (stars), no version picker, no catalog
+refresh while the sidebar is open. The marketplace is used linked from a
+local checkout.
 
-Le client du socket Herdr, le dock à gauche et le verrou de lancement
-viennent de herdr-npm et de herdr-sidebar (MIT) : voir `NOTICE`.
+The Herdr socket client, the left dock and the launcher lock come from
+herdr-npm and herdr-sidebar (MIT): see `NOTICE`.

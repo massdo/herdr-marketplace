@@ -24,8 +24,10 @@ pub enum LoadError {
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::HerdrVersion(detail) => write!(f, "version de Herdr indéterminable : {detail}"),
-            Self::Fetch(error) => write!(f, "téléchargement de l'index impossible : {error}"),
+            Self::HerdrVersion(detail) => {
+                write!(f, "cannot determine the Herdr version: {detail}")
+            }
+            Self::Fetch(error) => write!(f, "cannot download the index: {error}"),
             Self::Index(error) => write!(f, "{error}"),
         }
     }
@@ -39,7 +41,7 @@ pub fn load_catalog<F: Fetcher, H: HerdrCli>(
 ) -> Result<LoadedCatalog, LoadError> {
     let output = herdr.version().map_err(LoadError::HerdrVersion)?;
     let herdr = Version::from_herdr_output(&output)
-        .ok_or_else(|| LoadError::HerdrVersion(format!("réponse illisible : {}", output.trim())))?;
+        .ok_or_else(|| LoadError::HerdrVersion(format!("unreadable answer: {}", output.trim())))?;
     let body = fetcher.fetch(url, INDEX_LIMIT).map_err(LoadError::Fetch)?;
     let catalog = parse_index(&body).map_err(LoadError::Index)?;
     Ok(LoadedCatalog { catalog, herdr })

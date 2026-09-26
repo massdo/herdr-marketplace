@@ -10,6 +10,6 @@ pub fn prepare_removal<H: HerdrCli>(
     source: &PluginSource,
 ) -> Result<RemovalPlan, String> {
     let registry =
-        read_registry(herdr).map_err(|error| format!("registre Herdr illisible : {error}"))?;
+        read_registry(herdr).map_err(|error| format!("unreadable Herdr registry: {error}"))?;
     plan_removal(&registry, source)
 }

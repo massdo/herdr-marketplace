@@ -34,7 +34,7 @@ pub enum ReadmeState {
 pub enum InstallState {
     Idle,
     Preparing,
-    /// « Installé »: this source is already installed at this commit.
+    /// This source is already installed at this commit: nothing to do.
     UpToDate,
     Refused(String),
     Preview(Box<InstallPreview>),

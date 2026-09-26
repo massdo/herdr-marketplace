@@ -138,7 +138,7 @@ fn a_namesake_from_another_source_is_never_removed() {
         "herdr-marketplace-fixture",
     )]);
     let refusal = plan_removal(&only_alt, &source("")).unwrap_err();
-    assert!(refusal.contains("aucun plugin installé"), "{refusal}");
+    assert!(refusal.contains("no plugin installed"), "{refusal}");
 
     let mut root = fixture(None, "massdo", "herdr-marketplace-fixture");
     root["plugin_id"] = json!("fixture-root");
@@ -206,15 +206,12 @@ fn a_removal_needs_a_second_explicit_key() {
     app.handle_key(key(KeyCode::Char('r')));
     app.removal_prepared(1, Ok(plan.clone()));
     let shown = screen(&app);
-    assert!(shown.contains("Retrait"), "{shown}");
+    assert!(shown.contains("Remove"), "{shown}");
     assert!(
-        shown.contains("source : massdo/herdr-marketplace-fixture"),
+        shown.contains("source: massdo/herdr-marketplace-fixture"),
         "{shown}"
     );
-    assert!(
-        shown.contains("Entrée : confirmer · Échap : annuler"),
-        "{shown}"
-    );
+    assert!(shown.contains("Enter: confirm · Esc: cancel"), "{shown}");
 
     app.intents.clear();
     assert!(
@@ -235,7 +232,7 @@ fn a_removal_needs_a_second_explicit_key() {
 fn success_needs_the_plugin_gone_from_the_registry() {
     let gone = removal(Some(0), Ok(registry(vec![])));
     assert_eq!(gone.status, Status::Succeeded);
-    assert_eq!(gone.registry_after.as_deref(), Some("non installé"));
+    assert_eq!(gone.registry_after.as_deref(), Some("not installed"));
 
     let still_there = removal(
         Some(0),
@@ -262,9 +259,9 @@ fn a_failed_removal_shows_herdr_output_and_the_registry_state() {
     let mut app = DetailsApp::new(target(true, true));
     app.operation_seen(Some(failed));
     let shown = screen(&app);
-    assert!(shown.contains("Échec du retrait (code 1)"), "{shown}");
+    assert!(shown.contains("Removal failed (code 1)"), "{shown}");
     assert!(
-        shown.contains(&format!("Registre : installé à {SHA_A}")),
+        shown.contains(&format!("Registry: installed at {SHA_A}")),
         "{shown}"
     );
     assert!(shown.contains("Error: plugin not installed"), "{shown}");
@@ -272,13 +269,13 @@ fn a_failed_removal_shows_herdr_output_and_the_registry_state() {
 
 #[test]
 fn an_unreadable_registry_after_a_failure_is_an_unknown_state() {
-    let failed = removal(Some(1), Err("socket fermé".into()));
+    let failed = removal(Some(1), Err("socket closed".into()));
     assert_eq!(failed.status, Status::Failed);
     assert!(
         failed
             .registry_after
             .as_deref()
-            .is_some_and(|state| state.starts_with("état inconnu")),
+            .is_some_and(|state| state.starts_with("unknown state")),
         "{:?}",
         failed.registry_after
     );

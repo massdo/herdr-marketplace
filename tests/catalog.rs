@@ -323,7 +323,7 @@ fn an_unreadable_herdr_version_is_an_error_instead_of_a_list() {
     );
     let message = result.unwrap_err().to_string();
     assert!(
-        message.contains("version de Herdr indéterminable"),
+        message.contains("cannot determine the Herdr version"),
         "{message}"
     );
 }
@@ -430,9 +430,9 @@ fn an_unknown_schema_version_is_an_error() {
     }
     let body = serde_json::to_vec(&json!({"plugins": []})).unwrap();
     let error = parse_index(&body).unwrap_err();
-    assert_eq!(error, IndexError::UnknownSchema("absent".into()));
+    assert_eq!(error, IndexError::UnknownSchema("missing".into()));
     assert!(
-        error.to_string().contains("schemaVersion inconnu"),
+        error.to_string().contains("unknown schemaVersion"),
         "{error}"
     );
 }

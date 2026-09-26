@@ -20,7 +20,7 @@ pub fn plan_removal(
     source: &PluginSource,
 ) -> Result<RemovalPlan, String> {
     let installed = installed_from(registry, source)?
-        .ok_or_else(|| format!("aucun plugin installé depuis {source}"))?;
+        .ok_or_else(|| format!("no plugin installed from {source}"))?;
     let recorded = installed
         .github_source()
         .map(ToString::to_string)

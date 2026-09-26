@@ -13,8 +13,8 @@ use crate::domain::text::clean;
 pub fn preview_lines(preview: &InstallPreview, width: usize, host: Platform) -> Vec<Line<'static>> {
     let manifest = &preview.manifest;
     let title = match preview.plan {
-        Plan::Install => "Installation",
-        Plan::Switch { .. } => "Changement de commit",
+        Plan::Install => "Install",
+        Plan::Switch { .. } => "Switch commit",
     };
     let mut lines = vec![Line::styled(
         title,
@@ -22,18 +22,18 @@ pub fn preview_lines(preview: &InstallPreview, width: usize, host: Platform) -> 
     )];
     let mut field = |label: &str, value: &str| {
         lines.extend(
-            wrap(&format!("{label} : {}", clean(value)), width)
+            wrap(&format!("{label}: {}", clean(value)), width)
                 .into_iter()
                 .map(Line::raw),
         );
     };
     field("id", &manifest.id);
-    field("nom", &manifest.name);
+    field("name", &manifest.name);
     field("version", &manifest.version);
     field("source", &preview.source.to_string());
     field("commit", &preview.commit);
     if let Plan::Switch { from } = &preview.plan {
-        field("commit installé", from);
+        field("installed commit", from);
     }
     if let Some(replaced) = &preview.replaces {
         let source = replaced
@@ -42,8 +42,8 @@ pub fn preview_lines(preview: &InstallPreview, width: usize, host: Platform) -> 
             .unwrap_or_default();
         let commit = replaced.resolved_commit().unwrap_or_default();
         field(
-            "remplace",
-            &format!("{} depuis {source} @ {commit}", replaced.plugin_id),
+            "replaces",
+            &format!("{} from {source} @ {commit}", replaced.plugin_id),
         );
     }
 
@@ -54,7 +54,7 @@ pub fn preview_lines(preview: &InstallPreview, width: usize, host: Platform) -> 
         .map(|step| {
             let skipped = !runs_on(step, plugin_platforms, host);
             let note = if skipped {
-                format!(" (ignorée sur {})", host.name())
+                format!(" (skipped on {})", host.name())
             } else {
                 String::new()
             };
@@ -69,25 +69,20 @@ pub fn preview_lines(preview: &InstallPreview, width: usize, host: Platform) -> 
     let hooks = |hooks: &[crate::domain::manifest::Hook]| -> Vec<String> {
         hooks
             .iter()
-            .map(|hook| format!("{} : {}", hook.name, hook.command.join(" ")))
+            .map(|hook| format!("{}: {}", hook.name, hook.command.join(" ")))
             .collect()
     };
-    section(&mut lines, "commandes de build", &build, width);
-    section(&mut lines, "commandes de démarrage", &startup, width);
-    section(&mut lines, "événements", &hooks(&manifest.events), width);
+    section(&mut lines, "build commands", &build, width);
+    section(&mut lines, "startup commands", &startup, width);
+    section(&mut lines, "events", &hooks(&manifest.events), width);
     section(&mut lines, "actions", &hooks(&manifest.actions), width);
     section(&mut lines, "panes", &hooks(&manifest.panes), width);
-    section(
-        &mut lines,
-        "gestionnaires de liens",
-        &manifest.link_handlers,
-        width,
-    );
+    section(&mut lines, "link handlers", &manifest.link_handlers, width);
 
     lines.push(Line::default());
     for warning in [
-        "Ce plugin exécutera du code avec vos droits.",
-        "Le SHA fige le dépôt, pas ce que le build télécharge.",
+        "This plugin will run code with your permissions.",
+        "The SHA pins the repository, not what the build downloads.",
     ] {
         lines.extend(
             wrap(warning, width)

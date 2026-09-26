@@ -18,10 +18,10 @@ impl HerdrCommand {
             .args(args)
             .stdin(Stdio::null())
             .output()
-            .map_err(|error| format!("{} : {error}", self.bin.display()))?;
+            .map_err(|error| format!("{}: {error}", self.bin.display()))?;
         if !output.status.success() {
             return Err(format!(
-                "herdr {} a échoué ({}) : {}",
+                "herdr {} failed ({}): {}",
                 args.join(" "),
                 output.status,
                 String::from_utf8_lossy(&output.stderr).trim()
@@ -45,7 +45,7 @@ impl HerdrCli for HerdrCommand {
             .args(args)
             .stdin(Stdio::null())
             .output()
-            .map_err(|error| format!("{} : {error}", self.bin.display()))?;
+            .map_err(|error| format!("{}: {error}", self.bin.display()))?;
         let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
         text.push_str(&String::from_utf8_lossy(&output.stderr));
         Ok(CommandOutput {

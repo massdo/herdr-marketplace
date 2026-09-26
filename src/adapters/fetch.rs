@@ -34,9 +34,7 @@ impl Fetcher for HttpFetcher {
             return read_file(path, limit);
         }
         if !url.starts_with("http://") && !url.starts_with("https://") {
-            return Err(FetchError::Failed(format!(
-                "URL non prise en charge : {url}"
-            )));
+            return Err(FetchError::Failed(format!("unsupported URL: {url}")));
         }
         match self.agent.get(url).call() {
             Ok(mut response) => response
@@ -54,16 +52,14 @@ impl Fetcher for HttpFetcher {
 fn read_file(path: &str, limit: u64) -> Result<Vec<u8>, FetchError> {
     let file = std::fs::File::open(path).map_err(|error| match error.kind() {
         std::io::ErrorKind::NotFound => FetchError::NotFound,
-        _ => FetchError::Failed(format!("{path} : {error}")),
+        _ => FetchError::Failed(format!("{path}: {error}")),
     })?;
     let mut body = Vec::new();
     file.take(limit + 1)
         .read_to_end(&mut body)
-        .map_err(|error| FetchError::Failed(format!("{path} : {error}")))?;
+        .map_err(|error| FetchError::Failed(format!("{path}: {error}")))?;
     if body.len() as u64 > limit {
-        return Err(FetchError::Failed(format!(
-            "{path} : fichier trop volumineux"
-        )));
+        return Err(FetchError::Failed(format!("{path}: file too large")));
     }
     Ok(body)
 }

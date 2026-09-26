@@ -85,13 +85,13 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     let raw: RawManifest = toml::from_str(text).map_err(|error| error.message().to_string())?;
     let id = raw.id.trim();
     if !is_identifier(id, ".") {
-        return Err(format!("id de plugin invalide : {id}"));
+        return Err(format!("invalid plugin id: {id}"));
     }
     let min_herdr_version = raw
         .min_herdr_version
         .map(|value| value.trim().to_string())
         .filter(|value| Version::parse(value).is_some())
-        .ok_or("min_herdr_version absente ou illisible")?;
+        .ok_or("min_herdr_version missing or unreadable")?;
     Ok(Manifest {
         id: id.to_string(),
         name: required(&raw.name, "name")?,
@@ -130,10 +130,10 @@ fn hooks(raw: Vec<RawHook>, kind: &str) -> Result<Vec<Hook>, String> {
         .map(|hook| {
             let id = hook.id.trim().to_string();
             if !is_identifier(&id, "") {
-                return Err(format!("id de {kind} invalide : {id}"));
+                return Err(format!("invalid {kind} id: {id}"));
             }
             if !seen.insert(id.clone()) {
-                return Err(format!("id de {kind} en double : {id}"));
+                return Err(format!("duplicate {kind} id: {id}"));
             }
             required(&hook.title, "title")?;
             Ok(Hook {
@@ -153,19 +153,19 @@ fn step(raw: RawStep) -> Result<Step, String> {
 
 fn command(argv: Vec<String>) -> Result<Vec<String>, String> {
     if argv.is_empty() || argv.iter().any(String::is_empty) {
-        return Err("une commande doit contenir des arguments non vides".into());
+        return Err("a command needs non-empty arguments".into());
     }
     Ok(argv)
 }
 
 fn platforms(raw: Option<Vec<String>>) -> Result<Option<Vec<String>>, String> {
     match raw {
-        Some(list) if list.is_empty() => Err("platforms ne doit pas être vide".into()),
+        Some(list) if list.is_empty() => Err("platforms must not be empty".into()),
         Some(list) => match list
             .iter()
             .find(|name| !matches!(name.as_str(), "linux" | "macos" | "windows"))
         {
-            Some(unknown) => Err(format!("plateforme inconnue : {unknown}")),
+            Some(unknown) => Err(format!("unknown platform: {unknown}")),
             None => Ok(Some(list)),
         },
         None => Ok(None),
@@ -175,7 +175,7 @@ fn platforms(raw: Option<Vec<String>>) -> Result<Option<Vec<String>>, String> {
 fn required(value: &str, field: &str) -> Result<String, String> {
     let value = value.trim();
     if value.is_empty() {
-        return Err(format!("{field} manquant"));
+        return Err(format!("{field} is missing"));
     }
     Ok(value.to_string())
 }

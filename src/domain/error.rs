@@ -56,25 +56,33 @@ impl AppError {
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::OriginMissing => write!(f, "espace de travail, onglet ou pane d'origine inconnu"),
+            Self::OriginMissing => write!(f, "origin workspace, tab or pane is missing"),
             Self::SnapshotUnreadable { detail } => {
-                write!(f, "état des panes illisible : {detail}")
+                write!(f, "pane snapshot cannot be interpreted: {detail}")
             }
             Self::OriginChanged => {
-                write!(f, "le pane d'origine n'est plus dans la liste des panes")
+                write!(
+                    f,
+                    "captured origin pane is no longer present in the pane list"
+                )
             }
-            Self::NoWorkingTarget => write!(f, "aucun pane de travail à scinder"),
+            Self::NoWorkingTarget => {
+                write!(f, "no working pane is available as a split target")
+            }
             Self::SeveralSidebars => {
-                write!(f, "plusieurs sidebars marketplace dans l'onglet")
+                write!(
+                    f,
+                    "several marketplace sidebars are recognised in the target tab"
+                )
             }
             Self::Herdr {
                 method,
                 code,
                 message,
-            } => write!(f, "{method} a échoué ({code}) : {message}"),
+            } => write!(f, "{method} failed ({code}): {message}"),
             Self::Uncertain { method, message } => write!(
                 f,
-                "{method} non confirmé : {message}. Vérifiez la disposition avant de réessayer."
+                "{method} did not confirm: {message}. Inspect the layout before another attempt."
             ),
             Self::Io { message } => write!(f, "{message}"),
         }

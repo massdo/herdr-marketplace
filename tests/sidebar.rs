@@ -165,9 +165,7 @@ fn the_selection_follows_the_identity_not_the_id() {
 fn a_failed_load_is_retried_with_enter() {
     let mut app = SidebarApp::new();
     app.intents.clear();
-    app.loaded(Err(
-        "téléchargement de l'index impossible : introuvable".into()
-    ));
+    app.loaded(Err("cannot download the index: not found".into()));
     assert!(matches!(app.state, LoadState::Failed(_)));
     type_text(&mut app, "x");
     assert!(app.intents.is_empty());
@@ -242,8 +240,11 @@ fn a_row_shows_the_name_owner_repo_marks_and_description() {
         .collect();
     let screen = text.join("\n");
 
-    assert!(text[1].starts_with("2 résultats"), "{screen}");
-    assert!(text[2].starts_with("1 incompatible masqué"), "{screen}");
+    assert!(text[1].starts_with("2 results"), "{screen}");
+    assert!(
+        text[2].starts_with("1 incompatible plugin hidden"),
+        "{screen}"
+    );
     assert!(
         text[3].starts_with("Terminal Browser") && text[3].contains("★ 3403"),
         "{screen}"
@@ -262,7 +263,7 @@ fn a_row_shows_the_name_owner_repo_marks_and_description() {
         "{screen}"
     );
     assert!(
-        text[8].starts_with("installé · incompatible · Jump"),
+        text[8].starts_with("installed · incompatible · Jump"),
         "{screen}"
     );
     assert!(!screen.contains('\u{1b}'), "{screen:?}");

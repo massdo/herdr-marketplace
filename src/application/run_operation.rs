@@ -28,7 +28,7 @@ pub fn run_operation<H: HerdrCli, O: Operations>(
                 operations,
                 record,
                 Status::Refused,
-                "une autre opération de la marketplace est en cours".into(),
+                "another marketplace operation is running".into(),
             );
         }
         Err(error) => return finish(operations, record, Status::Refused, error),
@@ -81,7 +81,7 @@ pub fn current_operation<O: Operations>(
     let mut record = operations.load(source)?;
     if record.status == Status::Running && matches!(operations.try_begin(), Ok(Some(_))) {
         record.status = Status::Unconfirmed;
-        record.output = "l'opération s'est arrêtée avant de rendre son résultat".into();
+        record.output = "the operation stopped before reporting its result".into();
     }
     Some(record)
 }

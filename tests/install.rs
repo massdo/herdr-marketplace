@@ -239,7 +239,7 @@ fn the_same_id_linked_locally_is_refused() {
         vec![local_plugin("herdr-marketplace-fixture")],
         &target(""),
     ));
-    assert!(reason.contains("lié en local"), "{reason}");
+    assert!(reason.contains("linked locally"), "{reason}");
 }
 
 #[test]
@@ -267,23 +267,23 @@ fn several_installed_plugins_for_one_source_are_refused() {
         vec![fixture_installed(None, SHA_A), second],
         &target(""),
     ));
-    assert!(reason.contains("plusieurs"), "{reason}");
+    assert!(reason.contains("several"), "{reason}");
 }
 
 #[test]
 fn an_unreadable_registry_is_refused() {
     let herdr = FakeHerdr {
         version: "herdr 0.9.1".into(),
-        registry: Err("socket fermé".into()),
+        registry: Err("socket closed".into()),
     };
     let prepared = prepare_install(&FakeWeb::fixture(), &herdr, &target(""), Platform::Macos);
-    assert!(refusal(prepared).contains("registre"));
+    assert!(refusal(prepared).contains("registry"));
 }
 
 #[test]
 fn a_missing_or_invalid_manifest_is_refused() {
     let reason = refusal(prepare(&FakeWeb::new(&[]), vec![], &target("")));
-    assert!(reason.contains("introuvable"), "{reason}");
+    assert!(reason.contains("not found"), "{reason}");
 
     let invalid = FIXTURE_MANIFEST.replace("min_herdr_version = \"0.9.1\"\n", "");
     let reason = refusal(prepare(
@@ -291,7 +291,7 @@ fn a_missing_or_invalid_manifest_is_refused() {
         vec![],
         &target(""),
     ));
-    assert!(reason.contains("invalide"), "{reason}");
+    assert!(reason.contains("invalid"), "{reason}");
 }
 
 #[test]
@@ -310,10 +310,10 @@ fn an_incompatible_target_is_refused() {
     let mut incompatible = target("");
     incompatible.compatible = false;
     let web = FakeWeb::fixture();
-    assert!(refusal(prepare(&web, vec![], &incompatible)).contains("seul le retrait"));
+    assert!(refusal(prepare(&web, vec![], &incompatible)).contains("can only be removed"));
     let mut off_catalogue = target("");
     off_catalogue.in_catalog = false;
-    assert!(refusal(prepare(&web, vec![], &off_catalogue)).contains("seul le retrait"));
+    assert!(refusal(prepare(&web, vec![], &off_catalogue)).contains("can only be removed"));
     assert!(web.asked.borrow().is_empty());
 }
 
@@ -347,7 +347,7 @@ fn a_source_outside_herdr_rules_is_refused_before_any_request() {
     for (owner, subdir) in [("bad owner", ""), ("massdo", "../up"), ("massdo", "a//b")] {
         let mut target = target(subdir);
         target.source.owner = owner.into();
-        assert!(refusal(prepare(&web, vec![], &target)).contains("règles de Herdr"));
+        assert!(refusal(prepare(&web, vec![], &target)).contains("Herdr's rules"));
     }
     assert!(web.asked.borrow().is_empty());
 }
@@ -388,8 +388,8 @@ fn trapped_text_in_the_manifest_never_reaches_the_terminal() {
         .map(|cell| cell.symbol())
         .collect();
     assert!(!screen.chars().any(char::is_control), "{screen:?}");
-    assert!(screen.contains("nom : fixture]0;PWNED[2J"), "{screen}");
-    assert!(screen.contains("hello : /bin/echo hi[31m6n"), "{screen}");
+    assert!(screen.contains("name: fixture]0;PWNED[2J"), "{screen}");
+    assert!(screen.contains("hello: /bin/echo hi[31m6n"), "{screen}");
 }
 
 #[test]
@@ -415,20 +415,20 @@ fn the_preview_shows_source_commit_commands_and_warnings() {
             "{expected:?} missing from {screen:#?}"
         )
     };
-    has("Installation");
-    has("id : herdr-marketplace-fixture");
-    has("source : massdo/herdr-marketplace-fixture");
-    has(&format!("commit : {SHA_A}"));
-    has("commandes de build (1)");
+    has("Install");
+    has("id: herdr-marketplace-fixture");
+    has("source: massdo/herdr-marketplace-fixture");
+    has(&format!("commit: {SHA_A}"));
+    has("build commands (1)");
     has("• /bin/sh build.sh");
-    has("commandes de démarrage (0)");
-    has("événements (0)");
+    has("startup commands (0)");
+    has("events (0)");
     has("actions (1)");
-    has("• hello : /bin/echo hello from herdr-marketplace-fixture");
+    has("• hello: /bin/echo hello from herdr-marketplace-fixture");
     has("panes (0)");
-    has("Ce plugin exécutera du code avec vos droits.");
-    has("Le SHA fige le dépôt, pas ce que le build télécharge.");
-    has("Entrée : confirmer · Échap : annuler");
+    has("This plugin will run code with your permissions.");
+    has("The SHA pins the repository, not what the build downloads.");
+    has("Enter: confirm · Esc: cancel");
 }
 
 #[test]

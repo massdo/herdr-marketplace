@@ -64,11 +64,11 @@ pub enum IndexError {
 impl fmt::Display for IndexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidJson(detail) => write!(f, "index illisible : JSON invalide ({detail})"),
+            Self::InvalidJson(detail) => write!(f, "unreadable index: invalid JSON ({detail})"),
             Self::UnknownSchema(version) => {
-                write!(f, "index illisible : schemaVersion inconnu ({version})")
+                write!(f, "unreadable index: unknown schemaVersion ({version})")
             }
-            Self::MissingPlugins => write!(f, "index illisible : liste plugins absente"),
+            Self::MissingPlugins => write!(f, "unreadable index: no plugins list"),
         }
     }
 }
@@ -105,7 +105,7 @@ pub fn parse_index(bytes: &[u8]) -> Result<Catalog, IndexError> {
     match root.get("schemaVersion") {
         Some(version) if version.as_u64() == Some(SCHEMA_VERSION) => {}
         Some(version) => return Err(IndexError::UnknownSchema(version.to_string())),
-        None => return Err(IndexError::UnknownSchema("absent".into())),
+        None => return Err(IndexError::UnknownSchema("missing".into())),
     }
     let repositories = root
         .get("plugins")

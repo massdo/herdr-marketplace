@@ -191,7 +191,7 @@ fn owner_and_repo_ignore_case_but_the_subdir_does_not() {
 fn an_unreadable_registry_marks_nothing_installed() {
     let herdr = FakeHerdr {
         version: "herdr 0.9.1".into(),
-        registry: Err("herdr plugin list a échoué".into()),
+        registry: Err("herdr plugin list failed".into()),
     };
     let fetcher = StaticFetcher(index(vec![repo(
         "acme",
