@@ -11,6 +11,10 @@ pub const ERROR: Color = Color::Red;
 
 /// Background of a secondary button, as in VS Code.
 pub const BUTTON_BG: Color = Color::Rgb(0x3a, 0x3d, 0x41);
+/// Frame of a plugin card: light, just enough to part plugins.
+pub const CARD: Color = Color::Rgb(0x4a, 0x50, 0x58);
+/// Color of the star next to a plugin's stars.
+pub const GOLD: Color = Color::Rgb(0xf2, 0xb8, 0x2d);
 
 /// Look of a button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

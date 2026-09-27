@@ -286,13 +286,12 @@ fn a_row_shows_the_name_owner_repo_marks_and_description() {
     );
     app.set_page(2);
 
-    let mut terminal = Terminal::new(TestBackend::new(40, 16)).unwrap();
+    let mut terminal = Terminal::new(TestBackend::new(40, 18)).unwrap();
     terminal
         .draw(|frame| sidebar_view::render(frame, &app))
         .unwrap();
-    let text: Vec<String> = terminal
-        .backend()
-        .buffer()
+    let buffer = terminal.backend().buffer().clone();
+    let text: Vec<String> = buffer
         .content()
         .chunks(40)
         .map(|line| line.iter().map(|cell| cell.symbol()).collect())
@@ -311,26 +310,47 @@ fn a_row_shows_the_name_owner_repo_marks_and_description() {
         "{screen}"
     );
     assert_eq!(text[5], "─".repeat(40), "a line sets the list apart");
+    // Each plugin is a card: name and stars on its top edge.
     assert!(
-        text[6].starts_with("Terminal Browser") && text[6].contains("★ 3403"),
+        text[6].starts_with("╭ Terminal Browser ─") && text[6].ends_with(" ★ 3403 ╮"),
+        "{screen}"
+    );
+    assert_eq!(
+        buffer[(text[6].chars().position(|ch| ch == '★').unwrap() as u16, 6)].fg,
+        herdr_marketplace::adapters::tui::style::GOLD,
+        "a golden star"
+    );
+    assert!(
+        text[7].starts_with("│ zenbu-labs/") && text[7].contains("…"),
+        "a long owner/repo keeps its ends: {screen}"
+    );
+    assert!(text[7].ends_with(" │"), "{screen}");
+    assert!(
+        text[8].starts_with("│ Open a browser inside herdr[31m"),
         "{screen}"
     );
     assert!(
-        text[7].starts_with("zenbu-labs/terminal-browser/herdr-plugin"),
+        text[9].starts_with("╰──") && text[9].ends_with("─╯"),
+        "{screen}"
+    );
+    assert!(text[10].starts_with("╭ Next Agent ─"), "{screen}");
+    assert!(
+        text[11].starts_with("│ martin-ro/herdr-next-agent"),
         "{screen}"
     );
     assert!(
-        text[8].starts_with("Open a browser inside herdr[31m"),
+        text[12].starts_with("│ installed · incompatible · Jump"),
         "{screen}"
     );
-    assert!(text[9].starts_with("Next Agent"), "{screen}");
-    assert!(
-        text[10].starts_with("martin-ro/herdr-next-agent"),
-        "{screen}"
+    assert_eq!(
+        buffer[(0, 6)].fg,
+        herdr_marketplace::adapters::tui::style::ACCENT,
+        "the selected card's frame is blue"
     );
-    assert!(
-        text[11].starts_with("installed · incompatible · Jump"),
-        "{screen}"
+    assert_eq!(
+        buffer[(0, 10)].fg,
+        herdr_marketplace::adapters::tui::style::CARD,
+        "the others are light"
     );
     assert!(!screen.contains('\u{1b}'), "{screen:?}");
 }
@@ -338,19 +358,19 @@ fn a_row_shows_the_name_owner_repo_marks_and_description() {
 #[test]
 fn one_click_on_a_plugin_selects_it_and_opens_its_details() {
     let mut app = loaded_app();
-    // 40 × 15: search box, filters and separator, 3 plugins of 3 lines,
+    // 40 × 18: search box, filters and separator, 3 cards of 4 lines,
     // footer.
-    app.set_page(sidebar_view::page_rows(&app, 40, 15));
+    app.set_page(sidebar_view::page_rows(&app, 40, 18));
     assert_eq!(app.page, 3);
-    app.handle_mouse(click(5, 5 + 3 + 1), 40, 15);
+    app.handle_mouse(click(5, 5 + 4 + 2), 40, 18);
     assert_eq!(selected_repo(&app), "plugin-01");
     match app.intents.as_slice() {
         [Intent::Open(row)] => assert_eq!(row.entry.source.repo, "plugin-01"),
         other => panic!("{other:?}"),
     }
     app.intents.clear();
-    for row in [0, 1, 4, 14] {
-        app.handle_mouse(click(5, row), 40, 15);
+    for row in [0, 1, 4, 17] {
+        app.handle_mouse(click(5, row), 40, 18);
     }
     assert!(
         app.intents.is_empty(),
@@ -361,20 +381,20 @@ fn one_click_on_a_plugin_selects_it_and_opens_its_details() {
 #[test]
 fn the_wheel_scrolls_the_list_without_moving_the_selection() {
     let mut app = loaded_app();
-    app.set_page(sidebar_view::page_rows(&app, 40, 15));
-    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 15);
-    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 15);
+    app.set_page(sidebar_view::page_rows(&app, 40, 18));
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 18);
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 18);
     assert_eq!(app.offset, 2);
     assert_eq!(selected_repo(&app), "plugin-00");
-    app.set_page(sidebar_view::page_rows(&app, 40, 15));
+    app.set_page(sidebar_view::page_rows(&app, 40, 18));
     assert_eq!(app.offset, 2, "drawing again keeps the scrolled list");
-    app.handle_mouse(click(5, 5), 40, 15);
+    app.handle_mouse(click(5, 5), 40, 18);
     assert_eq!(selected_repo(&app), "plugin-02", "the first plugin shown");
     for _ in 0..20 {
-        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 15);
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 18);
     }
     assert_eq!(app.offset, 9, "no further than the last page");
-    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 7), 40, 15);
+    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 7), 40, 18);
     assert_eq!(app.offset, 8);
 }
 

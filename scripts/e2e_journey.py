@@ -234,8 +234,10 @@ def prove_sidebar():
     assert f" All {count - 1} " in shown and " Installed 0" in shown, shown
     assert "Search name, topic, author" in shown, shown
     assert "1 incompatible plugin hidden" in shown, shown
-    # 30 inner columns: a long owner/repo/subdir loses its middle, never its ends.
-    assert "Terminal Browser" in shown and "zenbu-labs/term…r/herdr-plugin" in shown, shown
+    # 26 columns inside a card: a long owner/repo/subdir loses its middle,
+    # never its ends.
+    assert "Terminal Browser" in shown and "zenbu-labs/te…herdr-plugin" in shown, shown
+    assert "╭ Terminal Browser" in shown and "★ 3403 ╮" in shown, "plugins are cards"
     assert others() == before, (before, others())
     layout = data("pane", "layout", "--pane", sidebar)["layout"]
     rects = {p["pane_id"]: p["rect"] for p in layout["panes"]}
@@ -247,8 +249,8 @@ def prove_sidebar():
     type_text(sidebar, "fixture")
     shown = wait(lambda: " All 2 " in (text := read(sidebar)) and text, "the search did not filter")
     assert "Terminal Browser" not in shown, shown
-    assert "massdo/herdr-ma…tplace-fixture" in shown, shown
-    assert "massdo/herdr-ma…ce-fixture/alt" in shown, shown
+    assert "massdo/herdr-…lace-fixture" in shown, shown
+    assert "massdo/herdr-…-fixture/alt" in shown, shown
     type_text(sidebar, "jk")
     wait(lambda: "│ fixturejk" in read(sidebar), "j and k did not reach the search")
     keys(sidebar, "backspace", "backspace")
@@ -490,7 +492,7 @@ def prove_install():
     click_text(sidebar, "Installed 1")
     shown = wait(lambda: "Terminal Browser" not in (text := read(sidebar)) and text,
                  "the Installed filter did not apply")
-    assert "herdr-marketplace fixture" in shown and "installed · Test fixture." in shown, shown
+    assert "massdo/herdr-…lace-fixture" in shown and "installed · Test fixture." in shown, shown
     type_text(sidebar, "\t")
     wait(lambda: "Terminal Browser" in read(sidebar), "Tab did not return to all plugins")
     print("installed_filter_ok", flush=True)

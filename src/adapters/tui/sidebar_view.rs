@@ -6,14 +6,17 @@ use unicode_width::UnicodeWidthStr;
 
 use super::sidebar::{Filter, LoadState, SidebarApp};
 use super::style::{
-    ACCENT, ERROR, MUTED, OK, SELECTION_BG, SELECTION_FG, Tone, WARN, bold, button_text, ellipsize,
-    ellipsize_middle, muted, wrap,
+    ACCENT, CARD, ERROR, GOLD, MUTED, OK, SELECTION_BG, SELECTION_FG, Tone, WARN, bold,
+    button_text, ellipsize, ellipsize_middle, muted, wrap,
 };
 use crate::domain::listing::Row;
 use crate::domain::text::clean;
 
-/// Terminal lines per plugin: name, owner/repo, marks and description.
-pub const ROW_HEIGHT: usize = 3;
+/// Terminal lines per plugin: a card whose top edge carries the name and
+/// the stars, then owner/repo, marks and description, then its bottom edge.
+pub const ROW_HEIGHT: usize = 4;
+/// The narrowest pane that draws cards; narrower, plugins are plain lines.
+const CARD_WIDTH: usize = 16;
 const PLACEHOLDER: &str = "Search name, topic, author";
 const FOOTER: &str = "↵ open · ⇥ filter · Esc close";
 const RETRY: &str = "Retry";
@@ -260,26 +263,46 @@ fn list(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// A plugin as a card with a light frame, blue when it is selected. The
+/// top edge carries the name and the golden star; inside, owner/repo, then
+/// the marks and the description.
 fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
+    if width < CARD_WIDTH {
+        let mut lines = plain_row(row, width, selected);
+        lines.push(Line::default());
+        return lines;
+    }
     let entry = &row.entry;
-    let stars = if row.in_catalog {
-        format!(" ★ {}", entry.stars)
+    let frame = Style::default().fg(if selected { ACCENT } else { CARD });
+    let stars: Vec<Span<'static>> = if row.in_catalog {
+        vec![
+            Span::styled(" ★", Style::default().fg(GOLD)),
+            Span::styled(format!(" {} ", entry.stars), muted()),
+        ]
     } else {
-        String::new()
+        Vec::new()
     };
-    let name = ellipsize(&clean(&entry.name), width.saturating_sub(stars.width()));
-    let pad = width.saturating_sub(name.width() + stars.width());
-    let first = Line::from(vec![
-        Span::styled(name, bold()),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(stars, muted()),
-    ]);
-    let second = Line::styled(
-        ellipsize_middle(&clean(&entry.source.to_string()), width),
-        muted(),
+    let stars_width: usize = stars.iter().map(|span| span.content.width()).sum();
+    // "╭ " + name + " " + "─" as needed + stars + "╮".
+    let name = ellipsize(
+        &clean(&entry.name),
+        width.saturating_sub(4 + stars_width).max(1),
     );
+    let dashes = width.saturating_sub(4 + name.width() + stars_width);
+    let mut top = vec![
+        Span::styled("╭ ", frame),
+        Span::styled(name, bold()),
+        Span::styled(format!(" {}", "─".repeat(dashes)), frame),
+    ];
+    top.extend(stars);
+    top.push(Span::styled("╮", frame));
 
-    let mut third = Vec::new();
+    let inner = width - 4;
+    let source = vec![Span::styled(
+        ellipsize_middle(&clean(&entry.source.to_string()), inner),
+        muted(),
+    )];
+    let mut details = Vec::new();
     let mut used = 0;
     for (mark, color) in marks(row) {
         let text = if used == 0 {
@@ -288,33 +311,83 @@ fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
             format!(" · {mark}")
         };
         used += text.width();
-        third.push(Span::styled(text, Style::default().fg(color)));
+        details.push(Span::styled(text, Style::default().fg(color)));
     }
     let separator = if used == 0 { "" } else { " · " };
-    let room = width.saturating_sub(used + separator.width());
+    let room = inner.saturating_sub(used + separator.width());
     if let Some(description) = entry.description.as_deref().filter(|_| room > 0) {
-        third.push(Span::styled(
+        details.push(Span::styled(
             format!("{separator}{}", ellipsize(&clean(description), room)),
             muted(),
         ));
     }
+    let side = |content: Vec<Span<'static>>| {
+        let used: usize = content.iter().map(|span| span.content.width()).sum();
+        let mut inside = vec![Span::raw(" ")];
+        inside.extend(content);
+        inside.push(Span::raw(" ".repeat(inner.saturating_sub(used) + 1)));
+        if selected {
+            highlight(&mut inside);
+        }
+        let mut spans = vec![Span::styled("│", frame)];
+        spans.extend(inside);
+        spans.push(Span::styled("│", frame));
+        Line::from(spans)
+    };
+    vec![
+        Line::from(top),
+        side(source),
+        side(details),
+        Line::styled(format!("╰{}╯", "─".repeat(width - 2)), frame),
+    ]
+}
 
-    let mut lines = vec![first, second, Line::from(third)];
+/// Name and stars, owner/repo, marks and description on three plain lines,
+/// for a pane too narrow for cards.
+fn plain_row(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
+    let entry = &row.entry;
+    let stars = if row.in_catalog {
+        format!(" ★ {}", entry.stars)
+    } else {
+        String::new()
+    };
+    let name = ellipsize(&clean(&entry.name), width.saturating_sub(stars.width()));
+    let pad = width.saturating_sub(name.width() + stars.width());
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(name, bold()),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(stars, Style::default().fg(GOLD)),
+        ]),
+        Line::styled(
+            ellipsize_middle(&clean(&entry.source.to_string()), width),
+            muted(),
+        ),
+        Line::styled(
+            ellipsize(
+                &clean(entry.description.as_deref().unwrap_or_default()),
+                width,
+            ),
+            muted(),
+        ),
+    ];
     if selected {
         for line in &mut lines {
-            let used = line.width();
-            line.spans
-                .push(Span::raw(" ".repeat(width.saturating_sub(used))));
-            for span in &mut line.spans {
-                let fg = match span.style.fg {
-                    None | Some(MUTED) => SELECTION_FG,
-                    Some(color) => color,
-                };
-                span.style = span.style.bg(SELECTION_BG).fg(fg);
-            }
+            highlight(&mut line.spans);
         }
     }
     lines
+}
+
+/// The selection's background, text kept readable on it.
+fn highlight(spans: &mut [Span<'static>]) {
+    for span in spans {
+        let fg = match span.style.fg {
+            None | Some(MUTED) => SELECTION_FG,
+            Some(color) => color,
+        };
+        span.style = span.style.bg(SELECTION_BG).fg(fg);
+    }
 }
 
 fn marks(row: &Row) -> Vec<(&'static str, ratatui::style::Color)> {
