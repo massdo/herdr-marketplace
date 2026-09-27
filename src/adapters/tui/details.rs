@@ -182,7 +182,7 @@ impl DetailsApp {
         }
     }
 
-    /// Latest kept result for this source, looked at on every tick. When an
+    /// Latest kept result for this source, looked at once per second. When an
     /// operation ends, the registry is read again.
     pub fn operation_seen(&mut self, record: Option<OperationRecord>) {
         // Keep a result received directly from the worker when persistence
@@ -203,7 +203,10 @@ impl DetailsApp {
             self.launched = None;
         }
         self.operation = record;
-        if was_running && !self.operation_running() {
+        let orphaned = self.operation.as_ref().is_some_and(|record| {
+            record.status == Status::Unconfirmed && record.finished_unix_ms.is_none()
+        });
+        if (was_running && !self.operation_running()) || orphaned {
             self.registry_request += 1;
             self.intents
                 .push(DetailsIntent::ReadRegistry(self.registry_request));

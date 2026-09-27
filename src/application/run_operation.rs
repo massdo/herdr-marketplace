@@ -46,6 +46,7 @@ pub fn run_locked_operation<H: HerdrCli, O: Operations>(
 ) -> OperationRecord {
     let mut record = OperationRecord::running(request);
     record.worker_pid = Some(std::process::id());
+    record.worker_started = operations.worker_started(std::process::id());
     if let Err(error) = operations.save(&record) {
         record.status = Status::Refused;
         record.output = "operation not started: could not save its initial state".into();
@@ -140,7 +141,7 @@ pub fn current_operation<O: Operations>(
     if record.status == Status::Running
         && !record
             .worker_pid
-            .is_some_and(|pid| operations.worker_running(pid))
+            .is_some_and(|pid| operations.worker_running(pid, record.worker_started))
     {
         record.status = Status::Unconfirmed;
         record.output = "the operation stopped before saving its result".into();

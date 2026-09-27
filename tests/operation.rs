@@ -255,6 +255,7 @@ fn a_details_pane_probing_the_lock_does_not_refuse_an_operation() {
     let operations = FsOperations::new(state_dir());
     let mut running = OperationRecord::running(&request(SHA_A));
     running.worker_pid = Some(std::process::id());
+    running.worker_started = operations.worker_started(std::process::id());
     operations.save(&running).unwrap();
     for _ in 0..100 {
         assert_eq!(
@@ -435,8 +436,8 @@ impl Operations for FailingSave {
     fn latest_finish(&self) -> u64 {
         self.inner.latest_finish()
     }
-    fn worker_running(&self, pid: u32) -> bool {
-        self.inner.worker_running(pid)
+    fn worker_started(&self, pid: u32) -> Option<u64> {
+        self.inner.worker_started(pid)
     }
 }
 
@@ -515,8 +516,8 @@ fn contention_is_refused_on_the_first_attempt_even_if_the_next_attempt_would_suc
         fn latest_finish(&self) -> u64 {
             self.inner.latest_finish()
         }
-        fn worker_running(&self, pid: u32) -> bool {
-            self.inner.worker_running(pid)
+        fn worker_started(&self, pid: u32) -> Option<u64> {
+            self.inner.worker_started(pid)
         }
     }
     let operations = BusyOnce {
@@ -569,4 +570,41 @@ fn operation_output_and_the_readme_share_a_scrollable_body() {
     app.handle_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     assert!(screen(&app).contains("diagnostic 29"));
     assert!(screen(&app).contains("Last README line"));
+}
+
+#[test]
+fn a_reused_pid_cannot_keep_an_old_operation_running() {
+    let operations = FsOperations::new(state_dir());
+    let mut running = OperationRecord::running(&request(SHA_A));
+    running.worker_pid = Some(std::process::id());
+    let started = operations.worker_started(std::process::id()).unwrap();
+    running.worker_started = Some(started + 1);
+    operations.save(&running).unwrap();
+    assert_eq!(
+        current_operation(&operations, &source()).unwrap().status,
+        Status::Unconfirmed
+    );
+    running.worker_started = Some(started);
+    operations.save(&running).unwrap();
+    assert_eq!(
+        current_operation(&operations, &source()).unwrap().status,
+        Status::Running
+    );
+}
+
+#[test]
+fn orphaned_operations_keep_refreshing_the_details_registry() {
+    let operations = FsOperations::new(state_dir());
+    operations
+        .save(&OperationRecord::running(&request(SHA_A)))
+        .unwrap();
+    let mut app = DetailsApp::new(target());
+    app.intents.clear();
+    for _ in 0..2 {
+        app.operation_seen(current_operation(&operations, &source()));
+        assert!(matches!(
+            app.intents.pop(),
+            Some(DetailsIntent::ReadRegistry(_))
+        ));
+    }
 }

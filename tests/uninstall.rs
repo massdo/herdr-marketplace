@@ -404,3 +404,12 @@ fn the_remove_button_asks_and_confirm_removal_removes() {
     );
     assert_eq!(app.intents, [DetailsIntent::Uninstall(Box::new(plan))]);
 }
+
+#[test]
+fn a_successful_removal_with_an_unreadable_registry_is_unconfirmed() {
+    let record = removal(Some(0), Err("socket closed".into()));
+    assert_eq!(record.status, Status::Unconfirmed);
+    let mut app = DetailsApp::new(target(true, true));
+    app.operation_seen(Some(record));
+    assert!(!screen(&app).contains("Removal failed (code 0)"));
+}

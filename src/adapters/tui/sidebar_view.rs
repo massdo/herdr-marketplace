@@ -305,11 +305,15 @@ fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
     let mut details = Vec::new();
     let mut used = 0;
     for (mark, color) in marks(row) {
+        if used >= inner {
+            break;
+        }
         let text = if used == 0 {
             mark.to_string()
         } else {
             format!(" · {mark}")
         };
+        let text = ellipsize(&text, inner - used);
         used += text.width();
         details.push(Span::styled(text, Style::default().fg(color)));
     }

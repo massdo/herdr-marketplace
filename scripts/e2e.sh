@@ -7,6 +7,9 @@ set -eu
 
 unset HERDR_SOCKET_PATH HERDR_CLIENT_SOCKET_PATH HERDR_SESSION HERDR_BIN_PATH \
   HERDR_ENV HERDR_WORKSPACE_ID HERDR_TAB_ID HERDR_PANE_ID HERDR_CONFIG_PATH
+# Kitty placeholders carry image IDs in their RGB foreground. The test
+# terminal needs colors even when the invoking tool sets NO_COLOR.
+unset NO_COLOR
 for var in $(env | sed -n 's/^\(HERDR_PLUGIN_[A-Za-z0-9_]*\)=.*/\1/p'); do
   unset "$var"
 done

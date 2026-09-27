@@ -128,12 +128,22 @@ impl<'a> Fields<'a> {
             else {
                 continue;
             };
-            let span = (last - first + 1) as usize;
-            if found.indices.len() + usize::from(typos) < letters || span > widest {
+            let text = &self.texts[found.index as usize];
+            // frizbee expands a Unicode match to all of its UTF-8 bytes.
+            // Count character starts, keeping byte offsets for starts_word.
+            let matched = found
+                .indices
+                .iter()
+                .filter(|&&index| text.is_char_boundary(index as usize))
+                .count();
+            let span = text
+                .char_indices()
+                .filter(|(index, _)| *index >= first as usize && *index <= last as usize)
+                .count();
+            if matched + usize::from(typos) < letters || span > widest {
                 continue;
             }
-            let text = &self.texts[found.index as usize];
-            let closeness = if span > letters || found.indices.len() < letters {
+            let closeness = if span > letters || matched < letters {
                 Closeness::Gaps
             } else if starts_word(text, first as usize) {
                 Closeness::WordStart

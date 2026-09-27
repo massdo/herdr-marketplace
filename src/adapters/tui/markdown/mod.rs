@@ -9,7 +9,8 @@ mod html;
 use std::collections::HashMap;
 
 use pulldown_cmark::{
-    Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd,
+    Alignment, BlockQuoteKind, CodeBlockKind, Event, HeadingLevel, LinkType, Options, Parser, Tag,
+    TagEnd,
 };
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -84,7 +85,7 @@ fn without_controls(text: &str) -> String {
         match ch {
             '\n' => out.push('\n'),
             '\t' => out.push_str("    "),
-            ch if ch.is_control() => {}
+            ch if ch.is_control() || crate::domain::text::is_format(ch) => {}
             ch => out.push(ch),
         }
     }
@@ -314,6 +315,11 @@ impl<'a> Renderer<'a> {
             Tag::Emphasis => self.emphasis += 1,
             Tag::Strong => self.strong += 1,
             Tag::Strikethrough => self.strike += 1,
+            Tag::Link {
+                link_type: LinkType::Email,
+                dest_url,
+                ..
+            } => self.open_link(&format!("mailto:{dest_url}")),
             Tag::Link { dest_url, .. } => self.open_link(&dest_url),
             Tag::Image { dest_url, .. } => self.image = Some((dest_url.to_string(), String::new())),
             _ => {}
@@ -397,6 +403,9 @@ impl<'a> Renderer<'a> {
     }
 
     fn text(&mut self, text: &str) {
+        // Markdown entities are decoded after the source was sanitized.
+        let safe = without_controls(text);
+        let text = safe.as_str();
         if let Some((_, code)) = &mut self.code_block {
             code.push_str(text);
             return;
@@ -861,7 +870,10 @@ impl<'a> Renderer<'a> {
         let inner = room.saturating_sub(2).max(1);
         let background = Style::default().bg(code::background());
         self.fill(room, background);
-        for pieces in code::highlight(text.trim_end_matches('\n'), language) {
+        for pieces in code::highlight(text.trim_end_matches('\n'), language)
+            .iter()
+            .cloned()
+        {
             for chunk in cut_colored(pieces, inner) {
                 let used: usize = chunk.iter().map(|(text, _)| text.width()).sum();
                 let mut spans = self.prefix();

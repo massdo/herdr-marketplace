@@ -5,17 +5,47 @@
 use std::io::Cursor;
 use std::sync::{Arc, OnceLock};
 
+use crate::application::ports::Fetcher;
 use image::imageops::FilterType;
 use image::{ImageFormat, ImageReader, Limits, Rgba, RgbaImage};
 use resvg::{tiny_skia, usvg};
+
+/// One queue per pane, shared by two workers even across README reloads.
+pub fn load_in_background(
+    fetcher: impl Fetcher + Send + Sync + 'static,
+    completed: impl Fn(String, Result<Arc<Picture>, String>) + Send + Sync + 'static,
+) -> std::sync::mpsc::Sender<String> {
+    let (sender, receiver) = std::sync::mpsc::channel::<String>();
+    let receiver = Arc::new(std::sync::Mutex::new(receiver));
+    let fetcher = Arc::new(fetcher);
+    let completed = Arc::new(completed);
+    for _ in 0..2 {
+        let receiver = receiver.clone();
+        let fetcher = fetcher.clone();
+        let completed = completed.clone();
+        std::thread::spawn(move || {
+            loop {
+                let next = receiver.lock().expect("image queue").recv();
+                let Ok(url) = next else { break };
+                let picture = fetcher
+                    .fetch(&url, IMAGE_LIMIT)
+                    .map_err(|error| error.to_string())
+                    .and_then(|bytes| decode(&bytes))
+                    .map(Arc::new);
+                completed(url, picture);
+            }
+        });
+    }
+    sender
+}
 
 /// Upper bound for one downloaded image.
 pub const IMAGE_LIMIT: u64 = 16 * 1024 * 1024;
 /// Longest side kept: enough for a pane, light to send to the terminal.
 const LONGEST_SIDE: u32 = 1280;
 /// Decoding refuses larger declared sizes before allocating them.
-const DECODED_SIDE: u32 = 16_384;
-const DECODED_BYTES: u64 = 512 * 1024 * 1024;
+const DECODED_SIDE: u32 = 8192;
+const DECODED_BYTES: u64 = 64 * 1024 * 1024;
 
 /// A decoded image and the PNG that sends it to the terminal.
 #[derive(Debug, Clone, PartialEq)]
@@ -28,6 +58,9 @@ pub struct Picture {
 }
 
 pub fn decode(bytes: &[u8]) -> Result<Picture, String> {
+    if bytes.len() as u64 > IMAGE_LIMIT {
+        return Err("image file too large".into());
+    }
     if is_svg(bytes) {
         let (rgba, (width, height)) = svg(bytes)?;
         return from_rgba(rgba, width, height);
@@ -35,6 +68,17 @@ pub fn decode(bytes: &[u8]) -> Result<Picture, String> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|error| error.to_string())?;
+    let (width, height) = ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?
+        .into_dimensions()
+        .map_err(|error| error.to_string())?;
+    if width > DECODED_SIDE
+        || height > DECODED_SIDE
+        || u64::from(width) * u64::from(height) * 4 > DECODED_BYTES
+    {
+        return Err("decoded image too large".into());
+    }
     let mut limits = Limits::default();
     limits.max_image_width = Some(DECODED_SIDE);
     limits.max_image_height = Some(DECODED_SIDE);
@@ -44,7 +88,7 @@ pub fn decode(bytes: &[u8]) -> Result<Picture, String> {
     let rgba = reader
         .decode()
         .map_err(|error| error.to_string())?
-        .to_rgba8();
+        .into_rgba8();
     let (width, height) = rgba.dimensions();
     // A PNG small enough is sent as it came.
     if format == Some(ImageFormat::Png) && width.max(height) <= LONGEST_SIDE {
@@ -94,6 +138,10 @@ fn is_svg(bytes: &[u8]) -> bool {
 fn svg(bytes: &[u8]) -> Result<(RgbaImage, (u32, u32)), String> {
     let options = usvg::Options {
         fontdb: fonts(),
+        image_href_resolver: usvg::ImageHrefResolver {
+            resolve_string: Box::new(|_, _| None),
+            ..usvg::ImageHrefResolver::default()
+        },
         ..usvg::Options::default()
     };
     let tree = usvg::Tree::from_data(bytes, &options).map_err(|error| error.to_string())?;

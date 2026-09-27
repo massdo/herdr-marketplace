@@ -105,13 +105,19 @@ marketplace itself, are neither listed nor removed.
   `HERDR_MARKETPLACE_OPEN` names the command that opens them (default: `open`
   on macOS, `xdg-open` elsewhere).
 - **Images.** PNG, JPEG, GIF (first frame), WebP and SVG, downloaded from
-  where the README points and decoded by the plugin. Through Herdr, they are
+  public HTTPS addresses without redirects or proxies, and decoded by the
+  plugin. Local and private destinations are refused after DNS resolution;
+  SVG images cannot read local files. Raster decoding is limited to 8192
+  pixels per side and 64 MiB, with two image workers per pane. Through Herdr, they are
   drawn with the kitty graphics protocol in terminals that support it
   (Ghostty, kitty, WezTerm…), and with half blocks otherwise. Badges become
   small labels. `HERDR_MARKETPLACE_IMAGES=blocks` (or `off`) forces the other
   drawing: Herdr accepts kitty images even when the terminal around it cannot
   show them, unless `kitty_graphics = false` is set in its `[terminal]`
   configuration, in which case half blocks are used on their own.
+- **Files.** The usual README names (`README.md`, `readme.md`, `Readme.md`,
+  `README`, `README.markdown`, `readme.markdown`) are tried at the shown commit,
+  in the plugin folder before falling back to the repository root.
 
 ## Catalog
 

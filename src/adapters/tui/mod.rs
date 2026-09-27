@@ -29,12 +29,13 @@ use crate::adapters::env::{self, ProcessEnv};
 use crate::adapters::fetch::HttpFetcher;
 use crate::adapters::herdr_cli::HerdrCommand;
 use crate::adapters::herdr_socket::HerdrSocket;
-use crate::adapters::images::{IMAGE_LIMIT, Picture, decode};
+use crate::adapters::image_fetch::ImageFetcher;
+use crate::adapters::images::{Picture, load_in_background};
 use crate::adapters::operations::{FsOperations, spawn_operation};
 use crate::application::load_listing::{LoadedListing, load_listing, read_registry};
 use crate::application::load_readme::{Readme, load_readme};
 use crate::application::open_details::{close_details, open_details};
-use crate::application::ports::{Fetcher, HerdrCli, HerdrPort, Operations};
+use crate::application::ports::{HerdrCli, HerdrPort, Operations};
 use crate::application::prepare_install::{Prepared, prepare_install};
 use crate::application::prepare_removal::prepare_removal;
 use crate::application::run_operation::current_operation;
@@ -214,6 +215,11 @@ fn details_loop(
     receiver: &Receiver<DetailsAnswer>,
 ) -> Result<(), AppError> {
     let mut focus = FocusClicks::default();
+    let image_sender = sender.clone();
+    let images = load_in_background(ImageFetcher::default(), move |url, picture| {
+        let _ = image_sender.send(DetailsAnswer::Picture(url, picture));
+    });
+    let mut last_operation_check = None::<Instant>;
     let started = Instant::now();
     let mut waiting = match probe {
         Probe::Known(graphics) => {
@@ -299,15 +305,7 @@ fn details_loop(
                 }
                 DetailsIntent::LoadImages(urls) => {
                     for url in urls {
-                        let sender = sender.clone();
-                        thread::spawn(move || {
-                            let picture = HttpFetcher::new()
-                                .fetch(&url, IMAGE_LIMIT)
-                                .map_err(|error| error.to_string())
-                                .and_then(|bytes| decode(&bytes))
-                                .map(Arc::new);
-                            let _ = sender.send(DetailsAnswer::Picture(url, picture));
-                        });
+                        let _ = images.send(url);
                     }
                 }
                 DetailsIntent::OpenUrl(url) => open_url(&url),
@@ -327,7 +325,10 @@ fn details_loop(
                 DetailsAnswer::Picture(url, picture) => app.picture_loaded(&url, picture),
             }
         }
-        app.operation_seen(current_operation(operations, &app.target.source));
+        if last_operation_check.is_none_or(|last| last.elapsed() >= OPERATION_CHECK) {
+            last_operation_check = Some(Instant::now());
+            app.operation_seen(current_operation(operations, &app.target.source));
+        }
         let size = terminal.size()?;
         let page = details_view::page_rows(app, size.width, size.height);
         app.set_viewport(size.width as usize, page);

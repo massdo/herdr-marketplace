@@ -156,10 +156,9 @@ pub(super) fn body_lines(app: &DetailsApp, width: usize) -> (Vec<Line<'static>>,
     }
     match &app.readme {
         ReadmeState::Loading => lines.push(Line::styled("Loading README…", muted())),
-        ReadmeState::NotFound => lines.push(Line::styled(
-            "README.md not found",
-            Style::default().fg(WARN),
-        )),
+        ReadmeState::NotFound => {
+            lines.push(Line::styled("README not found", Style::default().fg(WARN)))
+        }
         ReadmeState::NetworkError(error) => {
             lines.push(Line::styled(
                 "README not loaded: network error",
@@ -261,7 +260,7 @@ fn notices(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let ReadmeState::Found { fallback: true, .. } = app.readme {
         let notice = format!(
-            "No README.md in {}/: showing the repository root README.md",
+            "No README in {}/: showing the repository root README",
             clean(&target.source.subdir)
         );
         lines.extend(

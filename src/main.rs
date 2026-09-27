@@ -4,11 +4,10 @@ use herdr_marketplace::adapters::herdr_socket::HerdrSocket;
 use herdr_marketplace::adapters::launcher_lock;
 use herdr_marketplace::adapters::operations::{FsOperations, inherited_lock};
 use herdr_marketplace::adapters::tui;
-use herdr_marketplace::application::ports::Operations;
-use herdr_marketplace::application::run_operation::run_locked_operation;
+use herdr_marketplace::application::run_operation::{run_locked_operation, run_operation};
 use herdr_marketplace::application::toggle_sidebar::toggle_sidebar;
 use herdr_marketplace::domain::error::AppError;
-use herdr_marketplace::domain::operation::{OperationRecord, OperationRequest, Status};
+use herdr_marketplace::domain::operation::OperationRequest;
 
 fn main() {
     if let Err(error) = run() {
@@ -60,28 +59,14 @@ fn operation(request: Option<&String>, fd: Option<&String>) -> Result<(), AppErr
     let process = env::load()?;
     let herdr = HerdrCommand::new(env::herdr_bin());
     let operations = FsOperations::new(process.state_dir);
-    let guard = match fd {
+    let record = match fd {
         Some(fd) => {
             let fd = fd.parse().map_err(|_| AppError::Io {
                 message: "invalid operation lock descriptor".into(),
             })?;
-            Some(inherited_lock(fd)?)
+            run_locked_operation(&herdr, &operations, &request, inherited_lock(fd)?)
         }
-        None => operations
-            .try_begin()
-            .map_err(|message| AppError::Io { message })?,
-    };
-    let record = match guard {
-        Some(guard) => {
-            let herdr = herdr.with_operation_lock(guard.try_clone()?);
-            run_locked_operation(&herdr, &operations, &request, guard)
-        }
-        None => {
-            let mut record = OperationRecord::running(&request);
-            record.status = Status::Refused;
-            record.output = "another marketplace operation is running".into();
-            record
-        }
+        None => run_operation(&herdr, &operations, &request),
     };
     // The result reaches an open pane even if it could not be saved. If the
     // pane closed, a broken pipe cannot undo execution or persistence.

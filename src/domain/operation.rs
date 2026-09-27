@@ -71,6 +71,9 @@ pub struct OperationRecord {
     pub finished_unix_ms: Option<u64>,
     #[serde(default)]
     pub worker_pid: Option<u32>,
+    /// OS process start token, paired with the PID to detect reuse.
+    #[serde(default)]
+    pub worker_started: Option<u64>,
     /// Returned to an open pane even when saving the result failed.
     #[serde(default)]
     pub persistence_error: Option<String>,
@@ -86,6 +89,7 @@ impl OperationRecord {
             registry_after: None,
             finished_unix_ms: None,
             worker_pid: None,
+            worker_started: None,
             persistence_error: None,
         }
     }
@@ -94,7 +98,7 @@ impl OperationRecord {
 /// An install succeeds when Herdr answers 0 and the registry shows the
 /// source at the commit; code 0 without that is an unconfirmed result, never
 /// a success. A removal succeeds when Herdr answers 0 and the source is
-/// gone from the registry; anything else is a failure.
+/// gone from the registry; an unreadable registry leaves it unconfirmed.
 pub fn operation_status(
     exit_code: Option<i32>,
     registry: &Result<Vec<InstalledPlugin>, String>,
@@ -120,6 +124,7 @@ pub fn operation_status(
         }
         OperationKind::Uninstall => match installed {
             Some(None) => Status::Succeeded,
+            None => Status::Unconfirmed,
             _ => Status::Failed,
         },
     }

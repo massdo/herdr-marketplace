@@ -43,7 +43,7 @@ pub trait HerdrCli {
 pub struct CommandOutput {
     /// `None` when a signal ended the command.
     pub code: Option<i32>,
-    /// Standard output then standard error.
+    /// Captured output from the command.
     pub output: String,
 }
 
@@ -57,8 +57,11 @@ pub trait Operations {
     fn load(&self, source: &PluginSource) -> Option<OperationRecord>;
     fn save(&self, record: &OperationRecord) -> Result<(), String>;
     /// Observes a worker without taking the operation lock.
-    fn worker_running(&self, pid: u32) -> bool;
-    /// Latest end time among the kept results, in Unix milliseconds.
+    fn worker_started(&self, pid: u32) -> Option<u64>;
+    fn worker_running(&self, pid: u32, started: Option<u64>) -> bool {
+        started.is_some() && self.worker_started(pid) == started
+    }
+    /// Latest end time, or the current time while an orphan needs polling.
     fn latest_finish(&self) -> u64;
 }
 

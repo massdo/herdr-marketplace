@@ -676,3 +676,25 @@ fn buttons_look_like_buttons() {
         "a gap between them"
     );
 }
+
+#[test]
+fn installation_preview_reveals_unicode_format_characters() {
+    use herdr_marketplace::adapters::tui::preview::preview_lines;
+    use herdr_marketplace::domain::text::{clean, is_format};
+    let mut preview = preview(prepare(&FakeWeb::fixture(), vec![], &target("")));
+    preview.manifest.name = "safe\u{202e}name\u{200b}".into();
+    preview.manifest.build[0].command = vec!["echo".into(), "one\u{2066}two\u{feff}".into()];
+    let shown = preview_lines(&preview, 120, Platform::Macos)
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(shown.contains("safe⟨U+202E⟩name⟨U+200B⟩"), "{shown}");
+    assert!(shown.contains("echo one⟨U+2066⟩two⟨U+FEFF⟩"), "{shown}");
+    assert!(!shown.chars().any(is_format));
+    assert_eq!(clean("safe\u{202e}name\u{200b}"), "safename");
+    assert!(
+        preview.manifest.name.contains('\u{202e}'),
+        "the executed manifest is unchanged"
+    );
+}

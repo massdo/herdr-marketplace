@@ -742,3 +742,20 @@ fn file_urls_decode_spaces_unicode_and_reserved_filename_characters() {
     ));
     std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn unicode_search_counts_characters_and_ranks_contiguous_matches_first() {
+    let entries = plugins(&[
+        ("gaps", "c a f é", "", &[]),
+        ("accent", "café", "", &[]),
+        ("japanese", "日本語ツール", "", &[]),
+        ("rocket", "🚀 Launcher", "", &[]),
+    ]);
+    assert_eq!(found_repos(&entries, "日本"), ["japanese"]);
+    assert_eq!(found_repos(&entries, "🚀"), ["rocket"]);
+    assert_eq!(
+        found_repos(&entries, "café").first().map(String::as_str),
+        Some("accent")
+    );
+    assert_eq!(found_repos(&entries, "é").len(), 2);
+}

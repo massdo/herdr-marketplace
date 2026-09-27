@@ -545,3 +545,31 @@ fn the_search_box_empties_with_its_cross_and_shows_the_focus() {
     assert_eq!(app.query, "");
     assert_eq!(app.visible.len(), 12);
 }
+
+#[test]
+fn all_status_marks_fit_inside_a_narrow_card() {
+    let mut plugin = github_plugin("missing", "acme", "missing", None, SHA_A);
+    plugin["platforms"] = json!(["linux"]);
+    let mut app = ready(vec![], vec![plugin]);
+    app.set_page(sidebar_view::page_rows(&app, 32, 15));
+    let mut terminal = Terminal::new(TestBackend::new(32, 15)).unwrap();
+    terminal
+        .draw(|frame| sidebar_view::render(frame, &app))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let rows = buffer
+        .content()
+        .chunks(32)
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+        .collect::<Vec<_>>();
+    let marks = rows
+        .iter()
+        .find(|line| line.starts_with('│') && line.contains("installed"))
+        .expect("installed mark");
+    assert!(marks.contains("incompatible"), "{rows:#?}");
+    assert!(
+        marks.contains('…'),
+        "the final mark is visibly truncated: {rows:#?}"
+    );
+    assert!(marks.ends_with('│'), "{rows:#?}");
+}

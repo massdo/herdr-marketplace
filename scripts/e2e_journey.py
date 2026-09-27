@@ -347,7 +347,7 @@ def prove_details():
     keys(sidebar, "down", "enter")
     alt = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != details), None),
                "Enter on the alt source did not open its details pane")
-    shown = wait(lambda: "No README.md in alt/" in (text := read(alt)) and text,
+    shown = wait(lambda: "No README in alt/" in (text := read(alt)) and text,
                  "the root README fallback was not signalled")
     assert "massdo/herdr-marketplace-fixture/alt" in shown, shown
     assert "herdr-marketplace fixture" in shown, shown

@@ -148,10 +148,11 @@ fn a_subfolder_without_readme_falls_back_to_the_root_one() {
     );
     assert_eq!(
         *raw.asked.borrow(),
-        [
-            format!("{RAW}/massdo/herdr-marketplace-fixture/{SHA_A}/alt/README.md"),
-            root
-        ]
+        herdr_marketplace::application::load_readme::README_NAMES
+            .iter()
+            .map(|file| format!("{RAW}/massdo/herdr-marketplace-fixture/{SHA_A}/alt/{file}"))
+            .chain([root])
+            .collect::<Vec<_>>()
     );
 }
 
@@ -164,7 +165,14 @@ fn a_missing_readme_is_not_found_and_differs_from_a_network_error() {
     );
     let raw = FakeRaw::new(vec![]);
     assert_eq!(load_readme(&raw, &source(""), SHA_A), Ok(Readme::NotFound));
-    assert_eq!(raw.asked.borrow().len(), 1, "a root plugin has no fallback");
+    assert_eq!(
+        *raw.asked.borrow(),
+        herdr_marketplace::application::load_readme::README_NAMES
+            .iter()
+            .map(|file| format!("{RAW}/massdo/herdr-marketplace-fixture/{SHA_A}/{file}"))
+            .collect::<Vec<_>>(),
+        "a root plugin tries the usual names without fallback"
+    );
 
     let own = format!("{RAW}/massdo/herdr-marketplace-fixture/{SHA_A}/alt/README.md");
     let raw = FakeRaw::new(vec![(own, Err(FetchError::Failed("timeout".into())))]);
@@ -276,7 +284,7 @@ fn the_header_shows_identity_and_a_short_sha_with_the_full_one_on_demand() {
     assert!(lines[2].starts_with("commit c8268d4 "), "{lines:#?}");
     assert!(lines[3].starts_with(" Open on GitHub (o) "), "{lines:#?}");
     assert!(
-        lines[5].starts_with("No README.md in alt/: showing the repository root README.md"),
+        lines[5].starts_with("No README in alt/: showing the repository root README"),
         "{lines:#?}"
     );
     assert!(lines[7].starts_with("Root README"), "{lines:#?}");
@@ -647,4 +655,21 @@ fn a_readme_network_error_offers_a_retry_button() {
     );
     assert_eq!(app.intents, [DetailsIntent::LoadReadme(2)]);
     assert_eq!(app.readme, ReadmeState::Loading);
+}
+
+#[test]
+fn usual_readme_names_are_tried_in_the_plugin_folder_before_root() {
+    for name in ["readme.md", "Readme.md", "README", "README.markdown"] {
+        let own = format!("{RAW}/massdo/herdr-marketplace-fixture/{SHA_A}/alt/{name}");
+        let root = format!("{RAW}/massdo/herdr-marketplace-fixture/{SHA_A}/README.md");
+        let raw = FakeRaw::new(vec![(own, Ok("# Own")), (root.clone(), Ok("# Root"))]);
+        assert_eq!(
+            load_readme(&raw, &source("alt"), SHA_A),
+            Ok(Readme::Found {
+                text: "# Own".into(),
+                fallback: false
+            })
+        );
+        assert!(!raw.asked.borrow().contains(&root));
+    }
 }

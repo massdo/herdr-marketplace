@@ -113,8 +113,37 @@ impl ReadmePlace {
                 part => segments.push(part),
             }
         }
-        segments.join("/").replace(' ', "%20")
+        segments
+            .into_iter()
+            .map(encode_segment)
+            .collect::<Vec<_>>()
+            .join("/")
     }
+}
+
+/// Encode path bytes once, preserving already escaped octets.
+fn encode_segment(segment: &str) -> String {
+    let mut out = String::new();
+    let bytes = segment.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'%'
+            && bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
+            && bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit)
+        {
+            out.push_str(&segment[index..index + 3]);
+            index += 3;
+            continue;
+        }
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+        index += 1;
+    }
+    out
 }
 
 /// The plugin's folder on GitHub at the commit, where GitHub shows its

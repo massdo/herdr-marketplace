@@ -6,7 +6,7 @@ use crate::application::prepare_install::InstallPreview;
 use crate::domain::compat::Platform;
 use crate::domain::install::Plan;
 use crate::domain::manifest::Step;
-use crate::domain::text::clean;
+use crate::domain::text::preview_text;
 
 /// At least what Herdr's own preview prints, every third-party text cleaned
 /// of control characters and wrapped to `width`.
@@ -19,7 +19,7 @@ pub fn preview_lines(preview: &InstallPreview, width: usize, host: Platform) -> 
     let mut lines = vec![Line::styled(title, bold())];
     let mut field = |label: &str, value: &str| {
         lines.extend(
-            wrap(&format!("{label}: {}", clean(value)), width)
+            wrap(&format!("{label}: {}", preview_text(value)), width)
                 .into_iter()
                 .map(Line::raw),
         );
@@ -96,7 +96,7 @@ fn section(lines: &mut Vec<Line<'static>>, label: &str, items: &[String], width:
         Span::styled(format!("({})", items.len()), muted()),
     ]));
     for item in items {
-        for (index, line) in wrap(&clean(item), width.saturating_sub(4))
+        for (index, line) in wrap(&preview_text(item), width.saturating_sub(4))
             .into_iter()
             .enumerate()
         {

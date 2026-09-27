@@ -720,3 +720,161 @@ fn images_take_their_own_lines_and_icons_stay_in_the_text() {
     );
     assert_eq!(rendered.images.len(), 2, "an icon stays a label");
 }
+
+#[test]
+fn svg_cannot_read_local_images_but_embedded_data_still_renders() {
+    use base64::Engine;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("private.svg");
+    let bytes = br#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="red"/></svg>"#;
+    std::fs::write(&path, bytes).unwrap();
+    let svg = |href: &str| {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><image href="{href}" width="2" height="2"/></svg>"#
+        )
+    };
+    let local = decode(svg(path.to_str().unwrap()).as_bytes()).unwrap();
+    assert!(
+        local.rgba.pixels().all(|pixel| pixel[3] == 0),
+        "a private file was rendered"
+    );
+    let data = format!(
+        "data:image/svg+xml;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    );
+    let embedded = decode(svg(&data).as_bytes()).unwrap();
+    assert!(
+        embedded
+            .rgba
+            .pixels()
+            .any(|pixel| pixel[0] == 255 && pixel[3] == 255)
+    );
+}
+
+#[test]
+fn oversized_raster_is_refused_before_resize() {
+    let bytes = png(8193, 1, [10, 20, 30, 255]);
+    assert!(
+        decode(&bytes).is_err(),
+        "a declared side over 8192 must be refused"
+    );
+    assert!(decode(&png(8192, 1, [10, 20, 30, 255])).is_ok());
+}
+
+#[test]
+fn a_pane_downloads_and_decodes_no_more_than_two_images_at_a_time() {
+    use herdr_marketplace::adapters::images::load_in_background;
+    use herdr_marketplace::application::ports::{FetchError, Fetcher};
+    use std::sync::{
+        Condvar, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+    use std::time::Duration;
+    struct SlowImages {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        gate: Arc<(Mutex<bool>, Condvar)>,
+        started: mpsc::Sender<()>,
+        bytes: Vec<u8>,
+    }
+    impl Fetcher for SlowImages {
+        fn fetch(&self, _: &str, _: u64) -> Result<Vec<u8>, FetchError> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            self.started.send(()).unwrap();
+            let (lock, wake) = &*self.gate;
+            let ready = lock.lock().unwrap();
+            let _ready = wake.wait_while(ready, |ready| !*ready).unwrap();
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(self.bytes.clone())
+        }
+    }
+    let peak = Arc::new(AtomicUsize::new(0));
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let (started, starts) = mpsc::channel();
+    let (done, results) = mpsc::channel();
+    let loader = load_in_background(
+        SlowImages {
+            active: Arc::new(AtomicUsize::new(0)),
+            peak: peak.clone(),
+            gate: gate.clone(),
+            started,
+            bytes: png(2, 2, [10, 20, 30, 255]),
+        },
+        move |url, result| {
+            done.send((url, result)).unwrap();
+        },
+    );
+    for i in 0..16 {
+        loader.send(format!("https://example.org/{i}.png")).unwrap();
+    }
+    starts.recv_timeout(Duration::from_secs(2)).unwrap();
+    starts.recv_timeout(Duration::from_secs(2)).unwrap();
+    let third = starts.recv_timeout(Duration::from_millis(100));
+    *gate.0.lock().unwrap() = true;
+    gate.1.notify_all();
+    assert!(
+        third.is_err(),
+        "a third download started while the first two were blocked"
+    );
+    for _ in 0..16 {
+        assert!(
+            results
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .1
+                .is_ok()
+        );
+    }
+    assert_eq!(peak.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn email_autolinks_open_the_mail_client() {
+    let rendered = render("<john@example.org>", 80, &mut Pictures::default());
+    assert_eq!(
+        rendered.links[0].target,
+        LinkTarget::Web("mailto:john@example.org".into())
+    );
+}
+
+#[test]
+fn html_keeps_less_than_signs_that_are_not_tags() {
+    let rendered = render("<p>use a < b and c > d</p>", 80, &mut Pictures::default());
+    assert!(
+        texts(&rendered.lines)
+            .join("\n")
+            .contains("use a < b and c > d")
+    );
+}
+
+#[test]
+fn relative_image_paths_encode_unicode_and_reserved_bytes_once() {
+    let place = place("");
+    let raw = format!("{RAW}/alexarthurs/herdr-sidebar/{SHA_A}");
+    assert_eq!(
+        place.image("docs/écran [v1]%25.png"),
+        Some(format!("{raw}/docs/%C3%A9cran%20%5Bv1%5D%25.png"))
+    );
+    assert_eq!(
+        place.image("docs/écran%20a.png"),
+        Some(format!("{raw}/docs/%C3%A9cran%20a.png"))
+    );
+}
+
+#[test]
+fn readme_format_characters_are_removed_in_markdown_and_html() {
+    let rendered = render(
+        "a\u{202e}b\u{200b}c &#x202e; &#x200b;\n\n<p>x&#x202e;y</p>",
+        80,
+        &mut Pictures::default(),
+    );
+    let shown = texts(&rendered.lines).join("\n");
+    assert!(
+        !shown
+            .chars()
+            .any(herdr_marketplace::domain::text::is_format)
+    );
+    assert!(shown.contains("abc"));
+}

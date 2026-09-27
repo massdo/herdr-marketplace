@@ -22,6 +22,15 @@ pub fn tokens(html: &str) -> Vec<Token> {
             tokens.push(Token::Text(decode_entities(&rest[..open])));
         }
         rest = &rest[open..];
+        if !rest
+            .as_bytes()
+            .get(1)
+            .is_some_and(|ch| ch.is_ascii_alphabetic() || matches!(ch, b'/' | b'!'))
+        {
+            tokens.push(Token::Text("<".into()));
+            rest = &rest[1..];
+            continue;
+        }
         if let Some(after) = rest.strip_prefix("<!--") {
             rest = after.find("-->").map_or("", |end| &after[end + 3..]);
             continue;
@@ -116,7 +125,8 @@ fn entity(name: &str) -> Option<char> {
             None => number.parse().ok()?,
         };
         // Control characters stay out, whatever their spelling.
-        return char::from_u32(code).filter(|ch| !ch.is_control());
+        return char::from_u32(code)
+            .filter(|ch| !ch.is_control() && !crate::domain::text::is_format(*ch));
     }
     Some(match name {
         "amp" => '&',
