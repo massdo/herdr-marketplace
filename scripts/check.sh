@@ -9,6 +9,6 @@ cd "$ROOT"
 echo "== fmt =="
 cargo fmt --check
 echo "== clippy =="
-cargo clippy --all-targets -- -D warnings
+cargo clippy --locked --all-targets -- -D warnings
 echo "== test =="
-cargo test
+cargo test --locked

@@ -6,6 +6,11 @@ or remove it, without leaving Herdr or typing `herdr plugin` commands. It
 behaves like the VS Code extensions marketplace, within the limits of a
 terminal.
 
+An independent community plugin, not an official Herdr product. The catalog
+is automatically indexed; its listings are not reviewed or endorsed by Herdr
+or this plugin. Installation runs third-party code with your permissions:
+review the source and the command preview before confirming.
+
 ## Requirements
 
 - Herdr **0.9.1**
@@ -15,7 +20,19 @@ terminal.
 - macOS or Linux, `git` (Herdr uses it to install plugins) and network access
   (the catalog, READMEs and manifests come from GitHub).
 
-## Link the local checkout
+## Install
+
+With the requirements above available on your `PATH`:
+
+```sh
+herdr plugin install massdo/herdr-marketplace
+```
+
+Herdr builds the binary before registering the plugin. The first build can
+take several minutes. To update, run the same command again, then close and
+reopen the marketplace panes.
+
+## Develop with a local checkout
 
 ```sh
 git clone https://github.com/massdo/herdr-marketplace
@@ -94,8 +111,9 @@ never opens a plugin.
 5. **Remove.** For an installed plugin, **Remove (r)**, then **Confirm
    removal (Enter)**.
 
-One install or removal at a time. Locally linked plugins, such as the
-marketplace itself, are neither listed nor removed.
+One marketplace operation at a time while its worker is running. Avoid
+concurrent `herdr plugin` commands from another terminal. Locally linked
+plugins are neither listed nor removed.
 
 ## README pages
 
@@ -140,8 +158,16 @@ replaces it with another http(s) or `file://` URL.
 
 No Windows, a single sort (relevance, then stars), no version picker, no
 catalog refresh while the sidebar is open. Animated images show their first
-frame and videos open in the browser. The marketplace is used linked from a
-local checkout.
+frame and videos open in the browser. Herdr 0.9.1 is the tested host version.
+
+README images are fetched automatically from their public HTTPS hosts; those
+hosts see your IP address. The plugin does not sandbox installed plugins.
+If an operation worker is killed, its result is unconfirmed: check
+`herdr plugin list` and let any surviving build finish before retrying.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
 
 The Herdr socket client, the left dock and the launcher lock come from
 herdr-npm and herdr-sidebar (MIT): see `NOTICE`.
