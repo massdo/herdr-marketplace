@@ -480,7 +480,7 @@ def prove_install_preview():
     assert "source: massdo/herdr-marketplace-fixture" in shown, shown
     assert f"commit: {SHA_A}" in shown, shown
     assert "• /bin/sh build.sh" in shown, shown
-    assert "• hello: /bin/echo hello from herdr-marketplace-fixture" in shown, shown
+    assert '• hello: /bin/echo "hello from herdr-marketplace-fixture"' in shown, shown
     assert "This plugin will run code with your permissions." in shown, shown
     print("install_preview_ok", flush=True)
 
