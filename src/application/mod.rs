@@ -1,0 +1,11 @@
+pub mod load_catalog;
+pub mod load_listing;
+pub mod load_readme;
+pub mod open_details;
+pub mod open_sidebar;
+pub mod pane_size;
+pub mod ports;
+pub mod prepare_install;
+pub mod prepare_removal;
+pub mod run_operation;
+pub mod toggle_sidebar;
