@@ -1,12 +1,17 @@
+use std::iter;
+
 use ratatui::Frame;
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
 use super::details::{
     Button, Command, DetailsApp, InstallState, InstalledView, ReadmeState, RemovalState,
 };
+use super::selection::{self, Flow, Selection};
 use super::style::{
     ERROR, MUTED, OK, WARN, bold, button_text, ellipsize, ellipsize_middle, muted, wrap,
 };
@@ -30,24 +35,59 @@ pub fn page_rows(app: &DetailsApp, width: u16, height: u16) -> usize {
 
 pub fn render(frame: &mut Frame, app: &DetailsApp) {
     let area = frame.area();
-    let width = area.width as usize;
-    let mut lines = header(app, width);
-    lines.truncate(area.height.saturating_sub(2) as usize);
-    let body_height = page_rows(app, area.width, area.height);
+    let (lines, flows) = rows(app, area.width, area.height);
+    frame.render_widget(Paragraph::new(lines), area);
+    if let Some(selection) = &app.selection {
+        selection::highlight(frame.buffer_mut(), &flows, selection);
+    }
+}
+
+/// The text `selection` covers in a `width` × `height` pane, as a copy
+/// reads it.
+pub fn selected_text(app: &DetailsApp, selection: &Selection, width: u16, height: u16) -> String {
+    let (lines, flows) = rows(app, width, height);
+    let area = Rect::new(0, 0, width, height);
+    let mut buffer = Buffer::empty(area);
+    Paragraph::new(lines).render(area, &mut buffer);
+    selection::copy(&buffer, &flows, selection)
+}
+
+/// The rows of the pane, as drawn, and how each reads in a copy.
+fn rows(app: &DetailsApp, width: u16, height: u16) -> (Vec<Line<'static>>, Vec<Flow>) {
+    let cells = width as usize;
+    let mut lines = header(app, cells);
+    // The rule under the header is drawn for looks.
+    let mut flows = vec![Flow::default(); lines.len().saturating_sub(1)];
+    flows.push(Flow::DECOR);
+    lines.truncate(height.saturating_sub(2) as usize);
+    flows.truncate(lines.len());
+    let body_height = page_rows(app, width, height);
     let scroll = if app.showing_confirmation() {
         app.preview_scroll
     } else {
         app.scroll
     };
-    let (prefix, content) = body_lines(app, width);
-    let mut body: Vec<_> = prefix
+    let (prefix, content, content_flows) = body_lines(app, cells);
+    let body_flows = iter::repeat_n(Flow::default(), prefix.len())
+        .chain(content_flows.iter().copied())
+        .chain(iter::repeat(Flow::default()));
+    let body = prefix
         .into_iter()
         .chain(content.iter().cloned())
+        .zip(body_flows)
         .skip(scroll)
-        .take(body_height)
-        .collect();
-    body.resize(body_height, Line::default());
-    lines.extend(body);
+        .take(body_height);
+    let first = lines.len();
+    for (line, flow) in body {
+        lines.push(line);
+        flows.push(flow);
+    }
+    // The first row of the body never goes on from the header above it.
+    if let Some(flow) = flows.get_mut(first) {
+        flow.joins = None;
+    }
+    lines.resize(first + body_height, Line::default());
+    flows.resize(first + body_height, Flow::default());
     let footer = if app.showing_confirmation() {
         if body_height == 0 {
             "Enlarge pane to confirm · Esc: cancel"
@@ -57,8 +97,9 @@ pub fn render(frame: &mut Frame, app: &DetailsApp) {
     } else {
         FOOTER
     };
-    lines.push(Line::styled(ellipsize(footer, width), muted()));
-    frame.render_widget(Paragraph::new(lines), area);
+    lines.push(Line::styled(ellipsize(footer, cells), muted()));
+    flows.push(Flow::default());
+    (lines, flows)
 }
 
 /// What a click at `column`, `row` of a `width` × `height` pane runs, laid
@@ -97,7 +138,7 @@ fn link_at(
     if app.showing_confirmation() || row >= page_rows(app, width, height) {
         return None;
     }
-    let (prefix, _) = body_lines(app, width as usize);
+    let (prefix, _, _) = body_lines(app, width as usize);
     let line = (app.scroll + row).checked_sub(prefix.len())?;
     app.links
         .iter()
@@ -141,13 +182,17 @@ fn bar(buttons: &[Button], width: usize) -> Line<'static> {
 }
 
 /// All variable-length content scrolls. A confirmation starts at its first
-/// line and is never pushed below old operation output.
-pub(super) fn body_lines(app: &DetailsApp, width: usize) -> (Vec<Line<'static>>, &[Line<'static>]) {
+/// line and is never pushed below old operation output. The README comes
+/// with how its lines read in a copy.
+pub(super) fn body_lines(
+    app: &DetailsApp,
+    width: usize,
+) -> (Vec<Line<'static>>, &[Line<'static>], &[Flow]) {
     if app.showing_preview() {
-        return (Vec::new(), &app.preview);
+        return (Vec::new(), &app.preview, &[]);
     }
     if matches!(app.removal, RemovalState::Confirm(_)) {
-        return (removal_lines(app, width), &[]);
+        return (removal_lines(app, width), &[], &[]);
     }
     let mut lines = notices(app, width);
     lines.extend(operation_lines(app, width));
@@ -170,9 +215,9 @@ pub(super) fn body_lines(app: &DetailsApp, width: usize) -> (Vec<Line<'static>>,
                     .map(|line| Line::styled(line, muted())),
             );
         }
-        ReadmeState::Found { .. } => return (lines, &app.lines),
+        ReadmeState::Found { .. } => return (lines, &app.lines, &app.flows),
     }
-    (lines, &[])
+    (lines, &[], &[])
 }
 
 /// What the removal will do, before its confirmation.

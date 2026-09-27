@@ -7,6 +7,7 @@ use super::details_view;
 use super::graphics::{Graphics, Pictures};
 use super::markdown::{self, LinkArea};
 use super::preview::preview_lines;
+use super::selection::{Flow, Selection};
 use super::style::Tone;
 use crate::adapters::images::Picture;
 use crate::application::load_readme::Readme;
@@ -107,6 +108,8 @@ pub enum DetailsIntent {
     LoadImages(Vec<String>),
     /// Open this address in the browser.
     OpenUrl(String),
+    /// Put this text on the clipboard.
+    Copy(String),
 }
 
 /// Details pane state: the plugin and commit received at opening, its README, and
@@ -119,6 +122,8 @@ pub struct DetailsApp {
     pub request: u64,
     /// README rendered for `width`.
     pub lines: Vec<Line<'static>>,
+    /// How each of `lines` reads in a copy.
+    pub flows: Vec<Flow>,
     /// Parts of `lines` a click opens.
     pub links: Vec<LinkArea>,
     /// First line of each README heading, by anchor.
@@ -144,6 +149,8 @@ pub struct DetailsApp {
     pub launched: Option<(String, OperationKind)>,
     /// Why the last confirmation launched nothing.
     pub notice: Option<String>,
+    /// Text the mouse is selecting, copied when the button is released.
+    pub selection: Option<Selection>,
     pub intents: Vec<DetailsIntent>,
 }
 
@@ -154,6 +161,7 @@ impl DetailsApp {
             readme: ReadmeState::Loading,
             request: 1,
             lines: Vec::new(),
+            flows: Vec::new(),
             links: Vec::new(),
             anchors: Vec::new(),
             pictures: Pictures::default(),
@@ -172,6 +180,7 @@ impl DetailsApp {
             operation: None,
             launched: None,
             notice: None,
+            selection: None,
             intents: vec![DetailsIntent::LoadReadme(1), DetailsIntent::ReadRegistry(1)],
         }
     }
@@ -328,19 +337,45 @@ impl DetailsApp {
         false
     }
 
-    /// A click runs the button under it; the wheel scrolls.
+    /// A click runs the button or the link under it; a drag from elsewhere
+    /// selects text, copied when the button is released; the wheel scrolls.
     pub fn handle_mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) {
+        let (column, row) = cell(mouse, width, height);
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(command) =
-                    details_view::hit(self, width, height, mouse.column, mouse.row)
+                self.selection = None;
+                match details_view::hit(self, width, height, mouse.column, mouse.row) {
+                    Some(command) => self.press(command),
+                    None => self.selection = Some(Selection::new(column, row)),
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(selection) = &mut self.selection {
+                    selection.drag(column, row);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(selection) = self.selection.take()
+                    && selection.dragged()
                 {
-                    self.press(command);
+                    let text = details_view::selected_text(self, &selection, width, height);
+                    if !text.is_empty() {
+                        self.intents.push(DetailsIntent::Copy(text));
+                    }
                 }
             }
             MouseEventKind::ScrollDown => self.scroll_by(WHEEL),
             MouseEventKind::ScrollUp => self.scroll_by(-WHEEL),
             _ => {}
+        }
+    }
+
+    /// The click that gave the pane the focus runs nothing, but a drag from
+    /// it selects text, as in any Herdr pane.
+    pub fn focus_click(&mut self, mouse: MouseEvent, width: u16, height: u16) {
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            let (column, row) = cell(mouse, width, height);
+            self.selection = Some(Selection::new(column, row));
         }
     }
 
@@ -373,7 +408,7 @@ impl DetailsApp {
         let Some(&(_, line)) = self.anchors.iter().find(|(name, _)| name == anchor) else {
             return;
         };
-        let (prefix, _) = details_view::body_lines(self, self.width);
+        let (prefix, _, _) = details_view::body_lines(self, self.width);
         self.scroll = prefix.len() + line;
         self.scroll_by(0);
     }
@@ -480,6 +515,7 @@ impl DetailsApp {
             self.request += 1;
             self.readme = ReadmeState::Loading;
             self.lines.clear();
+            self.flows.clear();
             self.intents.push(DetailsIntent::LoadReadme(self.request));
         }
     }
@@ -539,6 +575,7 @@ impl DetailsApp {
             _ => markdown::Rendered::default(),
         };
         self.lines = rendered.lines;
+        self.flows = rendered.flows;
         self.links = rendered.links;
         self.anchors = rendered.anchors;
         let wanted: Vec<String> = rendered
@@ -558,7 +595,7 @@ impl DetailsApp {
     }
 
     fn scroll_by(&mut self, delta: isize) {
-        let (prefix, content) = details_view::body_lines(self, self.width);
+        let (prefix, content, _) = details_view::body_lines(self, self.width);
         let len = prefix.len() + content.len();
         let scroll = if self.showing_confirmation() {
             &mut self.preview_scroll
@@ -570,4 +607,13 @@ impl DetailsApp {
             .saturating_add(delta)
             .clamp(0, max as isize) as usize;
     }
+}
+
+/// The cell under the pointer, kept in the pane: a drag goes on past its
+/// edges.
+fn cell(mouse: MouseEvent, width: u16, height: u16) -> (u16, u16) {
+    (
+        mouse.column.min(width.saturating_sub(1)),
+        mouse.row.min(height.saturating_sub(1)),
+    )
 }

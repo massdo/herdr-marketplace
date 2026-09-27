@@ -78,7 +78,10 @@ never opens a plugin.
    shows it (see [README pages](#readme-pages)). The wheel, ↑↓, Page Up/Down,
    Home and End scroll it; a click on the commit, or `s`, shows the full SHA;
    **Open on GitHub (o)** opens the plugin's folder at that commit in the
-   browser; Esc closes the details pane.
+   browser; Esc closes the details pane. A drag selects text, even while
+   another pane has the focus, and releasing the button copies it, as
+   anywhere in Herdr: code comes without its frame, a line the pane cuts
+   comes back whole, and images, rules and table borders are left out.
 3. **Install.** Under the header, buttons show what can be done, each with
    its key. **Install (i)** opens the preview: source, full SHA, build and
    startup commands, events, actions and panes. **Confirm install (Enter)**

@@ -4,6 +4,7 @@ pub mod focus;
 pub mod graphics;
 pub mod markdown;
 pub mod preview;
+pub mod selection;
 pub mod sidebar;
 pub mod sidebar_view;
 pub mod style;
@@ -85,7 +86,7 @@ pub fn run_sidebar(process: ProcessEnv) -> Result<(), AppError> {
     let herdr = HerdrSocket::new(process.socket_path.clone());
     let mut app = SidebarApp::new();
     let (sender, receiver) = mpsc::channel();
-    let mut terminal = setup()?;
+    let mut terminal = setup(Mouse::Clicks)?;
     let result = sidebar_loop(
         &mut terminal,
         &mut app,
@@ -188,7 +189,9 @@ pub fn run_details(process: ProcessEnv, target: DetailsTarget) -> Result<(), App
     let operations = FsOperations::new(process.state_dir.clone());
     let mut app = DetailsApp::new(target);
     let (sender, receiver) = mpsc::channel();
-    let mut terminal = setup()?;
+    // Herdr selects text only where the pane leaves it the mouse: the pane
+    // gets the drags too, and selects on its own.
+    let mut terminal = setup(Mouse::Drags)?;
     // Before the event reader starts: the answers come on the input.
     let probe = graphics::probe();
     let result = details_loop(
@@ -309,6 +312,11 @@ fn details_loop(
                     }
                 }
                 DetailsIntent::OpenUrl(url) => open_url(&url),
+                DetailsIntent::Copy(text) => {
+                    let backend = terminal.backend_mut();
+                    backend.write_all(selection::clipboard(&text).as_bytes())?;
+                    backend.flush()?;
+                }
             }
         }
         while let Ok(answer) = receiver.try_recv() {
@@ -341,9 +349,10 @@ fn details_loop(
         terminal.draw(|frame| details_view::render(frame, app))?;
         match next_input()? {
             Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),
-            Some((Input::Mouse(mouse), at)) if !focus.swallows(&mouse, at) => {
-                app.handle_mouse(mouse, size.width, size.height)
+            Some((Input::Mouse(mouse), at)) if focus.swallows(&mouse, at) => {
+                app.focus_click(mouse, size.width, size.height)
             }
+            Some((Input::Mouse(mouse), _)) => app.handle_mouse(mouse, size.width, size.height),
             Some((Input::FocusGained, at)) => focus.focus_gained(at),
             _ => {}
         }
@@ -487,13 +496,22 @@ fn next_input() -> Result<Option<(Input, Instant)>, AppError> {
     Ok(Some((input, Instant::now())))
 }
 
-/// Clicks and the wheel, in SGR encoding. Unlike crossterm's
+/// Mouse reports a pane asks for, in SGR encoding. Unlike crossterm's
 /// `EnableMouseCapture`, no event for every move of the pointer.
-struct EnableMouse;
+#[derive(Clone, Copy)]
+enum Mouse {
+    /// Clicks and the wheel.
+    Clicks,
+    /// Clicks, the wheel, and the moves of a held button.
+    Drags,
+}
 
-impl Command for EnableMouse {
+impl Command for Mouse {
     fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
-        f.write_str("\x1b[?1000h\x1b[?1006h")
+        f.write_str(match self {
+            Self::Clicks => "\x1b[?1000h\x1b[?1006h",
+            Self::Drags => "\x1b[?1002h\x1b[?1006h",
+        })
     }
 }
 
@@ -501,14 +519,14 @@ struct DisableMouse;
 
 impl Command for DisableMouse {
     fn write_ansi(&self, f: &mut impl std::fmt::Write) -> std::fmt::Result {
-        f.write_str("\x1b[?1006l\x1b[?1000l")
+        f.write_str("\x1b[?1006l\x1b[?1002l\x1b[?1000l")
     }
 }
 
-fn setup() -> Result<Screen, AppError> {
+fn setup(mouse: Mouse) -> Result<Screen, AppError> {
     enable_raw_mode()?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouse, EnableFocusChange)?;
+    execute!(stdout, EnterAlternateScreen, mouse, EnableFocusChange)?;
     Terminal::new(CrosstermBackend::new(stdout)).map_err(AppError::from)
 }
 

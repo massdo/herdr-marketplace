@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Marketplace journey in the disposable Herdr profile prepared by e2e.sh."""
 
+import base64
 import fcntl
 import json
 import os
@@ -29,6 +30,14 @@ SHA_A = "c8268d42a98d9140254f4bf4ca13c23a587faed8"  # 1.0.0, harmless build
 SHA_B = "1be1b7bb9d9ad3d8733a66d132b87c908ff210c6"  # 1.1.0, harmless build
 SHA_C = "bc4d8b84d062b8048b5d89647e7110c9f5a05561"  # 1.2.0, build fails on purpose
 BROWSER_SHA = "ff8f17077e52a8b582a4659f3424cd8abbb5ce1d"
+# The usage block of its README: the details pane cuts two of these lines.
+BROWSER_USAGE = "\n".join([
+    "terminal-browser # launches the browser",
+    "terminal-browser open <url> # opens the browser at a url",
+    "terminal-browser --split right # opens the browser in a split pane to the right",
+    "terminal-browser ls # lists open browsers",
+    "terminal-browser action # an agent-browser compatible cli for interacting with open terminal-browsers",
+])
 # herdr-sidebar's README shows a PNG next to it and links to the root README.
 SIDEBAR_SHA = "1a5d37ef84edc91e5b3d3d4e39daa32952e6ecf2"
 # Installs fetch the fixture from GitHub and build it.
@@ -43,7 +52,10 @@ class Client:
     def start(self):
         self.pid, self.master = pty.fork()
         if self.pid == 0:
-            os.execvp("herdr", ["herdr", "--session", SESSION])
+            # As for a VS Code remote session, Herdr writes what it copies to
+            # its terminal, here the client log, not to the system clipboard.
+            os.execvpe("herdr", ["herdr", "--session", SESSION],
+                       {**os.environ, "VSCODE_IPC_HOOK_CLI": str(TMP / "vscode.sock")})
         # Pixel size as a real terminal reports it: 8 × 17 pixel cells.
         fcntl.ioctl(self.master, termios.TIOCSWINSZ,
                     struct.pack("HHHH", CLIENT_ROWS, CLIENT_COLS, CLIENT_COLS * 8, CLIENT_ROWS * 17))
@@ -67,6 +79,18 @@ class Client:
         os.write(self.master, f"\x1b[<0;{column};{row}M".encode())
         time.sleep(0.05)
         os.write(self.master, f"\x1b[<0;{column};{row}m".encode())
+
+    def drag(self, start, end):
+        """Left button pressed on 1-based screen cell `start`, moved to
+        `end` and released there, as a terminal reports a drag."""
+        (x1, y1), (x2, y2) = start, end
+        os.write(self.master, f"\x1b[<0;{x1};{y1}M".encode())
+        time.sleep(0.05)
+        for step in range(1, 5):
+            x, y = x1 + (x2 - x1) * step // 4, y1 + (y2 - y1) * step // 4
+            os.write(self.master, f"\x1b[<32;{x};{y}M".encode())
+            time.sleep(0.02)
+        os.write(self.master, f"\x1b[<0;{x2};{y2}m".encode())
 
     def close(self):
         try:
@@ -126,20 +150,47 @@ def toggle():
     herdr("plugin", "action", "invoke", "herdr-marketplace.toggle")
 
 
-def click_text(pane, text):
-    """Clicks the middle of `text` where `pane` shows it, through the attached
-    client, as a user would. The tab area fills the client right of Herdr's
-    sidebar and under its top bar; a pane in a split has a one-cell border."""
+def find_text(pane, text, below=-1):
+    """Row and column where `pane` shows `text`, on the first row after
+    `below` that has it."""
     lines = read(pane).split("\n")
-    row = next((i for i, line in enumerate(lines) if text in line), None)
+    row = next((i for i, line in enumerate(lines) if i > below and text in line), None)
     assert row is not None, f"{text!r} is not on {pane}: {lines}"
-    column = lines[row].index(text) + len(text) // 2
+    return row, lines[row].index(text)
+
+
+def screen_cell(pane, row, column):
+    """1-based client cell of `pane`'s cell `row`, `column`. The tab area
+    fills the client right of Herdr's sidebar and under its top bar; a pane
+    in a split has a one-cell border."""
     layout = data("pane", "layout", "--pane", pane)["layout"]
     rect = next(p["rect"] for p in layout["panes"] if p["pane_id"] == pane)
     inset = 1 if len(layout["panes"]) > 1 else 0
     x = CLIENT_COLS - layout["area"]["width"] + rect["x"] + inset + column + 1
     y = CLIENT_ROWS - layout["area"]["height"] + rect["y"] + inset + row + 1
-    CLIENT.click(x, y)
+    return x, y
+
+
+def click_text(pane, text):
+    """Clicks the middle of `text` where `pane` shows it, through the attached
+    client, as a user would."""
+    row, column = find_text(pane, text)
+    CLIENT.click(*screen_cell(pane, row, column + len(text) // 2))
+
+
+def drag_text(pane, first, last):
+    """Drags through the attached client from the first cell of `first` to
+    the last cell of `last`, where `pane` shows them, as a user selects."""
+    row, column = find_text(pane, first)
+    end_row, end_column = find_text(pane, last, row - 1)
+    CLIENT.drag(screen_cell(pane, row, column),
+                screen_cell(pane, end_row, end_column + len(last) - 1))
+
+
+def copied():
+    """The last text Herdr copied: the OSC 52 it wrote to the client."""
+    copies = re.findall(rb"\x1b\]52;c;([A-Za-z0-9+/=]*)\x07", CLIENT_LOG.read_bytes())
+    return base64.b64decode(copies[-1]).decode() if copies else None
 
 
 def with_token(key):
@@ -326,6 +377,19 @@ def prove_details():
     assert "```" not in shown and "### " not in shown, shown
     assert focused() == details, "the details pane did not take focus"
     print("details_terminal_browser_ok", flush=True)
+
+    # Herdr leaves the mouse to a pane that asks for it: the details pane
+    # selects on its own, and the release copies, even from another focus.
+    herdr("pane", "focus", "--pane", details, "--direction", "left")
+    wait(lambda: focused() != details, "the focus did not leave the details pane")
+    command = "herdr plugin install zenbu-labs/terminal-browser/herdr-plugin"
+    drag_text(details, command, command)
+    wait(lambda: copied() == command, f"the drag did not copy the command: {copied()!r}")
+    wait(lambda: focused() == details, "the drag did not focus the details pane")
+    # Code comes without its frame, and a line the pane cuts comes back whole.
+    drag_text(details, "terminal-browser # launches", "open terminal-browsers")
+    wait(lambda: copied() == BROWSER_USAGE, f"the drag did not copy the usage: {copied()!r}")
+    print("details_copy_ok", flush=True)
 
     keys(details, "esc")
     wait(lambda: not details_panes(tab), "escape did not close the details pane")

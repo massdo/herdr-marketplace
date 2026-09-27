@@ -18,6 +18,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use self::html::Token;
 use super::graphics::Pictures;
+use super::selection::Flow;
 use super::style::{ACCENT, MUTED, OK};
 use crate::domain::readme::{LinkTarget, ReadmePlace, absolute_image, absolute_link, anchor};
 
@@ -34,6 +35,8 @@ const ICON_PIXELS: u32 = 48;
 #[derive(Debug, Clone, Default)]
 pub struct Rendered {
     pub lines: Vec<Line<'static>>,
+    /// How each of `lines` reads in a copy.
+    pub flows: Vec<Flow>,
     /// Parts of `lines` a click opens.
     pub links: Vec<LinkArea>,
     /// First line of each heading, by GitHub anchor.
@@ -255,7 +258,7 @@ impl<'a> Renderer<'a> {
                         title,
                         Style::default().fg(color).add_modifier(Modifier::BOLD),
                     ));
-                    self.push(Line::from(spans));
+                    self.push(Line::from(spans), Flow::default());
                 }
             }
             Tag::CodeBlock(kind) => {
@@ -340,6 +343,7 @@ impl<'a> Renderer<'a> {
                 // The quote ends on its text, not on an empty barred line.
                 if self.blank && !self.out.lines.is_empty() {
                     self.out.lines.pop();
+                    self.out.flows.pop();
                     self.blank = false;
                 }
                 self.quotes.pop();
@@ -675,8 +679,9 @@ impl<'a> Renderer<'a> {
         self.width.saturating_sub(self.prefix_width()).max(1)
     }
 
-    fn push(&mut self, line: Line<'static>) {
+    fn push(&mut self, line: Line<'static>, flow: Flow) {
         self.out.lines.push(line);
+        self.out.flows.push(flow);
         self.blank = false;
     }
 
@@ -684,7 +689,7 @@ impl<'a> Renderer<'a> {
     fn blank(&mut self) {
         if !self.blank {
             let bars = self.quote_bars();
-            self.out.lines.push(Line::from(bars));
+            self.push(Line::from(bars), Flow::default());
             self.blank = true;
         }
     }
@@ -696,7 +701,7 @@ impl<'a> Renderer<'a> {
             ch.to_string().repeat(room),
             Style::default().fg(MUTED),
         ));
-        self.push(Line::from(spans));
+        self.push(Line::from(spans), Flow::DECOR);
     }
 
     fn area(&mut self, line: usize, start: usize, end: usize, link: Option<usize>) {
@@ -799,21 +804,28 @@ impl<'a> Renderer<'a> {
             return;
         }
         let room = self.room();
-        for line in wrap(segments, room) {
+        for (line, joins) in wrap(segments, room) {
             let width: usize = line.iter().map(|segment| segment.text.width()).sum();
             let pad = if self.centered() {
                 room.saturating_sub(width) / 2
             } else {
                 0
             };
-            self.push_segments(line, pad);
+            self.push_segments(line, pad, joins);
         }
     }
 
-    fn push_segments(&mut self, segments: Vec<Seg>, pad: usize) {
+    /// A line of text; `joins` when it goes on from the line above.
+    fn push_segments(&mut self, segments: Vec<Seg>, pad: usize, joins: Option<&'static str>) {
         let line = self.out.lines.len();
         let mut spans = self.prefix();
         let mut column = self.prefix_width() + pad;
+        // A copy joins it to the line above without its indentation.
+        let flow = Flow {
+            start: if joins.is_some() { column } else { 0 },
+            joins,
+            ..Flow::default()
+        };
         if pad > 0 {
             spans.push(Span::raw(" ".repeat(pad)));
         }
@@ -823,7 +835,7 @@ impl<'a> Renderer<'a> {
             column += width;
             spans.push(Span::styled(segment.text, segment.style));
         }
-        self.push(Line::from(spans));
+        self.push(Line::from(spans), flow);
     }
 
     /// The image once loaded, its alternative text before, if it fails or
@@ -859,12 +871,12 @@ impl<'a> Renderer<'a> {
             let mut spans = self.prefix();
             spans.push(Span::raw(" ".repeat(pad)));
             spans.extend(image_line.spans);
-            self.push(Line::from(spans));
+            self.push(Line::from(spans), Flow::DECOR);
         }
     }
 
     /// Colored code on its own background, one cell of padding around it;
-    /// long lines are cut.
+    /// long lines are cut. A copy takes the code alone, a long line whole.
     fn code_lines(&mut self, text: &str, language: &str) {
         let room = self.room();
         let inner = room.saturating_sub(2).max(1);
@@ -874,8 +886,15 @@ impl<'a> Renderer<'a> {
             .iter()
             .cloned()
         {
-            for chunk in cut_colored(pieces, inner) {
+            for (index, chunk) in cut_colored(pieces, inner).into_iter().enumerate() {
                 let used: usize = chunk.iter().map(|(text, _)| text.width()).sum();
+                let start = self.prefix_width() + 1;
+                let flow = Flow {
+                    start,
+                    end: Some(start + used),
+                    joins: (index > 0).then_some(""),
+                    decor: false,
+                };
                 let mut spans = self.prefix();
                 spans.push(Span::styled(" ", background));
                 for (text, color) in chunk {
@@ -885,7 +904,7 @@ impl<'a> Renderer<'a> {
                     " ".repeat(room.saturating_sub(1 + used)),
                     background,
                 ));
-                self.push(Line::from(spans));
+                self.push(Line::from(spans), flow);
             }
         }
         self.fill(room, background);
@@ -894,7 +913,7 @@ impl<'a> Renderer<'a> {
     fn fill(&mut self, room: usize, style: Style) {
         let mut spans = self.prefix();
         spans.push(Span::styled(" ".repeat(room), style));
-        self.push(Line::from(spans));
+        self.push(Line::from(spans), Flow::DECOR);
     }
 
     /// A boxed table; cells wrap when the pane is narrow.
@@ -929,11 +948,16 @@ impl<'a> Renderer<'a> {
         );
         let mut spans = self.prefix();
         spans.push(Span::styled(top, border));
-        self.push(Line::from(spans));
+        self.push(Line::from(spans), Flow::DECOR);
         for (index, row) in table.rows.iter().enumerate() {
             let header = index < table.header_rows;
             let cells: Vec<Vec<Vec<Seg>>> = (0..columns)
-                .map(|column| wrap(row.get(column).cloned().unwrap_or_default(), widths[column]))
+                .map(|column| {
+                    wrap(row.get(column).cloned().unwrap_or_default(), widths[column])
+                        .into_iter()
+                        .map(|(line, _)| line)
+                        .collect()
+                })
                 .collect();
             let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
             for part in 0..height {
@@ -968,17 +992,17 @@ impl<'a> Renderer<'a> {
                     spans.push(Span::styled(closing, border));
                     column += right + closing.width();
                 }
-                self.push(Line::from(spans));
+                self.push(Line::from(spans), Flow::default());
             }
             if header && index + 1 == table.header_rows {
                 let mut spans = self.prefix();
                 spans.push(Span::styled(separator.clone(), border));
-                self.push(Line::from(spans));
+                self.push(Line::from(spans), Flow::DECOR);
             }
         }
         let mut spans = self.prefix();
         spans.push(Span::styled(bottom, border));
-        self.push(Line::from(spans));
+        self.push(Line::from(spans), Flow::DECOR);
     }
 
     fn finish(mut self) -> Rendered {
@@ -989,6 +1013,7 @@ impl<'a> Renderer<'a> {
                 .all(|span| span.content.trim().is_empty() && span.style.bg.is_none())
         }) {
             self.out.lines.pop();
+            self.out.flows.pop();
         }
         // Lines are split on line feeds above; this keeps the promise that no
         // control character of the README is ever drawn.
@@ -1091,10 +1116,11 @@ fn collapse_spaces(text: &str) -> String {
 }
 
 /// Greedy word wrap that keeps each word's style and link; a word wider
-/// than the line is cut.
-fn wrap(segments: Vec<Seg>, width: usize) -> Vec<Vec<Seg>> {
+/// than the line is cut. Each line after the first comes with what its cut
+/// took out: the space between two words, or nothing inside a word.
+fn wrap(segments: Vec<Seg>, width: usize) -> Vec<(Vec<Seg>, Option<&'static str>)> {
     let width = width.max(1);
-    let mut lines: Vec<Vec<Seg>> = vec![Vec::new()];
+    let mut lines: Vec<(Vec<Seg>, Option<&'static str>)> = vec![(Vec::new(), None)];
     let mut used = 0;
     let mut space: Option<(Style, Option<usize>)> = None;
     for segment in segments {
@@ -1108,31 +1134,36 @@ fn wrap(segments: Vec<Seg>, width: usize) -> Vec<Vec<Seg>> {
             }
             let needed = word.width() + usize::from(space.is_some());
             if used > 0 && used + needed > width {
-                lines.push(Vec::new());
+                let cut = if space.take().is_some() { " " } else { "" };
+                lines.push((Vec::new(), Some(cut)));
                 used = 0;
-                space = None;
             }
             if let Some((space_style, space_link)) = space.take() {
                 lines
                     .last_mut()
                     .unwrap()
+                    .0
                     .push(Seg::new(" ", space_style, space_link));
                 used += 1;
             }
             let mut parts = cut(word, width.saturating_sub(used).max(1)).into_iter();
             if let Some(first) = parts.next() {
                 used += first.width();
-                lines.last_mut().unwrap().push(Seg::new(first, style, link));
+                lines
+                    .last_mut()
+                    .unwrap()
+                    .0
+                    .push(Seg::new(first, style, link));
             }
             for part in parts {
                 used = part.width();
-                lines.push(vec![Seg::new(part, style, link)]);
+                lines.push((vec![Seg::new(part, style, link)], Some("")));
             }
         }
     }
-    lines.retain(|line| !line.is_empty());
+    lines.retain(|(line, _)| !line.is_empty());
     if lines.is_empty() {
-        lines.push(Vec::new());
+        lines.push((Vec::new(), None));
     }
     lines
 }
