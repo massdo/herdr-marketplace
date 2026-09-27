@@ -390,8 +390,14 @@ fn trapped_text_in_the_manifest_never_reaches_the_terminal() {
         .map(|cell| cell.symbol())
         .collect();
     assert!(!screen.chars().any(char::is_control), "{screen:?}");
-    assert!(screen.contains("name: fixture]0;PWNED[2J"), "{screen}");
-    assert!(screen.contains("hello: /bin/echo hi[31m6n"), "{screen}");
+    assert!(
+        screen.contains("name: fixture⟨U+001B⟩]0;PWNED⟨U+0007⟩⟨U+001B⟩[2J"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains(r#"hello: /bin/echo "hi\u001b[31m⟨U+009B⟩6n""#),
+        "{screen}"
+    );
 }
 
 #[test]
@@ -426,7 +432,7 @@ fn the_preview_shows_source_commit_commands_and_warnings() {
     has("startup commands (0)");
     has("events (0)");
     has("actions (1)");
-    has("• hello: /bin/echo hello from herdr-marketplace-fixture");
+    has("• hello: /bin/echo \"hello from herdr-marketplace-fixture\"");
     has("panes (0)");
     has("This plugin will run code with your permissions.");
     has("The SHA pins the repository, not what the build downloads.");
@@ -697,4 +703,26 @@ fn installation_preview_reveals_unicode_format_characters() {
         preview.manifest.name.contains('\u{202e}'),
         "the executed manifest is unchanged"
     );
+}
+
+#[test]
+fn preview_preserves_argument_boundaries_and_reveals_shell_newlines() {
+    use herdr_marketplace::adapters::tui::preview::preview_lines;
+    let mut preview = preview(prepare(&FakeWeb::fixture(), vec![], &target("")));
+    let command = vec![
+        "sh".into(),
+        "-c".into(),
+        "# harmless comment\nprintf dangerous".into(),
+    ];
+    preview.manifest.build[0].command = command.clone();
+    let shown = preview_lines(&preview, 160, Platform::Macos)
+        .iter()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        shown.contains(r##"sh -c "# harmless comment\nprintf dangerous""##),
+        "{shown}"
+    );
+    assert_eq!(preview.manifest.build[0].command, command);
 }

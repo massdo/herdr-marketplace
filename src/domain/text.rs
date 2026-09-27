@@ -23,7 +23,7 @@ pub fn preview_text(value: &str) -> String {
         &value
             .chars()
             .map(|ch| {
-                if is_format(ch) {
+                if is_format(ch) || ch.is_control() {
                     format!("⟨U+{:04X}⟩", ch as u32)
                 } else {
                     ch.to_string()

@@ -55,18 +55,18 @@ pub fn preview_lines(preview: &InstallPreview, width: usize, host: Platform) -> 
             } else {
                 String::new()
             };
-            format!("{}{note}", step.command.join(" "))
+            format!("{}{note}", command_text(&step.command))
         })
         .collect();
     let startup: Vec<String> = manifest
         .startup
         .iter()
-        .map(|step| step.command.join(" "))
+        .map(|step| command_text(&step.command))
         .collect();
     let hooks = |hooks: &[crate::domain::manifest::Hook]| -> Vec<String> {
         hooks
             .iter()
-            .map(|hook| format!("{}: {}", hook.name, hook.command.join(" ")))
+            .map(|hook| format!("{}: {}", hook.name, command_text(&hook.command)))
             .collect()
     };
     section(&mut lines, "build commands", &build, width);
@@ -88,6 +88,24 @@ pub fn preview_lines(preview: &InstallPreview, width: usize, host: Platform) -> 
         );
     }
     lines
+}
+
+/// Keep argument boundaries and shell-script newlines visible. Joining raw
+/// arguments can make `sh -c "# comment\ncommand"` look like one comment.
+fn command_text(argv: &[String]) -> String {
+    argv.iter()
+        .map(|arg| {
+            if arg
+                .chars()
+                .any(|ch| ch.is_whitespace() || ch.is_control() || matches!(ch, '"' | '\\' | '\''))
+            {
+                serde_json::to_string(arg).expect("serializing a string cannot fail")
+            } else {
+                arg.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn section(lines: &mut Vec<Line<'static>>, label: &str, items: &[String], width: usize) {
