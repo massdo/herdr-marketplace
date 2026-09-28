@@ -354,7 +354,9 @@ def focused():
 
 
 def open_details(sidebar, query, expected_results):
-    """Search in the sidebar, press Enter on the first result, return its details pane."""
+    """Search in the sidebar, press Enter on the first result, return its
+    details pane. The search stays: erasing it would move the details."""
+    keys(sidebar, *["backspace"] * 30)
     type_text(sidebar, query)
     wait(lambda: expected_results in read(sidebar), f"search {query!r} did not settle")
     before = {p["pane_id"] for p in panes()}
@@ -362,7 +364,6 @@ def open_details(sidebar, query, expected_results):
     details = wait(lambda: next((p for p in panes() if p["pane_id"] not in before
                                and (p.get("tokens") or {}).get(DETAILS_TOKEN) == "v1"), None),
                  f"Enter on {query!r} did not open a details pane")["pane_id"]
-    keys(sidebar, *["backspace"] * len(query))
     return details
 
 
@@ -411,8 +412,7 @@ def prove_details():
          "the last README line was not reachable")
     print("details_last_line_ok", flush=True)
 
-    type_text(sidebar, "fixture")
-    wait(lambda: " All 2 " in read(sidebar), "search fixture did not settle")
+    wait(lambda: " All 2 " in read(sidebar), "search fixture did not stay")
     keys(sidebar, "down", "enter")
     alt = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != details), None),
                "Enter on the alt source did not open its details pane")
@@ -492,6 +492,21 @@ def prove_preview():
     assert [pane for pane, _ in rects(sidebar)[:2]] == [sidebar, root], rects(sidebar)
     assert working in rects(sidebar), "the working pane moved or changed width"
     print("preview_follows_arrows_ok", flush=True)
+
+    # A search moves the open preview to its first result.
+    type_text(sidebar, " (alt)")
+    wait(lambda: " All 1 " in read(sidebar), "search fixture (alt) did not settle")
+    alt = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != root), None),
+               "the preview did not follow the search")
+    wait(lambda: "No README in alt/" in read(alt), "the preview is not the first result")
+    keys(sidebar, *["backspace"] * len(" (alt)"))
+    root = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != alt), None),
+                "the preview did not follow the erased search")
+    wait(lambda: "[image: fixture logo]" in read(root), "the preview is not the first result")
+    assert [p["pane_id"] for p in details_panes(tab)] == [root], "the old preview stayed open"
+    assert focused() == sidebar, "the search moved the focus"
+    assert working in rects(sidebar), "the working pane moved or changed width"
+    print("preview_follows_search_ok", flush=True)
 
     keys(sidebar, "enter")
     wait(lambda: focused() == root, "enter did not focus the preview")
@@ -609,11 +624,12 @@ def prove_install():
     click_text(sidebar, "Installed 1")
     wait(lambda: focused() == sidebar, "a click did not focus the sidebar")
     click_text(sidebar, "Installed 1")
-    shown = wait(lambda: "Terminal Browser" not in (text := read(sidebar)) and text,
+    # The search "fixture" stays: the alt source is the one not installed.
+    shown = wait(lambda: "massdo/herdr-…-fixture/alt" not in (text := read(sidebar)) and text,
                  "the Installed filter did not apply")
     assert "massdo/herdr-…lace-fixture" in shown and "installed · Test fixture." in shown, shown
     type_text(sidebar, "\t")
-    wait(lambda: "Terminal Browser" in read(sidebar), "Tab did not return to all plugins")
+    wait(lambda: "massdo/herdr-…-fixture/alt" in read(sidebar), "Tab did not return to all plugins")
     print("installed_filter_ok", flush=True)
     close_all(tab)
 
