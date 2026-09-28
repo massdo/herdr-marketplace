@@ -73,7 +73,7 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 | `s` | Details | Show the full commit SHA |
 | `Enter` / `Esc` | Install or removal | Confirm / cancel |
 | `Esc` | Sidebar | Clear the search, show All, then close |
-| `Esc` | Details | Close the pane |
+| `q` | Details | Close the pane |
 
 > [!IMPORTANT]
 > A community plugin, not an official Herdr product. The catalog is indexed

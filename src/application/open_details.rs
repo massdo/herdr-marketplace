@@ -123,7 +123,7 @@ fn open_pane<H: HerdrPort>(
     Ok(opened.pane_id)
 }
 
-/// Escape: focus returns to the sidebar if it is still open, else to another
+/// q: focus returns to the sidebar if it is still open, else to another
 /// pane of the tab, then the details pane closes.
 pub fn close_details<H: HerdrPort>(herdr: &H, details: &PaneId) -> Result<(), AppError> {
     let panes = herdr.list_panes(None)?;
