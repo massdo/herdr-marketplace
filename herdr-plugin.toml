@@ -1,5 +1,6 @@
 # herdr-marketplace: search, read and install Herdr plugins from a sidebar.
-# One binary: the sidebar and details panes, plus a --toggle action.
+# One binary: the sidebar and details panes, plus a --toggle action. The build
+# installs the verified release binary of this exact commit, or compiles it.
 
 id = "herdr-marketplace"
 name = "herdr-marketplace"
@@ -9,7 +10,7 @@ min_herdr_version = "0.9.1"
 platforms = ["linux", "macos"]
 
 [[build]]
-command = ["sh", "scripts/build.sh"]
+command = ["sh", "scripts/fetch-or-build.sh"]
 
 [[panes]]
 id = "sidebar"
