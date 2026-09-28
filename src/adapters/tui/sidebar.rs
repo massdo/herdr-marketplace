@@ -16,6 +16,8 @@ pub enum Intent {
     Open(Box<Row>),
     /// Show the details of this row and leave the focus in the sidebar.
     Preview(Box<Row>),
+    /// A search selected this row: details already open show it.
+    Follow(Box<Row>),
 }
 
 /// Which plugins the list shows, as the filters of VS Code's extensions view.
@@ -263,10 +265,14 @@ impl SidebarApp {
         self.filter = Filter::Installed;
     }
 
-    /// A new search starts from its most relevant result.
+    /// A new search starts from its most relevant result, and open details
+    /// follow it.
     fn search_changed(&mut self) {
         self.selected = None;
         self.refilter();
+        if let Some(row) = self.selected_row() {
+            self.intents.push(Intent::Follow(Box::new(row.clone())));
+        }
     }
 
     fn refilter(&mut self) {

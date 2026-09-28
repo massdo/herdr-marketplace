@@ -16,19 +16,29 @@ pub struct Shown {
     pub target: DetailsTarget,
 }
 
+/// Why the details show a plugin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reveal {
+    /// Enter or a click: the pane opens if needed and takes the focus.
+    Focus,
+    /// The arrows: the pane opens if needed and the sidebar keeps the focus.
+    Preview,
+    /// A search: an open pane shows the new selection, none opens.
+    Follow,
+}
+
 /// One details pane per tab, right of the sidebar. The pane that already
 /// shows `target` stays. Otherwise a new pane takes the place of the current
 /// one, which closes with its process and any answer it was waiting for, so
 /// the working pane keeps its width; without one, it takes the left half of
-/// the working pane. `focus` hands it the focus, as Enter and a click do; a
-/// preview leaves the focus in the sidebar.
+/// the working pane. `None`: a search found no pane to follow.
 pub fn show_details<H: HerdrPort>(
     herdr: &H,
     sidebar: &PaneId,
     target: &DetailsTarget,
-    focus: bool,
+    reveal: Reveal,
     shown: Option<&Shown>,
-) -> Result<Shown, AppError> {
+) -> Result<Option<Shown>, AppError> {
     let panes = herdr.list_panes(None)?;
     let origin = panes
         .iter()
@@ -40,13 +50,17 @@ pub fn show_details<H: HerdrPort>(
         .filter(|pane| pane.tab_id == origin.tab_id && pane.is_marketplace_details())
         .map(PaneInfo::id)
         .collect();
+    if reveal == Reveal::Follow && current.is_empty() {
+        return Ok(None);
+    }
+    let focus = reveal == Reveal::Focus;
     if let Some(shown) =
         shown.filter(|shown| shown.target == *target && current.contains(&shown.pane_id))
     {
         if focus {
             herdr.focus_pane(&shown.pane_id)?;
         }
-        return Ok(shown.clone());
+        return Ok(Some(shown.clone()));
     }
 
     let pane_id = match current.first() {
@@ -83,10 +97,10 @@ pub fn show_details<H: HerdrPort>(
         let _ = herdr.close_plugin_pane(&pane_id);
         return Err(error);
     }
-    Ok(Shown {
+    Ok(Some(Shown {
         pane_id,
         target: target.clone(),
-    })
+    }))
 }
 
 /// A details pane of `target`, split right of `beside`.

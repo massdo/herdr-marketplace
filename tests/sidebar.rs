@@ -269,12 +269,46 @@ fn moving_with_the_keyboard_previews_the_selected_plugin() {
     );
 
     type_text(&mut app, "zz");
+    app.intents.clear();
     app.handle_key(key(KeyCode::Down));
     assert!(
         app.intents.is_empty(),
         "no plugin to show: {:?}",
         app.intents
     );
+}
+
+#[test]
+fn a_search_asks_open_details_to_follow_its_first_result() {
+    let mut app = loaded_app();
+    let followed = |app: &mut SidebarApp| -> Vec<String> {
+        std::mem::take(&mut app.intents)
+            .into_iter()
+            .map(|intent| match intent {
+                Intent::Follow(row) => row.entry.source.repo,
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    };
+    type_text(&mut app, "plugin-1");
+    assert_eq!(
+        followed(&mut app).last().map(String::as_str),
+        Some("plugin-10")
+    );
+    app.handle_key(key(KeyCode::Backspace));
+    assert_eq!(followed(&mut app), ["plugin-00"]);
+    app.handle_key(key(KeyCode::Tab));
+    assert!(
+        followed(&mut app).is_empty(),
+        "no installed plugin, nothing to show"
+    );
+    app.handle_key(key(KeyCode::Esc));
+    assert!(
+        followed(&mut app).is_empty(),
+        "search cleared, still Installed"
+    );
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(followed(&mut app), ["plugin-00"], "back to All");
 }
 
 #[test]
@@ -533,7 +567,13 @@ fn a_click_on_a_filter_tab_switches_it() {
     assert_eq!(app.filter, Filter::Installed);
     app.handle_mouse(click(2, 3), 40, 15);
     assert_eq!(app.filter, Filter::All);
-    assert!(app.intents.is_empty());
+    assert!(
+        app.intents
+            .iter()
+            .all(|intent| matches!(intent, Intent::Follow(_))),
+        "{:?}",
+        app.intents
+    );
 }
 
 #[test]

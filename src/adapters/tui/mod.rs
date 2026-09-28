@@ -36,7 +36,7 @@ use crate::adapters::images::{Picture, load_in_background};
 use crate::adapters::operations::{FsOperations, spawn_operation};
 use crate::application::load_listing::{LoadedListing, load_listing, read_registry};
 use crate::application::load_readme::{Readme, load_readme};
-use crate::application::open_details::{Shown, close_details, show_details};
+use crate::application::open_details::{Reveal, Shown, close_details, show_details};
 use crate::application::ports::{HerdrCli, HerdrPort, Operations};
 use crate::application::prepare_install::{Prepared, prepare_install};
 use crate::application::prepare_removal::prepare_removal;
@@ -78,8 +78,10 @@ enum DetailsAnswer {
 
 const POLL: Duration = Duration::from_millis(100);
 /// How long the selection rests before the details follow it: holding an
-/// arrow opens no pane for the plugins it passes.
+/// arrow opens no pane for the plugins it passes, and typing a word shows
+/// only the plugin it finds.
 const PREVIEW_DELAY: Duration = Duration::from_millis(200);
+const SEARCH_DELAY: Duration = Duration::from_millis(500);
 /// Command that opens an address in the browser.
 pub const OPEN_ENV: &str = "HERDR_MARKETPLACE_OPEN";
 const OPERATION_CHECK: Duration = Duration::from_secs(1);
@@ -119,8 +121,8 @@ fn sidebar_loop(
     let mut last_check = Instant::now();
     let mut focus = FocusClicks::default();
     let mut shown = None::<Shown>;
-    // The plugin the details will show once the selection rests.
-    let mut preview = None::<(DetailsTarget, Instant)>;
+    // The plugin the details will show once the selection rests, and when.
+    let mut pending = None::<(DetailsTarget, Reveal, Instant)>;
     loop {
         // An operation that ended since the last look: read the registry again.
         if last_check.elapsed() >= OPERATION_CHECK {
@@ -139,17 +141,27 @@ fn sidebar_loop(
             match intent {
                 Intent::Load => spawn_load(sender.clone()),
                 Intent::Open(row) => {
-                    preview = None;
+                    pending = None;
                     let target = DetailsTarget::from_row(&row);
-                    show(herdr, process, app, &mut shown, &target, true);
+                    show(herdr, process, app, &mut shown, &target, Reveal::Focus);
                 }
                 Intent::Preview(row) => {
-                    preview = Some((DetailsTarget::from_row(&row), Instant::now()));
+                    let due = Instant::now() + PREVIEW_DELAY;
+                    pending = Some((DetailsTarget::from_row(&row), Reveal::Preview, due));
+                }
+                Intent::Follow(row) => {
+                    // The arrows asked for details: the search does not cancel them.
+                    let reveal = match pending {
+                        Some((_, Reveal::Preview, _)) => Reveal::Preview,
+                        _ => Reveal::Follow,
+                    };
+                    let due = Instant::now() + SEARCH_DELAY;
+                    pending = Some((DetailsTarget::from_row(&row), reveal, due));
                 }
             }
         }
-        if let Some((target, _)) = preview.take_if(|(_, at)| at.elapsed() >= PREVIEW_DELAY) {
-            show(herdr, process, app, &mut shown, &target, false);
+        if let Some((target, reveal, _)) = pending.take_if(|(_, _, due)| Instant::now() >= *due) {
+            show(herdr, process, app, &mut shown, &target, reveal);
         }
         while let Ok(answer) = receiver.try_recv() {
             match answer {
@@ -162,8 +174,8 @@ fn sidebar_loop(
         let size = terminal.size()?;
         app.set_page(sidebar_view::page_rows(app, size.width, size.height));
         terminal.draw(|frame| sidebar_view::render(frame, app))?;
-        let wait = preview.as_ref().map_or(POLL, |(_, at)| {
-            PREVIEW_DELAY.saturating_sub(at.elapsed()).min(POLL)
+        let wait = pending.as_ref().map_or(POLL, |(_, _, due)| {
+            due.saturating_duration_since(Instant::now()).min(POLL)
         });
         match next_input(wait)? {
             Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),
@@ -187,17 +199,18 @@ fn show(
     app: &mut SidebarApp,
     shown: &mut Option<Shown>,
     target: &DetailsTarget,
-    focus: bool,
+    reveal: Reveal,
 ) {
     let result = match &process.own_pane_id {
-        Some(sidebar) => show_details(herdr, sidebar, target, focus, shown.as_ref()),
+        Some(sidebar) => show_details(herdr, sidebar, target, reveal, shown.as_ref()),
         None => Err(AppError::OriginMissing),
     };
     match result {
-        Ok(now) => {
+        Ok(Some(now)) => {
             *shown = Some(now);
             app.notice = None;
         }
+        Ok(None) => {}
         Err(error) => app.notice = Some(format!("Details not opened: {error}")),
     }
 }
