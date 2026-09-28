@@ -426,44 +426,99 @@ fn a_row_shows_the_name_owner_repo_marks_and_description() {
 #[test]
 fn one_click_on_a_plugin_selects_it_and_shows_its_details_without_the_focus() {
     let mut app = loaded_app();
-    // 40 × 18: search box, filters and separator, 3 cards of 4 lines,
-    // footer.
-    app.set_page(sidebar_view::page_rows(&app, 40, 18));
+    // 40 × 19: search box, filters and separator, 3 cards of 4 lines, the
+    // arrow, footer.
+    app.set_page(sidebar_view::page_rows(&app, 40, 19));
     assert_eq!(app.page, 3);
-    app.handle_mouse(click(5, 5 + 4 + 2), 40, 18);
+    app.handle_mouse(click(5, 5 + 4 + 2), 40, 19);
     assert_eq!(selected_repo(&app), "plugin-01");
     match app.intents.as_slice() {
         [Intent::Open(row, Reveal::Preview)] => assert_eq!(row.entry.source.repo, "plugin-01"),
         other => panic!("{other:?}"),
     }
     app.intents.clear();
-    for row in [0, 1, 4, 17] {
-        app.handle_mouse(click(5, row), 40, 18);
+    for row in [0, 1, 4, 17, 18] {
+        app.handle_mouse(click(5, row), 40, 19);
     }
     assert!(
         app.intents.is_empty(),
-        "search, separator and footer open nothing"
+        "search, separator, arrow and footer open nothing"
     );
 }
 
 #[test]
 fn the_wheel_scrolls_the_list_without_moving_the_selection() {
     let mut app = loaded_app();
-    app.set_page(sidebar_view::page_rows(&app, 40, 18));
-    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 18);
-    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 18);
+    app.set_page(sidebar_view::page_rows(&app, 40, 19));
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 19);
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 19);
     assert_eq!(app.offset, 2);
     assert_eq!(selected_repo(&app), "plugin-00");
-    app.set_page(sidebar_view::page_rows(&app, 40, 18));
+    app.set_page(sidebar_view::page_rows(&app, 40, 19));
     assert_eq!(app.offset, 2, "drawing again keeps the scrolled list");
-    app.handle_mouse(click(5, 5), 40, 18);
+    app.handle_mouse(click(5, 5), 40, 19);
     assert_eq!(selected_repo(&app), "plugin-02", "the first plugin shown");
     for _ in 0..20 {
-        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 18);
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 19);
     }
     assert_eq!(app.offset, 9, "no further than the last page");
-    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 7), 40, 18);
+    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 7), 40, 19);
     assert_eq!(app.offset, 8);
+}
+
+/// The lines of `app` drawn in a 40 × `height` pane, its page set first as
+/// the sidebar loop does.
+fn drawn(app: &mut SidebarApp, height: u16) -> Vec<String> {
+    app.set_page(sidebar_view::page_rows(app, 40, height));
+    let mut terminal = Terminal::new(TestBackend::new(40, height)).unwrap();
+    terminal
+        .draw(|frame| sidebar_view::render(frame, app))
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .chunks(40)
+        .map(|line| line.iter().map(|cell| cell.symbol()).collect())
+        .collect()
+}
+
+#[test]
+fn an_arrow_under_the_cards_says_more_plugins_follow() {
+    let mut app = loaded_app();
+    // 40 × 19: search box, filters and separator, 3 cards, the arrow, footer.
+    let text = drawn(&mut app, 19);
+    assert_eq!(app.page, 3);
+    assert_eq!(text[17].trim(), "↓", "{text:#?}");
+    assert_eq!(text[17].find('↓'), Some(20), "centered: {text:#?}");
+    // 40 × 21: two lines left under the cards, the arrow sits on the last.
+    let text = drawn(&mut app, 21);
+    assert_eq!(text[17].trim(), "", "{text:#?}");
+    assert_eq!(text[19].trim(), "↓", "just above the footer: {text:#?}");
+    app.handle_key(key(KeyCode::End));
+    let text = drawn(&mut app, 19);
+    assert!(text[16].starts_with('╰'), "{text:#?}");
+    assert_eq!(text[17].trim(), "", "the last plugin is shown: {text:#?}");
+
+    // Three plugins fill 12 lines; twelve keep one of them for the arrow.
+    let few = (0..3)
+        .map(|index| {
+            repo(
+                "acme",
+                &format!("plugin-{index:02}"),
+                10,
+                vec![manifest(
+                    "herdr-plugin.toml",
+                    &format!("acme.plugin-{index:02}"),
+                )],
+            )
+        })
+        .collect();
+    let mut few = ready(few, vec![]);
+    let text = drawn(&mut few, 18);
+    assert_eq!(few.page, 3);
+    assert!(!text.join("\n").contains('↓'), "{text:#?}");
+    assert_eq!(sidebar_view::page_rows(&loaded_app(), 40, 18), 2);
 }
 
 #[test]
