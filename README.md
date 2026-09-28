@@ -21,9 +21,12 @@
 herdr plugin install massdo/herdr-marketplace
 ```
 
-Herdr builds the plugin first, which takes a few minutes the first time. Then,
-from any Herdr pane, open the marketplace: a sidebar on the left of the
-current tab. The same command closes it.
+On macOS and on Linux x86_64, this takes a few seconds: the install fetches
+the plugin's prebuilt binary, about 15 MB, and checks it against the release's
+SHA-256 sums. Elsewhere, or for a commit without a release, it builds the
+plugin from source, which takes a few minutes. Then, from any Herdr pane, open
+the marketplace: a sidebar on the left of the current tab. The same command
+closes it.
 
 ```sh
 herdr plugin action invoke herdr-marketplace.toggle
@@ -80,10 +83,12 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 ## Requirements
 
 - Herdr 0.9.1 or later (tested with 0.9.1), on macOS or Linux.
-- `git`, which Herdr installs plugins with, and network access: the catalog
-  comes from herdr.dev, READMEs and manifests from GitHub.
-- Rust 1.89 or later, to build the plugin. If Homebrew's Cargo comes before
-  rustup's on your `PATH`, run `export PATH="$HOME/.cargo/bin:$PATH"` first.
+- `git`, which Herdr installs plugins with, `curl` or GNU wget, and network
+  access: the binary, READMEs and manifests come from GitHub, the catalog from
+  herdr.dev.
+- Rust 1.89 or later, only when the plugin builds from source. If Homebrew's
+  Cargo comes before rustup's on your `PATH`, run
+  `export PATH="$HOME/.cargo/bin:$PATH"` first.
 
 Good to know: the marketplace downloads the catalog index once, about 270 KB
 compressed, then again only when it changes. We're happy with that for now,
@@ -94,6 +99,6 @@ marketplace.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The Herdr socket client, the left dock and the
-launcher lock come from herdr-npm and herdr-sidebar (MIT): see
-[NOTICE](NOTICE).
+MIT, see [LICENSE](LICENSE). The Herdr socket client, the left dock, the
+launcher lock and the install script come from herdr-npm and herdr-sidebar
+(MIT): see [NOTICE](NOTICE).

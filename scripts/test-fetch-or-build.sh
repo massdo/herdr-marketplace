@@ -1,5 +1,5 @@
 #!/bin/sh
-# Offline tests for scripts/fetch-or-build.sh, adapted from herdr-npm v0.2.0.
+# Offline tests for scripts/fetch-or-build.sh, adapted from herdr-npm v0.1.0.
 # Each case copies the script into a throwaway git checkout and runs it with
 # `env -i` on an isolated PATH: uname, curl, wget and cargo are simulated;
 # chmod, mv and the SHA-256 tool can be made to fail. No network access and no
