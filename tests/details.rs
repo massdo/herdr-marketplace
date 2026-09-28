@@ -12,7 +12,7 @@ use herdr_marketplace::adapters::tui::details::{
 };
 use herdr_marketplace::adapters::tui::{details_view, markdown};
 use herdr_marketplace::application::load_readme::{Readme, load_readme};
-use herdr_marketplace::application::open_details::{close_details, open_details};
+use herdr_marketplace::application::open_details::{Shown, close_details, show_details};
 use herdr_marketplace::application::ports::{FetchError, Fetcher};
 use herdr_marketplace::domain::compat::Platform;
 use herdr_marketplace::domain::details::DetailsTarget;
@@ -493,31 +493,117 @@ fn control_sequences_of_a_readme_never_reach_the_terminal() {
 }
 
 #[test]
-fn opening_b_while_a_is_loading_never_shows_a_under_b() {
+fn a_preview_opens_right_of_the_sidebar_and_leaves_it_the_focus() {
+    let herdr = FakePanes::new(vec![
+        pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
+        pane("w1:work", "w1:t1", None),
+    ]);
+
+    let shown = show_details(&herdr, &PaneId("w1:side".into()), &target(""), false, None).unwrap();
+
+    assert_eq!(
+        *herdr.calls.borrow(),
+        [
+            "open details next to w1:work",
+            "swap w1:new w1:work",
+            "focus w1:side",
+            "identity w1:new herdr_marketplace_details",
+            "resize w1:new left",
+            "resize w1:new right",
+        ],
+        "split, then swapped onto the working pane's left half"
+    );
+    assert!(!herdr.opened.borrow()[0].focus);
+    assert_eq!(shown.pane_id, PaneId("w1:new".into()));
+    assert_eq!(shown.target, target(""));
+}
+
+#[test]
+fn enter_opens_right_of_the_sidebar_with_the_focus() {
+    let herdr = FakePanes::new(vec![
+        pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
+        pane("w1:work", "w1:t1", None),
+    ]);
+
+    show_details(&herdr, &PaneId("w1:side".into()), &target(""), true, None).unwrap();
+
+    assert_eq!(
+        herdr.calls.borrow()[..2],
+        ["open details next to w1:work", "swap w1:new w1:work"],
+        "the swap focuses the pane it moves"
+    );
+    assert!(!herdr.calls.borrow().contains(&"focus w1:side".to_string()));
+    assert!(herdr.opened.borrow()[0].focus);
+}
+
+#[test]
+fn opening_b_while_a_is_shown_replaces_a_in_place() {
     let herdr = FakePanes::new(vec![
         pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
         pane("w1:work", "w1:t1", None),
         pane("w1:details-a", "w1:t1", Some(DETAILS_TOKEN_KEY)),
         pane("w1:details-other-tab", "w1:t2", Some(DETAILS_TOKEN_KEY)),
     ]);
+    let a = Shown {
+        pane_id: PaneId("w1:details-a".into()),
+        target: target(""),
+    };
     let b = target("alt");
 
-    open_details(&herdr, &PaneId("w1:side".into()), &b).unwrap();
+    show_details(&herdr, &PaneId("w1:side".into()), &b, false, Some(&a)).unwrap();
 
     assert_eq!(
         *herdr.calls.borrow(),
         [
-            "close w1:details-a",
-            "open details next to w1:work",
+            "open details next to w1:details-a",
             "identity w1:new herdr_marketplace_details",
+            "close w1:details-a",
             "resize w1:new left",
             "resize w1:new right",
-        ]
+        ],
+        "the working pane keeps its width"
     );
     let opened = herdr.opened.borrow();
-    assert!(opened[0].focus);
+    assert!(!opened[0].focus);
     let handed: DetailsTarget = serde_json::from_str(&opened[0].env[DETAILS_ENV]).unwrap();
     assert_eq!(handed, b, "B's pane only ever knows B");
+}
+
+#[test]
+fn the_plugin_already_shown_keeps_its_pane_and_enter_focuses_it() {
+    let panes = vec![
+        pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
+        pane("w1:work", "w1:t1", None),
+        pane("w1:details-a", "w1:t1", Some(DETAILS_TOKEN_KEY)),
+    ];
+    let a = Shown {
+        pane_id: PaneId("w1:details-a".into()),
+        target: target(""),
+    };
+    let sidebar = PaneId("w1:side".into());
+
+    let herdr = FakePanes::new(panes.clone());
+    assert_eq!(
+        show_details(&herdr, &sidebar, &target(""), false, Some(&a)).unwrap(),
+        a
+    );
+    assert!(
+        herdr.calls.borrow().is_empty(),
+        "{:?}",
+        herdr.calls.borrow()
+    );
+
+    let herdr = FakePanes::new(panes);
+    show_details(&herdr, &sidebar, &target(""), true, Some(&a)).unwrap();
+    assert_eq!(*herdr.calls.borrow(), ["focus w1:details-a"]);
+
+    // Closed since with Esc: it opens again.
+    let herdr = FakePanes::new(vec![
+        pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
+        pane("w1:work", "w1:t1", None),
+    ]);
+    show_details(&herdr, &sidebar, &target(""), true, Some(&a)).unwrap();
+    assert_eq!(herdr.calls.borrow()[0], "open details next to w1:work");
 }
 
 #[test]

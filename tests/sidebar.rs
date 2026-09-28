@@ -87,7 +87,7 @@ fn typing_never_reloads_the_catalogue() {
     app.handle_key(key(KeyCode::Backspace));
     app.handle_key(key(KeyCode::Down));
     type_text(&mut app, "zz");
-    assert!(app.intents.is_empty(), "{:?}", app.intents);
+    assert!(!app.intents.contains(&Intent::Load), "{:?}", app.intents);
 }
 
 #[test]
@@ -238,11 +238,43 @@ fn a_failed_load_is_retried_with_enter() {
 fn enter_asks_for_the_details_of_the_selected_plugin() {
     let mut app = loaded_app();
     app.handle_key(key(KeyCode::Down));
+    app.intents.clear();
     app.handle_key(key(KeyCode::Enter));
     match app.intents.as_slice() {
         [Intent::Open(row)] => assert_eq!(row.entry.source.repo, "plugin-01"),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn moving_with_the_keyboard_previews_the_selected_plugin() {
+    let mut app = loaded_app();
+    let previewed = |app: &mut SidebarApp| match std::mem::take(&mut app.intents).as_slice() {
+        [Intent::Preview(row)] => row.entry.source.repo.clone(),
+        other => panic!("{other:?}"),
+    };
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(previewed(&mut app), "plugin-01");
+    app.handle_key(key(KeyCode::PageDown));
+    assert_eq!(previewed(&mut app), "plugin-04");
+    app.handle_key(key(KeyCode::End));
+    assert_eq!(previewed(&mut app), "plugin-11");
+    app.handle_key(key(KeyCode::Home));
+    assert_eq!(previewed(&mut app), "plugin-00");
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(
+        previewed(&mut app),
+        "plugin-00",
+        "the first plugin stays shown"
+    );
+
+    type_text(&mut app, "zz");
+    app.handle_key(key(KeyCode::Down));
+    assert!(
+        app.intents.is_empty(),
+        "no plugin to show: {:?}",
+        app.intents
+    );
 }
 
 #[test]
