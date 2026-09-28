@@ -1,0 +1,702 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280">
+<title>herdr-marketplace demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700&family=JetBrains+Mono:wght@400;700&display=block">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; min-height: 100%; background: #0a0c14; }
+  body { display: grid; place-items: center; }
+  #stage { position: relative; width: 1280px; height: 720px; overflow: hidden; }
+  #scene { position: absolute; inset: 0; width: 1280px; height: 720px; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="scene"></canvas>
+</div>
+<script type="module">
+// The README demo: real marketplace screens (screens.json, captured by
+// capture.sh) animated on a canvas. render(t) draws the frame at t seconds;
+// render.mjs calls it once per frame and saves each screenshot.
+
+const DATA = await (await fetch("screens.json")).json();
+const W = 1280, H = 720;
+const FPS = 25, DURATION = 14.6;
+const COLS = DATA.cols, ROWS = DATA.rows;
+// Terminal cell and window chrome, in window pixels.
+const CW = 9.2, CH = 19.2, PAD = 10, BAR = 30;
+const WIN_W = COLS * CW + 2 * PAD, WIN_H = ROWS * CH + 2 * PAD + BAR;
+const MONO = '"JetBrains Mono", Menlo, monospace';
+
+// Herdr draws its chrome in Catppuccin Mocha and passes xterm's defaults for
+// the plugin's named colors: those are shown in the same palette.
+const FG = "#cdd6f4", BG = "#1e1e2e";
+const REMAP = {
+  "7f7f7f": "#585b70", "00cd00": "#a6e3a1", "cdcd00": "#f9e2af",
+  "cd0000": "#f38ba8", "e5e5e5": "#cdd6f4",
+};
+const HEX = /^[0-9a-f]{6}$/i;
+const color = (value, fallback) => HEX.test(value) ? REMAP[value] || `#${value}` : fallback;
+
+// Styles the synthesized screens write, as capture.py records them.
+const STYLE = {
+  text: ["default", "default", ""],
+  muted: ["8a8a8a", "default", ""],
+  ok: ["00cd00", "default", ""],
+  warn: ["cdcd00", "default", ""],
+  plain: ["ffffff", "3a3d41", "b"],
+  selectedOk: ["00cd00", "7f7f7f", ""],
+  selected: ["ffffff", "7f7f7f", ""],
+};
+
+// ---------------------------------------------------------------- screens
+
+const grids = {};
+for (const [name, rows] of Object.entries(DATA.screens)) {
+  grids[name] = rows.map((runs) => runs.flatMap((run) => {
+    const [fg, bg, flags] = DATA.styles[run[1]];
+    const chars = run.length > 2 ? [run[0]] : Array.from(run[0]);
+    return chars.map((ch) => ({ ch, fg, bg, flags }));
+  }));
+}
+
+const clone = (grid) => grid.map((line) => line.map((cell) => ({ ...cell })));
+const rowText = (grid, y) => grid[y].map((cell) => (cell.ch === "\0" ? "" : cell.ch)).join("");
+
+function find(grid, text) {
+  for (let y = 0; y < grid.length; y++) {
+    const x = rowText(grid, y).indexOf(text);
+    if (x >= 0) return { x, y };
+  }
+  throw new Error(`${text} is not on the screen`);
+}
+
+// Inner cells of the pane whose top border reads `title`.
+function pane(grid, title) {
+  const { x, y } = find(grid, title);
+  const right = rowText(grid, y).indexOf("┐", x);
+  let bottom = y + 1;
+  while (rowText(grid, bottom + 1)[x] !== "└") bottom++;
+  return { left: x + 1, right: right - 1, top: y + 1, bottom, width: right - x - 1 };
+}
+
+function write(grid, x, y, text, [fg, bg, flags]) {
+  for (const ch of Array.from(text)) grid[y][x++] = { ch, fg, bg, flags };
+  return x;
+}
+
+function clearRow(grid, box, y, style = STYLE.text) {
+  write(grid, box.left, y, " ".repeat(box.width), style);
+}
+
+// Moves rows `at`..(footer - 1) of `box` down by `lines.length` and writes
+// `lines` at `at`: what Herdr shows when the pane gains lines above them.
+function insertRows(grid, box, at, lines) {
+  const footer = box.bottom;
+  for (let y = footer - 1; y >= at + lines.length; y--) {
+    for (let x = box.left; x <= box.right; x++) grid[y][x] = { ...grid[y - lines.length][x] };
+  }
+  lines.forEach(([text, style], index) => {
+    clearRow(grid, box, at + index);
+    if (text) write(grid, box.left, at + index, text, style);
+  });
+}
+
+const ellipsize = (text, cells) =>
+  Array.from(text).length <= cells ? text : Array.from(text).slice(0, cells - 1).join("") + "…";
+
+// The action bar: buttons from the left, two cells apart.
+function bar(grid, box, y, buttons) {
+  clearRow(grid, box, y);
+  let x = box.left;
+  for (const [label, key] of buttons) x = write(grid, x, y, ` ${label} (${key}) `, STYLE.plain) + 2;
+}
+
+// After Confirm install: Herdr runs the install, then the registry says so.
+function installScreen(done) {
+  const grid = clone(grids.readme);
+  const details = pane(grid, "┌ details");
+  const commitRow = details.top + 2, barRow = details.top + 3;
+  const sha = /commit (\w{7})/.exec(rowText(grid, commitRow))[1];
+  const status = done ? [`Install of ${sha} succeeded`, STYLE.ok] : ["Installing…", STYLE.warn];
+  bar(grid, details, barRow, done ? [["Remove", "r"], ["Open on GitHub", "o"]] : [["Open on GitHub", "o"]]);
+  insertRows(grid, details, barRow + 1, [status]);
+  insertRows(grid, details, barRow + 3, [status, [""]]);
+  if (!done) return grid;
+
+  clearRow(grid, details, commitRow);
+  let x = write(grid, details.left, commitRow, `commit ${sha}`, STYLE.text);
+  x = write(grid, x, commitRow, " · installed", STYLE.ok);
+  write(grid, x, commitRow, ellipsize("  (s: full SHA)", details.right - x + 1), STYLE.muted);
+
+  const tabs = find(grid, " Installed 0 ");
+  write(grid, tabs.x + 11, tabs.y, "1", STYLE.plain);
+  const card = find(grid, "╭ Annotate");
+  const inner = rowText(grid, card.y).indexOf("╮", card.x) - card.x - 3;
+  const row = card.y + 2;
+  const description = rowText(grid, row).slice(card.x + 2, card.x + 2 + inner).trim().replace(/…$/, "");
+  const room = inner - "installed".length - 3;
+  x = write(grid, card.x + 2, row, "installed", STYLE.selectedOk);
+  x = write(grid, x, row, ` · ${ellipsize(description + "…", room)}`, STYLE.selected);
+  write(grid, x, row, " ".repeat(card.x + 2 + inner - x), STYLE.selected);
+  return grid;
+}
+grids.installing = installScreen(false);
+grids.installed = installScreen(true);
+
+// Kitty images: Herdr keeps each placeholder's image id in its foreground.
+function imageRegions(grid) {
+  const regions = new Map();
+  grid.forEach((line, y) => line.forEach((cell, x) => {
+    const index = DATA.imageKeys.indexOf(cell.fg);
+    if (index < 0 || cell.ch.trim() || cell.bg !== "default") return;
+    const region = regions.get(index) || { index, x0: x, y0: y, x1: x, y1: y };
+    region.x0 = Math.min(region.x0, x); region.x1 = Math.max(region.x1, x);
+    region.y0 = Math.min(region.y0, y); region.y1 = Math.max(region.y1, y);
+    regions.set(index, region);
+  }));
+  return [...regions.values()];
+}
+const FULL = new Map(imageRegions(grids.readme).map((r) => [r.index, r]));
+const regionsOf = new Map(Object.entries(grids).map(([name, grid]) => [name, imageRegions(grid)]));
+const images = await Promise.all(DATA.imageKeys.map((_, index) => new Promise((resolve) => {
+  const image = new Image();
+  image.onload = () => resolve(image);
+  image.onerror = () => resolve(null);
+  image.src = `images/${index}`;
+})));
+
+// --------------------------------------------------------------- timeline
+
+// Terminal states: [start, screen, transition, seconds].
+const TYPED = [3.85, 3.96, 4.06, 4.18, 4.27, 4.37, 4.48];
+const STATES = [
+  [0, "installed"],
+  [1.5, "start", "fade", 0.35],
+  [2.42, "loading", "slide", 0.32],
+  [2.9, "catalog", "cards", 0.65],
+  ...TYPED.map((time, index) => [time, `query-${index + 1}`, "cut", 0]),
+  [5.47, "readme-loading", "fade", 0.22],
+  [5.95, "readme", "images", 0.45],
+  [8.17, "preview", "fade", 0.18],
+  [10.32, "installing", "fade", 0.18],
+  [11.35, "installed", "fade", 0.3],
+];
+
+const rowY = (row) => BAR + PAD + row * CH;
+const colX = (col) => PAD + col * CW;
+const SAFE = { x0: 40, y0: 22, x1: 1240, y1: 626 };
+const SHOTS = {
+  wide: [0, 0, WIN_W, WIN_H],
+  search: [0, 0, colX(56), rowY(20)],
+  readme: [colX(76), 0, WIN_W, rowY(20)],
+};
+// Where the caption sits in each shot: over the empty shell pane in close-ups.
+const CAPTION_X = { wide: 640, search: 905, readme: 400 };
+// Camera keys: [time, shot]; it moves between two different shots.
+const CAMERA = [
+  [0, "wide"], [2.35, "wide"], [3.15, "search"], [5.45, "search"],
+  [6.1, "readme"], [11.8, "readme"], [12.55, "wide"], [DURATION, "wide"],
+];
+// Camera moves are shot with a 180° shutter, 24 exposures per frame.
+const SHUTTER = 0.5 / FPS, EXPOSURES = 24;
+
+// Captions: [from, to, lead, text]; lead is keys pressed at given times.
+const CAPTIONS = [
+  [13.05, DURATION + 1.45, "icon", "The plugin marketplace for Herdr"],
+  [1.85, 3.45, [["prefix", 2.05], ["⇧", 2.26], ["M", 2.26]], "Open the marketplace from any tab"],
+  [3.55, 5.3, null, "Search 1,300+ plugins. Typos welcome."],
+  [5.35, 8.0, [["↵", 5.4]], "Read the README, rendered like GitHub"],
+  [8.05, 10.15, [["i", 8.1]], "See what it will run"],
+  [10.2, 11.3, [["↵", 10.25]], "Confirm the install"],
+  [11.35, 12.9, "check", "Installed. No command to type."],
+];
+
+// Glows that point at what just changed: [from, to, rgb, rectangles].
+const GLOWS = [
+  [4.55, 5.55, "0,120,212", () => [cardRect(grids["query-7"], "╭ Annotate")]],
+  [11.4, 13.3, "166,227,161", () => [statusRect(), installedRect()]],
+];
+
+// ------------------------------------------------------------------ easing
+
+const clamp = (v, lo = 0, hi = 1) => Math.min(hi, Math.max(lo, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const inOut = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
+const out = (t) => 1 - (1 - t) ** 3;
+const progress = (t, from, seconds) => clamp((t - from) / seconds);
+
+// ---------------------------------------------------------------- drawing
+
+const canvas = document.getElementById("scene");
+const ctx = canvas.getContext("2d");
+const DPR = window.devicePixelRatio || 1;
+canvas.width = W * DPR;
+canvas.height = H * DPR;
+
+await Promise.all([
+  document.fonts.load(`400 16px ${MONO}`), document.fonts.load(`700 16px ${MONO}`),
+  document.fonts.load("600 21px Inter"), document.fonts.load("600 16px Inter"),
+  document.fonts.load("500 13px Inter"),
+]);
+await document.fonts.ready;
+ctx.font = `400 100px ${MONO}`;
+const FONT_SIZE = (CW / ctx.measureText("M").width) * 100;
+ctx.font = `400 ${FONT_SIZE}px ${MONO}`;
+const metrics = ctx.measureText("Hg");
+const BASELINE = (CH - (metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent)) / 2
+  + metrics.fontBoundingBoxAscent;
+const LINE = CW * 0.11;
+let currentFont = "";
+function setFont(font) {
+  if (font !== currentFont) ctx.font = currentFont = font;
+}
+
+// The terminal is drawn in device pixels, cell edges and lines rounded to
+// whole pixels: no seam between cells, crisp borders at every zoom.
+// device = A * window + (E, F), set by drawScene() for each frame.
+let A = 1, E = 0, F = 0;
+const devX = (x) => Math.round(A * x + E);
+const devY = (y) => Math.round(A * y + F);
+
+// Box drawing: arms up, right, down, left (1 light, 2 heavy); corners round.
+const BOX = {
+  "─": [0, 1, 0, 1], "━": [0, 2, 0, 2], "│": [1, 0, 1, 0], "┃": [2, 0, 2, 0],
+  "┌": [0, 1, 1, 0], "┐": [0, 0, 1, 1], "└": [1, 1, 0, 0], "┘": [1, 0, 0, 1],
+  "├": [1, 1, 1, 0], "┤": [1, 0, 1, 1], "┬": [0, 1, 1, 1], "┴": [1, 1, 0, 1],
+  "┼": [1, 1, 1, 1],
+};
+const ROUND = { "╭": [0, 1], "╮": [0, 0], "╯": [1, 0], "╰": [1, 1] };
+const BLOCKS = {
+  "▀": [0, 0, 1, 0.5], "▄": [0, 0.5, 1, 0.5], "█": [0, 0, 1, 1], "▌": [0, 0, 0.5, 1],
+  "▐": [0.5, 0, 0.5, 1], "▏": [0, 0, 0.14, 1], "▕": [0.86, 0, 0.14, 1],
+};
+
+// Glyph of the cell whose window top-left is (x, y).
+function drawGlyph(ch, x, y, fg, flags) {
+  const x0 = devX(x), x1 = devX(x + CW), y0 = devY(y), y1 = devY(y + CH);
+  const thin = Math.max(1, Math.round(A * LINE));
+  const across = (center, width) => Math.round(center - width / 2);
+  const cx = A * (x + CW / 2) + E, cy = A * (y + CH / 2) + F;
+  ctx.fillStyle = fg;
+  const arms = BOX[ch];
+  if (arms) {
+    arms.forEach((weight, arm) => {
+      if (!weight) return;
+      const w = thin * weight, vx = across(cx, w), hy = across(cy, w);
+      if (arm === 0) ctx.fillRect(vx, y0, w, hy + w - y0);
+      if (arm === 2) ctx.fillRect(vx, hy, w, y1 - hy);
+      if (arm === 1) ctx.fillRect(vx, hy, x1 - vx, w);
+      if (arm === 3) ctx.fillRect(x0, hy, vx + w - x0, w);
+    });
+    return;
+  }
+  const round = ROUND[ch];
+  if (round) {
+    const [up, right] = round;
+    const lx = across(cx, thin) + thin / 2, ly = across(cy, thin) + thin / 2;
+    const end = right ? x1 : x0;
+    ctx.strokeStyle = fg;
+    ctx.lineWidth = thin;
+    ctx.beginPath();
+    ctx.moveTo(lx, up ? y0 : y1);
+    ctx.arcTo(lx, ly, end, ly, Math.max(2, (A * CW) / 2));
+    ctx.lineTo(end, ly);
+    ctx.stroke();
+    return;
+  }
+  const block = BLOCKS[ch];
+  if (block) {
+    const [bx, by, bw, bh] = block;
+    const bx0 = devX(x + bx * CW), by0 = devY(y + by * CH);
+    ctx.fillRect(bx0, by0, Math.max(1, devX(x + (bx + bw) * CW) - bx0), devY(y + (by + bh) * CH) - by0);
+    return;
+  }
+  setFont(`${flags.includes("b") ? 700 : 400} ${FONT_SIZE * A}px ${MONO}`);
+  ctx.fillText(ch, A * x + E, A * (y + BASELINE) + F);
+  if (flags.includes("u")) ctx.fillRect(x0, devY(y + BASELINE + 2.2), x1 - x0, thin);
+}
+
+// One screen; `under` is the screen already drawn, whose identical cells
+// are skipped; `cell(x, y)` gives [alpha, dx, dy] for staggered entries.
+function drawScreen(name, alpha = 1, { under = null, cell = null, imageAlpha = 1 } = {}) {
+  const grid = grids[name];
+  const below = under && grids[under];
+  const glyphs = [];
+  for (let y = 0; y < ROWS; y++) {
+    let run = null;
+    const flush = () => {
+      if (!run) return;
+      ctx.globalAlpha = run.a;
+      ctx.fillStyle = run.bg;
+      const x0 = devX(colX(run.x0) + run.dx), y0 = devY(rowY(y) + run.dy);
+      ctx.fillRect(x0, y0, devX(colX(run.x1 + 1) + run.dx) - x0, devY(rowY(y + 1) + run.dy) - y0);
+      run = null;
+    };
+    for (let x = 0; x < COLS; x++) {
+      const c = grid[y][x];
+      const b = below && below[y][x];
+      const same = b && !cell && b.ch === c.ch && b.fg === c.fg && b.bg === c.bg && b.flags === c.flags;
+      const [a0, dx, dy] = cell ? cell(x, y) : [1, 0, 0];
+      const a = a0 * alpha;
+      if (same || a <= 0.001) {
+        flush();
+        continue;
+      }
+      let fg = color(c.fg, FG), bg = color(c.bg, BG);
+      if (c.flags.includes("r")) [fg, bg] = [bg, fg];
+      if (run && run.bg === bg && run.a === a && run.dx === dx && run.dy === dy) run.x1 = x;
+      else {
+        flush();
+        run = { x0: x, x1: x, bg, a, dx, dy };
+      }
+      if (c.ch !== " " && c.ch !== "\0") glyphs.push([c.ch, colX(x) + dx, rowY(y) + dy, fg, c.flags, a]);
+    }
+    flush();
+  }
+  for (const [ch, x, y, fg, flags, a] of glyphs) {
+    ctx.globalAlpha = a;
+    drawGlyph(ch, x, y, fg, flags);
+  }
+  ctx.globalAlpha = alpha * imageAlpha;
+  for (const region of regionsOf.get(name)) {
+    const image = images[region.index], full = FULL.get(region.index);
+    if (!image || !full || ctx.globalAlpha <= 0.001) continue;
+    const x0 = devX(colX(region.x0)), y0 = devY(rowY(region.y0));
+    const x1 = devX(colX(region.x0 + full.x1 - full.x0 + 1));
+    const y1 = devY(rowY(region.y0 + full.y1 - full.y0 + 1));
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x0, y0, x1 - x0, devY(rowY(region.y1 + 1)) - y0);
+    ctx.clip();
+    ctx.drawImage(image, x0, y0, x1 - x0, y1 - y0);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function stateAt(t) {
+  let index = 0;
+  for (let i = 0; i < STATES.length; i++) if (t >= STATES[i][0]) index = i;
+  return index;
+}
+
+// Staggered entries of the sidebar: the pane slides in, cards rise in turn.
+const SIDEBAR = { x0: 4, x1: 35 };
+function drawTerminal(t) {
+  const index = stateAt(t);
+  const [start, name, transition, seconds] = STATES[index];
+  const previous = index > 0 ? STATES[index - 1][1] : null;
+  const m = seconds ? progress(t, start, seconds) : 1;
+  if (!previous || m >= 1) {
+    drawScreen(name);
+    return;
+  }
+  drawScreen(previous);
+  if (transition === "fade" || transition === "cut") {
+    drawScreen(name, out(m), { under: previous });
+  } else if (transition === "slide") {
+    drawScreen(name, out(m), {
+      under: previous,
+      cell: (x) => [1, x >= SIDEBAR.x0 && x <= SIDEBAR.x1 ? -28 * (1 - out(m)) : 0, 0],
+    });
+  } else if (transition === "cards") {
+    drawScreen(name, 1, {
+      under: previous,
+      cell: (x, y) => {
+        if (x < SIDEBAR.x0 || x > SIDEBAR.x1 || y < 8 || y > 29) return [out(progress(t, start, 0.2)), 0, 0];
+        const card = Math.floor((y - 8) / 4);
+        const p = out(progress(t, start + 0.05 + card * 0.07, 0.3));
+        return [p, 0, 10 * (1 - p)];
+      },
+    });
+  } else if (transition === "images") {
+    drawScreen(name, out(progress(t, start, 0.15)), { under: previous, imageAlpha: out(m) });
+  }
+}
+
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
+}
+
+function drawWindow(z) {
+  ctx.save();
+  ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
+  ctx.shadowBlur = 56 * z * DPR;
+  ctx.shadowOffsetY = 22 * z * DPR;
+  roundRect(0, 0, WIN_W, WIN_H, 12);
+  ctx.fillStyle = BG;
+  ctx.fill();
+  ctx.restore();
+  ctx.save();
+  roundRect(0, 0, WIN_W, WIN_H, 12);
+  ctx.clip();
+  ctx.fillStyle = "#181825";
+  ctx.fillRect(0, 0, WIN_W, BAR);
+  ["#ff5f57", "#febc2e", "#28c840"].forEach((fill, i) => {
+    ctx.beginPath();
+    ctx.arc(18 + i * 20, BAR / 2, 6, 0, Math.PI * 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+  });
+  setFont("500 13px Inter");
+  ctx.fillStyle = "#7f849c";
+  ctx.textAlign = "center";
+  ctx.fillText("herdr", WIN_W / 2, BAR / 2 + 4.5);
+  ctx.textAlign = "left";
+  ctx.restore();
+}
+
+function cardRect(grid, title) {
+  const { x, y } = find(grid, title);
+  return [colX(x), rowY(y), 30 * CW, 4 * CH];
+}
+function statusRect() {
+  const details = pane(grids.installed, "┌ details");
+  return [colX(details.left), rowY(details.top + 4), details.width * CW, CH];
+}
+function installedRect() {
+  const card = find(grids.installed, "╭ Annotate");
+  return [colX(card.x + 1), rowY(card.y + 2), 11 * CW, CH];
+}
+
+function drawGlows(t) {
+  for (const [from, to, rgb, rects] of GLOWS) {
+    if (t < from || t > to) continue;
+    const a = Math.min(out(progress(t, from, 0.25)), 1 - progress(t, to - 0.3, 0.3));
+    for (const [x, y, w, h] of rects()) {
+      ctx.save();
+      ctx.shadowColor = `rgba(${rgb}, ${0.9 * a})`;
+      ctx.shadowBlur = 18 * DPR;
+      ctx.strokeStyle = `rgba(${rgb}, ${a})`;
+      ctx.lineWidth = 2;
+      roundRect(x - 3, y - 2, w + 6, h + 4, 6);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+function drawBackground() {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  const sky = ctx.createRadialGradient(640, 300, 60, 640, 360, 820);
+  sky.addColorStop(0, "#1a2040");
+  sky.addColorStop(0.55, "#10131f");
+  sky.addColorStop(1, "#090b12");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, W, H);
+  for (const [x, y, r, rgba] of [[260, 600, 460, "0,120,212,0.22"], [1060, 110, 420, "203,166,247,0.12"]]) {
+    const glow = ctx.createRadialGradient(x, y, 0, x, y, r);
+    glow.addColorStop(0, `rgba(${rgba})`);
+    glow.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, W, H);
+  }
+}
+
+// The visible window rectangle of a shot, fitted to the safe area.
+function view(shot) {
+  const [x0, y0, x1, y1] = SHOTS[shot];
+  const sw = SAFE.x1 - SAFE.x0, sh = SAFE.y1 - SAFE.y0;
+  const z = Math.min(sw / (x1 - x0), sh / (y1 - y0));
+  const hw = sw / 2 / z, hh = sh / 2 / z;
+  const fx = WIN_W * z <= sw ? WIN_W / 2 : clamp((x0 + x1) / 2, hw, WIN_W - hw);
+  const fy = WIN_H * z <= sh ? WIN_H / 2 : clamp((y0 + y1) / 2, hh, WIN_H - hh);
+  return [fx - hw, fy - hh, fx + hw, fy + hh];
+}
+
+function cameraAt(t) {
+  let i = 0;
+  while (i < CAMERA.length - 2 && t >= CAMERA[i + 1][0]) i++;
+  const [from, a] = CAMERA[i], [to, b] = CAMERA[i + 1];
+  const va = view(a), vb = view(b);
+  const p = a === b ? 0 : inOut(progress(t, from, to - from));
+  const [x0, y0, x1, y1] = va.map((v, k) => lerp(v, vb[k], p));
+  const z = (SAFE.x1 - SAFE.x0) / (x1 - x0);
+  const captionX = lerp(CAPTION_X[a], CAPTION_X[b], p);
+  return { z, fx: (x0 + x1) / 2, fy: (y0 + y1) / 2, captionX };
+}
+
+// ---------------------------------------------------------------- caption
+
+function captionAt(t) {
+  for (const caption of CAPTIONS) {
+    const [from, to] = caption;
+    if (t >= from && t < to) return [caption, t];
+    if (t + DURATION >= from && t + DURATION < to) return [caption, t + DURATION];
+  }
+  return [null, t];
+}
+
+function keycap(x, y, label, down) {
+  setFont("600 16px Inter");
+  const w = Math.max(30, ctx.measureText(label).width + 18), h = 30, lift = down ? 2 : 0;
+  ctx.fillStyle = down ? "#4aa3f0" : "rgba(255, 255, 255, 0.22)";
+  roundRect(x, y + lift, w, h - lift, 8);
+  ctx.fill();
+  ctx.fillStyle = down ? "#0078d4" : "#262839";
+  roundRect(x + 1, y + lift + 1, w - 2, h - lift - (down ? 2 : 4), 7);
+  ctx.fill();
+  ctx.fillStyle = down ? "#ffffff" : "#e6e9f5";
+  ctx.textAlign = "center";
+  ctx.fillText(label, x + w / 2, y + lift + (h - lift - (down ? 2 : 4)) / 2 + 1);
+  ctx.textAlign = "left";
+  return w;
+}
+
+function leadWidth(lead) {
+  if (lead === "icon") return 26;
+  if (lead === "check") return 28;
+  if (!Array.isArray(lead)) return 0;
+  setFont("600 16px Inter");
+  return lead.reduce((sum, [label], i) => sum + (i ? 6 : 0) + Math.max(30, ctx.measureText(label).width + 18), 0);
+}
+
+function drawLead(lead, x, cy, time) {
+  if (lead === "icon") {
+    ctx.fillStyle = "#89b4fa";
+    for (const [dx, dy] of [[0, 6], [0, 14], [8, 14]]) {
+      roundRect(x + dx, cy - 13 + dy, 7, 7, 1.6);
+      ctx.fill();
+    }
+    ctx.save();
+    ctx.translate(x + 17.5, cy - 6);
+    ctx.rotate(0.21);
+    ctx.fillStyle = "#f2b82d";
+    roundRect(-3.5, -3.5, 7, 7, 1.6);
+    ctx.fill();
+    ctx.restore();
+  } else if (lead === "check") {
+    ctx.save();
+    ctx.fillStyle = "#a6e3a1";
+    ctx.beginPath();
+    ctx.arc(x + 14, cy, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#11111b";
+    ctx.lineWidth = 2.6;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(x + 8, cy + 0.5);
+    ctx.lineTo(x + 12.5, cy + 5);
+    ctx.lineTo(x + 20.5, cy - 4.5);
+    ctx.stroke();
+    ctx.restore();
+  } else if (Array.isArray(lead)) {
+    for (const [label, pressed] of lead) {
+      x += keycap(x, cy - 15, label, time >= pressed && time < pressed + 0.16) + 6;
+    }
+  }
+}
+
+// The caption pill: keys or an icon, then the words; it rises in and out.
+function drawCaption(t, centerX) {
+  const [caption, time] = captionAt(t);
+  if (!caption) return;
+  const [from, to, lead, words] = caption;
+  const enter = out(progress(time, from, 0.24));
+  const leave = progress(time, to - 0.18, 0.18);
+  const alpha = Math.min(enter, 1 - leave);
+  if (alpha <= 0) return;
+  setFont("600 21px Inter");
+  const leading = leadWidth(lead);
+  const w = (leading ? 13 + leading + 12 : 24) + ctx.measureText(words).width + 24, h = 50;
+  const x = clamp(centerX, w / 2 + 24, W - w / 2 - 24) - w / 2, y = 648;
+  const scale = 0.97 + 0.03 * enter, lift = 10 * (1 - enter) - 6 * leave;
+  ctx.setTransform(DPR * scale, 0, 0, DPR * scale,
+    DPR * (x + w / 2) * (1 - scale), DPR * ((y + h / 2) * (1 - scale) + lift));
+  ctx.globalAlpha = alpha;
+  ctx.save();
+  ctx.shadowColor = "rgba(0, 0, 0, 0.45)";
+  ctx.shadowBlur = 32 * DPR;
+  ctx.shadowOffsetY = 12 * DPR;
+  ctx.fillStyle = "rgba(17, 17, 27, 0.9)";
+  roundRect(x, y, w, h, h / 2);
+  ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.13)";
+  ctx.lineWidth = 1;
+  roundRect(x + 0.5, y + 0.5, w - 1, h - 1, h / 2);
+  ctx.stroke();
+  ctx.textBaseline = "middle";
+  drawLead(lead, x + 13, y + h / 2, time);
+  setFont("600 21px Inter");
+  ctx.fillStyle = "#f5f7ff";
+  ctx.fillText(words, x + (leading ? 13 + leading + 12 : 24), y + h / 2 + 1);
+  ctx.textBaseline = "alphabetic";
+  ctx.globalAlpha = 1;
+}
+
+// ------------------------------------------------------------------ render
+
+function drawScene(t) {
+  drawBackground();
+  const { z, fx, fy } = cameraAt(t);
+  const ax = (SAFE.x0 + SAFE.x1) / 2, ay = (SAFE.y0 + SAFE.y1) / 2;
+  [A, E, F] = [DPR * z, DPR * (ax - fx * z), DPR * (ay - fy * z)];
+  ctx.setTransform(A, 0, 0, A, E, F);
+  drawWindow(z);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(PAD, BAR + PAD, COLS * CW, ROWS * CH);
+  ctx.clip();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  currentFont = ""; // save() and restore() also reset the font
+  drawTerminal(t);
+  ctx.restore();
+  drawGlows(t);
+}
+
+const film = document.createElement("canvas");
+film.width = canvas.width;
+film.height = canvas.height;
+const filmCtx = film.getContext("2d");
+const moving = (t) => CAMERA.some(([from, a], i) =>
+  i + 1 < CAMERA.length && a !== CAMERA[i + 1][1] && t > from && t < CAMERA[i + 1][0]);
+
+function draw(t) {
+  t = ((t % DURATION) + DURATION) % DURATION;
+  if (!moving(t)) drawScene(t);
+  else {
+    // Motion blur: the exposures averaged, as a real shutter would.
+    for (let i = 0; i < EXPOSURES; i++) {
+      drawScene(t + SHUTTER * ((i + 0.5) / EXPOSURES - 0.5));
+      filmCtx.globalAlpha = 1 / (i + 1);
+      filmCtx.drawImage(canvas, 0, 0);
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(film, 0, 0);
+  }
+  drawCaption(t, cameraAt(t).captionX);
+}
+
+window.demo = {
+  fps: FPS,
+  duration: DURATION,
+  render(t) {
+    draw(t);
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => resolve());
+      setTimeout(resolve, 100);
+    });
+  },
+};
+
+if (!new URLSearchParams(location.search).has("render")) {
+  const origin = performance.now();
+  const loop = (now) => {
+    draw((now - origin) / 1000);
+    requestAnimationFrame(loop);
+  };
+  requestAnimationFrame(loop);
+}
+document.documentElement.dataset.ready = "1";
+</script>
+</body>
+</html>
