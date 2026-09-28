@@ -3,7 +3,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::application::ports::{FetchError, Fetcher};
+use crate::application::ports::{CatalogFetcher, FetchError, Fetched, Fetcher};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -59,6 +59,45 @@ impl Fetcher for HttpFetcher {
             Err(ureq::Error::StatusCode(404)) => Err(FetchError::NotFound),
             Err(error) => Err(FetchError::Failed(error.to_string())),
         }
+    }
+}
+
+impl CatalogFetcher for HttpFetcher {
+    fn fetch_index(
+        &self,
+        url: &str,
+        etag: Option<&str>,
+        limit: u64,
+    ) -> Result<Fetched, FetchError> {
+        // `file://` has no ETag, so it is never cached.
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            let body = self.fetch(url, limit)?;
+            return Ok(Fetched::Body { body, etag: None });
+        }
+        let mut request = self.agent.get(url);
+        if let Some(etag) = etag {
+            request = request.header("If-None-Match", etag);
+        }
+        let mut response = match request.call() {
+            Ok(response) => response,
+            Err(ureq::Error::StatusCode(404)) => return Err(FetchError::NotFound),
+            Err(error) => return Err(FetchError::Failed(error.to_string())),
+        };
+        if response.status() == 304 {
+            return Ok(Fetched::Unchanged);
+        }
+        let etag = response
+            .headers()
+            .get("etag")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = response
+            .body_mut()
+            .with_config()
+            .limit(limit)
+            .read_to_vec()
+            .map_err(|error| FetchError::Failed(error.to_string()))?;
+        Ok(Fetched::Body { body, etag })
     }
 }
 

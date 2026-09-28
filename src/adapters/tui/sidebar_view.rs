@@ -118,6 +118,19 @@ fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
                 Style::default().fg(WARN),
             ));
         }
+        if loaded.loaded.not_refreshed {
+            let copy = match &loaded.loaded.catalog.generated_at {
+                Some(date) => format!(
+                    "the copy from {}",
+                    clean(date.split('T').next().unwrap_or(date))
+                ),
+                None => "a saved copy".into(),
+            };
+            lines.push(Line::styled(
+                ellipsize(&format!("Catalog not refreshed: showing {copy}"), width),
+                Style::default().fg(WARN),
+            ));
+        }
     }
     if let Some(notice) = &app.notice {
         lines.extend(

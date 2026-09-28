@@ -29,6 +29,37 @@ impl fmt::Display for FetchError {
     }
 }
 
+/// Index download that skips an unchanged index.
+pub trait CatalogFetcher {
+    /// With `etag`, sent as `If-None-Match`, an unchanged index answers
+    /// `Unchanged`. Bodies are refused beyond `limit` bytes.
+    fn fetch_index(&self, url: &str, etag: Option<&str>, limit: u64)
+    -> Result<Fetched, FetchError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fetched {
+    /// HTTP 304: the saved copy is current.
+    Unchanged,
+    /// The index, with its ETag when the server sent one.
+    Body { body: Vec<u8>, etag: Option<String> },
+}
+
+/// The saved index: one entry, replaced whole. The cache is optional, so
+/// nothing here reports an error.
+pub trait CatalogCache {
+    fn read(&self) -> Option<CachedIndex>;
+    fn replace(&self, entry: &CachedIndex);
+    fn remove(&self);
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedIndex {
+    pub url: String,
+    pub etag: String,
+    pub body: Vec<u8>,
+}
+
 /// The `herdr` command line.
 pub trait HerdrCli {
     /// Standard output of `herdr --version`.
