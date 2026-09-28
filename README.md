@@ -65,6 +65,7 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 | Type | Sidebar | Search; an open preview shows the first result |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Sidebar | Move, and preview the plugin beside the list |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Details | Scroll |
+| Click a plugin | Sidebar | Preview it, the sidebar keeps the focus |
 | `Enter` | Sidebar | Open the selected plugin and focus it |
 | `Tab` | Sidebar | Switch between **All** and **Installed** |
 | `i` | Details | Install, or switch to the catalog's commit |

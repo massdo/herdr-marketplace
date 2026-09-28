@@ -19,9 +19,10 @@ pub struct Shown {
 /// Why the details show a plugin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reveal {
-    /// Enter or a click: the pane opens if needed and takes the focus.
+    /// Enter: the pane opens if needed and takes the focus.
     Focus,
-    /// The arrows: the pane opens if needed and the sidebar keeps the focus.
+    /// The arrows or a click: the pane opens if needed and the sidebar
+    /// keeps the focus.
     Preview,
     /// A search: an open pane shows the new selection, none opens.
     Follow,

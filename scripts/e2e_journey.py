@@ -435,7 +435,8 @@ def prove_details():
     print("details_outlives_sidebar_ok", flush=True)
 
     # A click on the sidebar without the focus only focuses it, so that a
-    # search can be typed; then one click on a plugin opens its details.
+    # search can be typed; then one click on a plugin shows its details and
+    # the sidebar keeps the focus, until Enter.
     sidebar = open_sidebar()
     wait(lambda: listed(read(sidebar)), "the catalogue did not load")
     herdr("pane", "focus", "--pane", sidebar, "--direction", "right")
@@ -451,6 +452,10 @@ def prove_details():
                    "a click on a plugin did not open its details pane")
     wait(lambda: "zenbu-labs/terminal-browser/herdr-plugin" in read(details),
          "the clicked plugin is not the one shown")
+    assert focused() == sidebar, "the click gave the details pane the focus"
+    keys(sidebar, "enter")
+    wait(lambda: focused() == details, "enter did not focus the clicked plugin's pane")
+    assert [p["pane_id"] for p in details_panes(tab)] == [details], "enter opened another pane"
     print("details_click_ok", flush=True)
     keys(details, "q")
     wait(lambda: not details_panes(tab), "q did not close the details pane")
