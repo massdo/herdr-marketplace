@@ -86,8 +86,8 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
   rustup's on your `PATH`, run `export PATH="$HOME/.cargo/bin:$PATH"` first.
 
 Good to know: each time you open it, the marketplace downloads the whole
-catalog index, about 1.2 MB. We're happy with that for now, and V2 will bring
-a small server so you can skip that download.
+catalog index, about 270 KB compressed. We're happy with that for now, and V2
+will bring a small server so you can skip that download.
 
 To update, run the install command again, then close and reopen the
 marketplace.
