@@ -99,6 +99,14 @@ pub fn index_url() -> String {
     env_string(INDEX_URL_ENV).unwrap_or_else(|| DEFAULT_INDEX_URL.to_string())
 }
 
+/// Where the saved index lives: in the plugin's own directory, which
+/// `herdr plugin uninstall` removes. `None` when Herdr gives no directory.
+pub fn catalog_dir() -> Option<PathBuf> {
+    env::var_os("HERDR_PLUGIN_ROOT")
+        .filter(|root| !root.is_empty())
+        .map(|root| PathBuf::from(root).join("target/catalog"))
+}
+
 /// The Herdr binary that launched the plugin, else `herdr` from `PATH`.
 pub fn herdr_bin() -> PathBuf {
     env_string("HERDR_BIN_PATH")

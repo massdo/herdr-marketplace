@@ -26,6 +26,7 @@ use crossterm::{Command, execute};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use crate::adapters::catalog_cache::FileCatalogCache;
 use crate::adapters::env::{self, ProcessEnv};
 use crate::adapters::fetch::HttpFetcher;
 use crate::adapters::herdr_cli::HerdrCommand;
@@ -174,6 +175,7 @@ fn spawn_load(sender: Sender<SidebarAnswer>) {
     thread::spawn(move || {
         let loaded = load_listing(
             &HttpFetcher::new(),
+            &FileCatalogCache::new(env::catalog_dir()),
             &HerdrCommand::new(env::herdr_bin()),
             &env::index_url(),
             Platform::current(),

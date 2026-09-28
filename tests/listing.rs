@@ -2,8 +2,9 @@
 
 mod support;
 
+use herdr_marketplace::adapters::catalog_cache::FileCatalogCache;
 use herdr_marketplace::application::load_listing::load_listing;
-use herdr_marketplace::application::ports::{FetchError, Fetcher};
+use herdr_marketplace::application::ports::{CatalogFetcher, FetchError, Fetched};
 use herdr_marketplace::domain::compat::Platform;
 use herdr_marketplace::domain::listing::build_listing;
 use herdr_marketplace::domain::registry::{InstalledSource, parse_registry};
@@ -12,9 +13,17 @@ use support::*;
 
 struct StaticFetcher(Vec<u8>);
 
-impl Fetcher for StaticFetcher {
-    fn fetch(&self, _url: &str, _limit: u64) -> Result<Vec<u8>, FetchError> {
-        Ok(self.0.clone())
+impl CatalogFetcher for StaticFetcher {
+    fn fetch_index(
+        &self,
+        _url: &str,
+        _etag: Option<&str>,
+        _limit: u64,
+    ) -> Result<Fetched, FetchError> {
+        Ok(Fetched::Body {
+            body: self.0.clone(),
+            etag: None,
+        })
     }
 }
 
@@ -206,7 +215,14 @@ fn an_unreadable_registry_marks_nothing_installed() {
         vec![manifest("herdr-plugin.toml", "acme.plugin")],
     )]));
 
-    let loaded = load_listing(&fetcher, &herdr, "file:///index.json", Platform::Macos).unwrap();
+    let loaded = load_listing(
+        &fetcher,
+        &FileCatalogCache::new(None),
+        &herdr,
+        "file:///index.json",
+        Platform::Macos,
+    )
+    .unwrap();
 
     assert!(loaded.registry_error.is_some());
     assert_eq!(loaded.listing.rows.len(), 1);

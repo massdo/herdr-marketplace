@@ -52,6 +52,8 @@ pub struct Catalog {
     pub rejected: usize,
     /// `pluginCount` announced by the index.
     pub plugin_count: Option<u64>,
+    /// `generatedAt` of the index, as written.
+    pub generated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,6 +139,10 @@ pub fn parse_index(bytes: &[u8]) -> Result<Catalog, IndexError> {
         entries,
         read,
         plugin_count: root.get("pluginCount").and_then(Value::as_u64),
+        generated_at: root
+            .get("generatedAt")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
