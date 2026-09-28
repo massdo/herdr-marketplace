@@ -12,8 +12,10 @@ use crate::domain::source::PluginSource;
 pub enum Intent {
     /// Load the index and the registry in the background.
     Load,
-    /// Open the details pane of this row.
+    /// Open the details pane of this row and give it the focus.
     Open(Box<Row>),
+    /// Show the details of this row and leave the focus in the sidebar.
+    Preview(Box<Row>),
 }
 
 /// Which plugins the list shows, as the filters of VS Code's extensions view.
@@ -155,12 +157,12 @@ impl SidebarApp {
                     self.search_changed();
                 }
             }
-            KeyCode::Up => self.move_by(-1),
-            KeyCode::Down => self.move_by(1),
-            KeyCode::PageUp => self.move_by(-(self.page as isize)),
-            KeyCode::PageDown => self.move_by(self.page as isize),
-            KeyCode::Home => self.move_to(0),
-            KeyCode::End => self.move_to(self.visible.len().saturating_sub(1)),
+            KeyCode::Up => self.browse_by(-1),
+            KeyCode::Down => self.browse_by(1),
+            KeyCode::PageUp => self.browse_by(-(self.page as isize)),
+            KeyCode::PageDown => self.browse_by(self.page as isize),
+            KeyCode::Home => self.browse_to(0),
+            KeyCode::End => self.browse_to(self.visible.len().saturating_sub(1)),
             KeyCode::Enter => self.enter(),
             _ => {}
         }
@@ -301,9 +303,18 @@ impl SidebarApp {
         self.ensure_visible();
     }
 
-    fn move_by(&mut self, delta: isize) {
+    fn browse_by(&mut self, delta: isize) {
         let position = self.selected_position().unwrap_or(0) as isize;
-        self.move_to((position + delta).max(0) as usize);
+        self.browse_to((position + delta).max(0) as usize);
+    }
+
+    /// The keyboard moves the selection and the details follow it without
+    /// the focus; a click selects and opens instead.
+    fn browse_to(&mut self, position: usize) {
+        self.move_to(position);
+        if let Some(row) = self.selected_row() {
+            self.intents.push(Intent::Preview(Box::new(row.clone())));
+        }
     }
 
     fn move_to(&mut self, position: usize) {

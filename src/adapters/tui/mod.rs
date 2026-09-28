@@ -36,7 +36,7 @@ use crate::adapters::images::{Picture, load_in_background};
 use crate::adapters::operations::{FsOperations, spawn_operation};
 use crate::application::load_listing::{LoadedListing, load_listing, read_registry};
 use crate::application::load_readme::{Readme, load_readme};
-use crate::application::open_details::{close_details, open_details};
+use crate::application::open_details::{Shown, close_details, show_details};
 use crate::application::ports::{HerdrCli, HerdrPort, Operations};
 use crate::application::prepare_install::{Prepared, prepare_install};
 use crate::application::prepare_removal::prepare_removal;
@@ -77,6 +77,9 @@ enum DetailsAnswer {
 }
 
 const POLL: Duration = Duration::from_millis(100);
+/// How long the selection rests before the details follow it: holding an
+/// arrow opens no pane for the plugins it passes.
+const PREVIEW_DELAY: Duration = Duration::from_millis(200);
 /// Command that opens an address in the browser.
 pub const OPEN_ENV: &str = "HERDR_MARKETPLACE_OPEN";
 const OPERATION_CHECK: Duration = Duration::from_secs(1);
@@ -115,6 +118,9 @@ fn sidebar_loop(
     let mut seen_finish = operations.latest_finish();
     let mut last_check = Instant::now();
     let mut focus = FocusClicks::default();
+    let mut shown = None::<Shown>;
+    // The plugin the details will show once the selection rests.
+    let mut preview = None::<(DetailsTarget, Instant)>;
     loop {
         // An operation that ended since the last look: read the registry again.
         if last_check.elapsed() >= OPERATION_CHECK {
@@ -133,17 +139,17 @@ fn sidebar_loop(
             match intent {
                 Intent::Load => spawn_load(sender.clone()),
                 Intent::Open(row) => {
-                    let opened = match &process.own_pane_id {
-                        Some(sidebar) => {
-                            open_details(herdr, sidebar, &DetailsTarget::from_row(&row)).map(drop)
-                        }
-                        None => Err(AppError::OriginMissing),
-                    };
-                    app.notice = opened
-                        .err()
-                        .map(|error| format!("Details not opened: {error}"));
+                    preview = None;
+                    let target = DetailsTarget::from_row(&row);
+                    show(herdr, process, app, &mut shown, &target, true);
+                }
+                Intent::Preview(row) => {
+                    preview = Some((DetailsTarget::from_row(&row), Instant::now()));
                 }
             }
+        }
+        if let Some((target, _)) = preview.take_if(|(_, at)| at.elapsed() >= PREVIEW_DELAY) {
+            show(herdr, process, app, &mut shown, &target, false);
         }
         while let Ok(answer) = receiver.try_recv() {
             match answer {
@@ -156,7 +162,10 @@ fn sidebar_loop(
         let size = terminal.size()?;
         app.set_page(sidebar_view::page_rows(app, size.width, size.height));
         terminal.draw(|frame| sidebar_view::render(frame, app))?;
-        match next_input()? {
+        let wait = preview.as_ref().map_or(POLL, |(_, at)| {
+            PREVIEW_DELAY.saturating_sub(at.elapsed()).min(POLL)
+        });
+        match next_input(wait)? {
             Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),
             Some((Input::Mouse(mouse), at)) if !focus.swallows(&mouse, at) => {
                 app.handle_mouse(mouse, size.width, size.height)
@@ -168,6 +177,28 @@ fn sidebar_loop(
             Some((Input::FocusLost, _)) => app.focus(false),
             _ => {}
         }
+    }
+}
+
+/// The details of `target` beside the sidebar; the notice says why not.
+fn show(
+    herdr: &HerdrSocket,
+    process: &ProcessEnv,
+    app: &mut SidebarApp,
+    shown: &mut Option<Shown>,
+    target: &DetailsTarget,
+    focus: bool,
+) {
+    let result = match &process.own_pane_id {
+        Some(sidebar) => show_details(herdr, sidebar, target, focus, shown.as_ref()),
+        None => Err(AppError::OriginMissing),
+    };
+    match result {
+        Ok(now) => {
+            *shown = Some(now);
+            app.notice = None;
+        }
+        Err(error) => app.notice = Some(format!("Details not opened: {error}")),
     }
 }
 
@@ -349,7 +380,7 @@ fn details_loop(
             terminal.backend_mut().flush()?;
         }
         terminal.draw(|frame| details_view::render(frame, app))?;
-        match next_input()? {
+        match next_input(POLL)? {
             Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),
             Some((Input::Mouse(mouse), at)) if focus.swallows(&mouse, at) => {
                 app.focus_click(mouse, size.width, size.height)
@@ -483,9 +514,9 @@ enum Input {
     FocusLost,
 }
 
-/// The next input and when it was read.
-fn next_input() -> Result<Option<(Input, Instant)>, AppError> {
-    if !event::poll(POLL)? {
+/// The next input within `wait`, and when it was read.
+fn next_input(wait: Duration) -> Result<Option<(Input, Instant)>, AppError> {
+    if !event::poll(wait)? {
         return Ok(None);
     }
     let input = match event::read()? {
