@@ -3,9 +3,12 @@
 use std::cell::Cell;
 use std::path::PathBuf;
 
+use herdr_marketplace::adapters::catalog_cache::FileCatalogCache;
 use herdr_marketplace::adapters::fetch::HttpFetcher;
 use herdr_marketplace::application::load_catalog::{LoadError, load_catalog};
-use herdr_marketplace::application::ports::{CommandOutput, FetchError, Fetcher, HerdrCli};
+use herdr_marketplace::application::ports::{
+    CatalogFetcher, CommandOutput, FetchError, Fetched, Fetcher, HerdrCli,
+};
 use herdr_marketplace::domain::compat::Platform;
 use herdr_marketplace::domain::index::{Catalog, Entry, IndexError, parse_index};
 use herdr_marketplace::domain::search::search;
@@ -92,10 +95,18 @@ struct CountingFetcher {
     calls: Cell<usize>,
 }
 
-impl Fetcher for CountingFetcher {
-    fn fetch(&self, _url: &str, _limit: u64) -> Result<Vec<u8>, FetchError> {
+impl CatalogFetcher for CountingFetcher {
+    fn fetch_index(
+        &self,
+        _url: &str,
+        _etag: Option<&str>,
+        _limit: u64,
+    ) -> Result<Fetched, FetchError> {
         self.calls.set(self.calls.get() + 1);
-        Ok(self.body.clone())
+        Ok(Fetched::Body {
+            body: self.body.clone(),
+            etag: None,
+        })
     }
 }
 
@@ -316,7 +327,12 @@ fn an_unreadable_herdr_version_is_an_error_instead_of_a_list() {
         )]),
         calls: Cell::new(0),
     };
-    let result = load_catalog(&fetcher, &FakeHerdr("herdr unknown\n"), "file:///unused");
+    let result = load_catalog(
+        &fetcher,
+        &FileCatalogCache::new(None),
+        &FakeHerdr("herdr unknown\n"),
+        "file:///unused",
+    );
     assert!(
         matches!(result, Err(LoadError::HerdrVersion(_))),
         "{result:?}"
@@ -455,7 +471,13 @@ fn the_index_is_read_from_a_file_url() {
         )]),
     );
     let url = format!("file://{}", path.display());
-    let loaded = load_catalog(&HttpFetcher::new(), &FakeHerdr("herdr 0.9.1\n"), &url).unwrap();
+    let loaded = load_catalog(
+        &HttpFetcher::new(),
+        &FileCatalogCache::new(None),
+        &FakeHerdr("herdr 0.9.1\n"),
+        &url,
+    )
+    .unwrap();
     assert_eq!(loaded.herdr, HERDR);
     assert_eq!(only(&loaded.catalog).id, "plugin");
 
@@ -685,6 +707,7 @@ fn searching_makes_no_network_call() {
     };
     let loaded = load_catalog(
         &fetcher,
+        &FileCatalogCache::new(None),
         &FakeHerdr("herdr 0.9.1"),
         "https://example.invalid",
     )

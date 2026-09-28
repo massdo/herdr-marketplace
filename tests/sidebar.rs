@@ -60,6 +60,7 @@ fn ready(repos: Vec<serde_json::Value>, installed: Vec<serde_json::Value>) -> Si
     let loaded = LoadedCatalog {
         catalog: catalog(repos),
         herdr: HERDR,
+        not_refreshed: false,
     };
     let mut app = SidebarApp::new();
     app.intents.clear();

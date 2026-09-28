@@ -1,5 +1,5 @@
 use crate::application::load_catalog::{LoadError, LoadedCatalog, load_catalog};
-use crate::application::ports::{Fetcher, HerdrCli};
+use crate::application::ports::{CatalogCache, CatalogFetcher, HerdrCli};
 use crate::domain::compat::Platform;
 use crate::domain::listing::{Listing, build_listing};
 use crate::domain::registry::{InstalledPlugin, parse_registry};
@@ -39,13 +39,14 @@ impl LoadedListing {
 }
 
 /// What the sidebar loads when it opens: the index, then a fresh registry.
-pub fn load_listing<F: Fetcher, H: HerdrCli>(
+pub fn load_listing<F: CatalogFetcher, C: CatalogCache, H: HerdrCli>(
     fetcher: &F,
+    cache: &C,
     herdr: &H,
     url: &str,
     host: Platform,
 ) -> Result<LoadedListing, LoadError> {
-    let loaded = load_catalog(fetcher, herdr, url)?;
+    let loaded = load_catalog(fetcher, cache, herdr, url)?;
     Ok(LoadedListing::new(loaded, read_registry(herdr), host))
 }
 
