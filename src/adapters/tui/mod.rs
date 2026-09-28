@@ -140,10 +140,10 @@ fn sidebar_loop(
         for intent in std::mem::take(&mut app.intents) {
             match intent {
                 Intent::Load => spawn_load(sender.clone()),
-                Intent::Open(row) => {
+                Intent::Open(row, reveal) => {
                     pending = None;
                     let target = DetailsTarget::from_row(&row);
-                    show(herdr, process, app, &mut shown, &target, Reveal::Focus);
+                    show(herdr, process, app, &mut shown, &target, reveal);
                 }
                 Intent::Preview(row) => {
                     let due = Instant::now() + PREVIEW_DELAY;

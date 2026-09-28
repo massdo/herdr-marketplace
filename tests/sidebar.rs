@@ -7,6 +7,7 @@ use herdr_marketplace::adapters::tui::sidebar::{Counts, Filter, Intent, LoadStat
 use herdr_marketplace::adapters::tui::sidebar_view;
 use herdr_marketplace::application::load_catalog::LoadedCatalog;
 use herdr_marketplace::application::load_listing::LoadedListing;
+use herdr_marketplace::application::open_details::Reveal;
 use herdr_marketplace::domain::compat::Platform;
 use herdr_marketplace::domain::registry::parse_registry;
 use ratatui::Terminal;
@@ -241,7 +242,7 @@ fn enter_asks_for_the_details_of_the_selected_plugin() {
     app.intents.clear();
     app.handle_key(key(KeyCode::Enter));
     match app.intents.as_slice() {
-        [Intent::Open(row)] => assert_eq!(row.entry.source.repo, "plugin-01"),
+        [Intent::Open(row, Reveal::Focus)] => assert_eq!(row.entry.source.repo, "plugin-01"),
         other => panic!("{other:?}"),
     }
 }
@@ -423,7 +424,7 @@ fn a_row_shows_the_name_owner_repo_marks_and_description() {
 }
 
 #[test]
-fn one_click_on_a_plugin_selects_it_and_opens_its_details() {
+fn one_click_on_a_plugin_selects_it_and_shows_its_details_without_the_focus() {
     let mut app = loaded_app();
     // 40 × 18: search box, filters and separator, 3 cards of 4 lines,
     // footer.
@@ -432,7 +433,7 @@ fn one_click_on_a_plugin_selects_it_and_opens_its_details() {
     app.handle_mouse(click(5, 5 + 4 + 2), 40, 18);
     assert_eq!(selected_repo(&app), "plugin-01");
     match app.intents.as_slice() {
-        [Intent::Open(row)] => assert_eq!(row.entry.source.repo, "plugin-01"),
+        [Intent::Open(row, Reveal::Preview)] => assert_eq!(row.entry.source.repo, "plugin-01"),
         other => panic!("{other:?}"),
     }
     app.intents.clear();
