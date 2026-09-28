@@ -322,8 +322,8 @@ def prove_sidebar():
     # The key previews the plugin it reaches; Esc in the preview closes it.
     preview = wait(lambda: with_token(DETAILS_TOKEN), "End did not preview the last plugin")["pane_id"]
     wait(lambda: "acme/zz-last" in read(preview), "the preview is not the last plugin")
-    keys(preview, "esc")
-    wait(lambda: with_token(DETAILS_TOKEN) is None, "escape did not close the preview")
+    keys(preview, "q")
+    wait(lambda: with_token(DETAILS_TOKEN) is None, "q did not close the preview")
     print("last_entry_ok", flush=True)
 
     toggle()
@@ -398,9 +398,12 @@ def prove_details():
     print("details_copy_ok", flush=True)
 
     keys(details, "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+    time.sleep(1)
+    assert details_panes(tab), "escape closed the details pane"
+    keys(details, "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
     wait(lambda: focused() == sidebar, "focus did not return to the sidebar")
-    print("details_escape_ok", flush=True)
+    print("details_quit_ok", flush=True)
 
     details = open_details(sidebar, "fixture", " All 2 ")
     shown = wait(lambda: "[image: fixture logo]" in (text := read(details)) and text,
@@ -426,8 +429,8 @@ def prove_details():
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
     assert "massdo/herdr-marketplace-fixture/alt" in read(alt), "the details pane lost its plugin"
-    keys(alt, "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+    keys(alt, "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
     wait(lambda: focused() is not None and focused() in others(), "focus did not go to a remaining pane")
     print("details_outlives_sidebar_ok", flush=True)
 
@@ -449,8 +452,8 @@ def prove_details():
     wait(lambda: "zenbu-labs/terminal-browser/herdr-plugin" in read(details),
          "the clicked plugin is not the one shown")
     print("details_click_ok", flush=True)
-    keys(details, "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+    keys(details, "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
 
@@ -513,8 +516,8 @@ def prove_preview():
     assert [p["pane_id"] for p in details_panes(tab)] == [root], "enter opened another pane"
     print("enter_focuses_preview_ok", flush=True)
 
-    keys(root, "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the preview")
+    keys(root, "q")
+    wait(lambda: not details_panes(tab), "q did not close the preview")
     wait(lambda: focused() == sidebar, "focus did not return to the sidebar")
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
@@ -562,8 +565,8 @@ def prove_install_preview():
     assert details_panes(tab), "cancelling the preview closed the details pane"
     print("install_cancel_ok", flush=True)
 
-    keys(details, "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+    keys(details, "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
 
@@ -594,8 +597,8 @@ def confirm_install(details, expected):
 
 def close_all(tab):
     for pane in details_panes(tab):
-        keys(pane["pane_id"], "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+        keys(pane["pane_id"], "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
     if with_token(SIDEBAR_TOKEN):
         toggle()
         wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
@@ -662,8 +665,8 @@ def prove_details_closed_during_install():
     sidebar, tab, details = fixture_details(SHA_A)
     confirm_install(details, "another commit?")
     wait(lambda: "Installing" in read(details), "the details pane did not show the running install")
-    keys(details, "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+    keys(details, "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
     wait(lambda: (*FIXTURE, "", SHA_A) in registry(),
          "the install stopped with its details pane", OPERATION_TIMEOUT)
     details = open_details(sidebar, "fixture", " All 2 ")

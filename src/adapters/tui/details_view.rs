@@ -18,7 +18,7 @@ use super::style::{
 use crate::domain::operation::{OperationKind, Status};
 use crate::domain::text::clean;
 
-const FOOTER: &str = "s: full SHA · Esc: close · ↑↓ PgUp PgDn Home End";
+const FOOTER: &str = "s: full SHA · q: close · ↑↓ PgUp PgDn Home End";
 const PREVIEW_FOOTER: &str = "Enter: confirm · Esc: cancel · ↑↓ PgUp PgDn";
 /// Header lines: title, source, commit, then the action bar.
 const COMMIT_LINE: usize = 2;

@@ -319,7 +319,7 @@ impl DetailsApp {
             {
                 self.press(Command::Cancel)
             }
-            KeyCode::Esc => return true,
+            KeyCode::Char('q') => return true,
             KeyCode::Enter if self.showing_confirmation() => self.press(Command::Confirm),
             KeyCode::Enter => self.press(Command::RetryReadme),
             KeyCode::Char('i') => self.press(Command::Install),

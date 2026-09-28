@@ -245,8 +245,12 @@ fn the_whole_readme_is_reachable_with_the_keyboard() {
     }
     assert_eq!(app.scroll, last - 10);
     assert!(
-        app.handle_key(key(KeyCode::Esc)),
-        "escape closes the details pane"
+        !app.handle_key(key(KeyCode::Esc)),
+        "escape leaves the details pane open"
+    );
+    assert!(
+        app.handle_key(key(KeyCode::Char('q'))),
+        "q closes the details pane"
     );
 }
 
@@ -619,7 +623,7 @@ fn the_plugin_already_shown_keeps_its_pane_and_enter_focuses_it() {
     show_details(&herdr, &sidebar, &target(""), Reveal::Focus, Some(&a)).unwrap();
     assert_eq!(*herdr.calls.borrow(), ["focus w1:details-a"]);
 
-    // Closed since with Esc: it opens again.
+    // Closed since with q: it opens again.
     let herdr = FakePanes::new(vec![
         pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
         pane("w1:work", "w1:t1", None),
@@ -674,7 +678,7 @@ fn a_search_moves_open_details_and_opens_none() {
 }
 
 #[test]
-fn escape_returns_focus_to_the_sidebar_or_else_to_a_remaining_pane() {
+fn closing_returns_focus_to_the_sidebar_or_else_to_a_remaining_pane() {
     let herdr = FakePanes::new(vec![
         pane("w1:work", "w1:t1", None),
         pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
