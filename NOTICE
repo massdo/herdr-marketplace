@@ -2,8 +2,10 @@ herdr-marketplace
 =================
 
 The Herdr socket client, the split-then-swap left dock, the resize math,
-the working-pane choice and the launcher lock are adapted from herdr-npm
-v0.1.0 (https://github.com/massdo/herdr-npm), which is MIT:
+the working-pane choice, the launcher lock, the install script
+scripts/fetch-or-build.sh, its offline tests and the release workflow are
+adapted from herdr-npm v0.1.0 (https://github.com/massdo/herdr-npm), which is
+MIT:
 
 MIT License
 
@@ -27,9 +29,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-herdr-npm adapted the socket client, the left dock and the resize math from
-herdr-sidebar 0.13.0 (commit 1a5d37ef84edc91e5b3d3d4e39daa32952e6ecf2), which
-is also MIT:
+herdr-npm adapted the socket client, the left dock, the resize math, the
+install script, its tests and the release workflow from herdr-sidebar 0.13.0
+(commit 1a5d37ef84edc91e5b3d3d4e39daa32952e6ecf2), which is also MIT:
 
 MIT License
 

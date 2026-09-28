@@ -1,6 +1,7 @@
 #!/bin/sh
-# Offline checks: format, lint, tests. Network tests are marked #[ignore]
-# and run on demand with `cargo test -- --ignored`.
+# Offline checks: format, lint, tests, and the install script with simulated
+# downloads. Network tests are marked #[ignore] and run on demand with
+# `cargo test -- --ignored`.
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
@@ -12,3 +13,4 @@ echo "== clippy =="
 cargo clippy --locked --all-targets -- -D warnings
 echo "== test =="
 cargo test --locked
+sh scripts/test-fetch-or-build.sh

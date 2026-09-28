@@ -1,0 +1,189 @@
+# Publishes the prebuilt binaries that scripts/fetch-or-build.sh installs.
+# Adapted from herdr-npm v0.1.0, itself adapted from herdr-sidebar 0.13.0
+# .github/workflows/release.yml (MIT, see NOTICE). A pull request that touches
+# the release path builds the three binaries without publishing anything.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/build.sh
+      - scripts/fetch-or-build.sh
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: tag, Cargo.toml, herdr-plugin.toml and Cargo.lock agree
+        if: github.event_name == 'push'
+        run: |
+          tag=${GITHUB_REF_NAME#v}
+          crate=$(awk '/^\[/ { pkg = ($0 == "[package]") } pkg && /^version *= *"/ { sub(/^version *= *"/, ""); sub(/".*/, ""); print; exit }' Cargo.toml)
+          manifest=$(awk '/^\[/ { exit } /^version *= *"/ { sub(/^version *= *"/, ""); sub(/".*/, ""); print; exit }' herdr-plugin.toml)
+          lock=$(awk '/^\[\[package\]\]$/ { own = 0 } $0 == "name = \"herdr-marketplace\"" { own = 1 } own && /^version = "/ { sub(/^version = "/, ""); sub(/".*/, ""); print; exit }' Cargo.lock)
+          echo "tag=$tag Cargo.toml=$crate herdr-plugin.toml=$manifest Cargo.lock=$lock"
+          if [ -z "$tag" ] || [ "$crate" != "$tag" ] || [ "$manifest" != "$tag" ] || [ "$lock" != "$tag" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the herdr-marketplace versions"
+            exit 1
+          fi
+      - id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  # Pull requests already run it in ci.yml.
+  check:
+    if: github.event_name == 'push'
+    needs: versions
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: tag commit
+        env:
+          COMMIT: ${{ needs.versions.outputs.commit }}
+        run: test "$(git rev-parse HEAD)" = "$COMMIT"
+      - name: Install Rust
+        run: rustup toolchain install 1.89.0 --profile minimal --component clippy --component rustfmt
+      - name: offline suite
+        run: sh scripts/check.sh
+
+  build:
+    needs: versions
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - triple: aarch64-apple-darwin
+            os: macos-15
+            arch: arm64
+          - triple: x86_64-apple-darwin
+            os: macos-15-intel
+            arch: x86_64
+          - triple: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      BIN: target/${{ matrix.triple }}/release/herdr-marketplace
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: tag commit and runner architecture
+        env:
+          COMMIT: ${{ needs.versions.outputs.commit }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          test "$(uname -m)" = "$ARCH"
+      - name: Install Rust
+        run: rustup toolchain install 1.89.0 --profile minimal --target ${{ matrix.triple }}
+      - name: musl-tools
+        if: matrix.triple == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: build
+        run: |
+          rustc --version
+          cargo build --release --locked --target ${{ matrix.triple }} --bin herdr-marketplace
+      - name: --help on the runner architecture
+        run: ./"$BIN" --help
+      - name: static link
+        if: matrix.triple == 'x86_64-unknown-linux-musl'
+        run: |
+          file "$BIN"
+          readelf -lW "$BIN" > "$RUNNER_TEMP/program-headers"
+          readelf -dW "$BIN" > "$RUNNER_TEMP/dynamic-section"
+          if grep -q 'program interpreter' "$RUNNER_TEMP/program-headers" || grep -q '(NEEDED)' "$RUNNER_TEMP/dynamic-section"; then
+            echo "::error::$BIN is not statically linked"
+            exit 1
+          fi
+      - name: stage asset
+        run: |
+          mkdir dist
+          cp "$BIN" "dist/herdr-marketplace-${{ matrix.triple }}"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: herdr-marketplace-${{ matrix.triple }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'push'
+    needs: [versions, check, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: herdr-marketplace-*
+          path: artifacts
+      - name: assemble and verify release files
+        env:
+          COMMIT: ${{ needs.versions.outputs.commit }}
+        run: |
+          assets="herdr-marketplace-aarch64-apple-darwin herdr-marketplace-x86_64-apple-darwin herdr-marketplace-x86_64-unknown-linux-musl"
+          test "$(find artifacts -mindepth 1 -maxdepth 1 | wc -l)" -eq 3
+          mkdir release
+          for asset in $assets; do
+            test "$(ls "artifacts/$asset")" = "$asset"
+            cp "artifacts/$asset/$asset" release/
+          done
+          printf '%s\n' "$COMMIT" > release/SOURCE_COMMIT
+          cd release
+          for asset in $assets; do
+            sha256sum "$asset"
+          done > SHA256SUMS
+          test "$(find . -type f | wc -l)" -eq 5
+          test "$(wc -l < SHA256SUMS)" -eq 3
+          for asset in $assets; do
+            test "$(grep -cE "^[0-9a-f]{64}  $asset\$" SHA256SUMS)" -eq 1
+          done
+          sha256sum --check --strict SHA256SUMS
+          test "$(wc -l < SOURCE_COMMIT)" -eq 1
+          grep -qxE '[0-9a-f]{40}' SOURCE_COMMIT
+          cat SHA256SUMS SOURCE_COMMIT
+      # A rerun resumes the draft; a published release is never overwritten.
+      - name: draft, upload, verify, publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ needs.versions.outputs.commit }}
+        run: |
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft); then
+            if [ "$draft" != true ]; then
+              echo "::error::release $TAG is already published"
+              exit 1
+            fi
+          else
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" release/* --clobber
+          gh release download "$TAG" --dir uploaded
+          test "$(ls release)" = "$(ls uploaded)"
+          for file in release/*; do
+            cmp "$file" "uploaded/${file#release/}"
+          done
+          test "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)" = "$COMMIT"
+          gh release edit "$TAG" --draft=false
