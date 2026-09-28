@@ -319,6 +319,11 @@ def prove_sidebar():
 
     type_text(sidebar, END)
     wait(lambda: "Last Plugin" in read(sidebar), "the list did not reach its last entry")
+    # The key previews the plugin it reaches; Esc in the preview closes it.
+    preview = wait(lambda: with_token(DETAILS_TOKEN), "End did not preview the last plugin")["pane_id"]
+    wait(lambda: "acme/zz-last" in read(preview), "the preview is not the last plugin")
+    keys(preview, "esc")
+    wait(lambda: with_token(DETAILS_TOKEN) is None, "escape did not close the preview")
     print("last_entry_ok", flush=True)
 
     toggle()
@@ -446,6 +451,56 @@ def prove_details():
     print("details_click_ok", flush=True)
     keys(details, "esc")
     wait(lambda: not details_panes(tab), "escape did not close the details pane")
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+
+
+def rects(pane):
+    """Every pane of the tab of `pane`, left to right, with its rectangle."""
+    layout = data("pane", "layout", "--pane", pane)["layout"]
+    return sorted(((p["pane_id"], p["rect"]) for p in layout["panes"]),
+                  key=lambda item: (item[1]["x"], item[1]["y"]))
+
+
+def prove_preview():
+    """The arrows show the selected plugin right of the sidebar and leave
+    it the focus; Enter then hands the focus to that pane."""
+    write_catalog(SHA_A)
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
+    type_text(sidebar, "fixture")
+    wait(lambda: " All 2 " in read(sidebar), "search fixture did not settle")
+    time.sleep(1)
+    assert not details_panes(tab), "typing opened a preview"
+
+    keys(sidebar, "down")
+    alt = wait(lambda: next(iter(details_panes(tab)), None), "down did not preview the plugin")["pane_id"]
+    wait(lambda: "No README in alt/" in read(alt), "the preview is not the selected plugin")
+    assert focused() == sidebar, "the preview took the focus"
+    order = rects(sidebar)
+    assert [pane for pane, _ in order[:2]] == [sidebar, alt], order
+    working = order[2]
+    print("preview_beside_sidebar_ok", flush=True)
+
+    keys(sidebar, "up")
+    root = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != alt), None),
+                "up did not preview the plugin above")
+    wait(lambda: "[image: fixture logo]" in read(root), "the preview did not follow the selection")
+    assert [p["pane_id"] for p in details_panes(tab)] == [root], "the old preview stayed open"
+    assert focused() == sidebar, "the new preview took the focus"
+    assert [pane for pane, _ in rects(sidebar)[:2]] == [sidebar, root], rects(sidebar)
+    assert working in rects(sidebar), "the working pane moved or changed width"
+    print("preview_follows_arrows_ok", flush=True)
+
+    keys(sidebar, "enter")
+    wait(lambda: focused() == root, "enter did not focus the preview")
+    assert [p["pane_id"] for p in details_panes(tab)] == [root], "enter opened another pane"
+    print("enter_focuses_preview_ok", flush=True)
+
+    keys(root, "esc")
+    wait(lambda: not details_panes(tab), "escape did not close the preview")
+    wait(lambda: focused() == sidebar, "focus did not return to the sidebar")
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
 
@@ -689,6 +744,7 @@ def main():
     check_isolation()
     prove_sidebar()
     prove_details()
+    prove_preview()
     prove_readme()
     prove_install_preview()
     prove_install()
