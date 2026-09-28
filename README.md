@@ -80,10 +80,14 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 ## Requirements
 
 - Herdr 0.9.1 or later (tested with 0.9.1), on macOS or Linux.
-- `git`, which Herdr installs plugins with, and network access: the catalog,
-  READMEs and manifests come from GitHub.
+- `git`, which Herdr installs plugins with, and network access: the catalog
+  comes from herdr.dev, READMEs and manifests from GitHub.
 - Rust 1.89 or later, to build the plugin. If Homebrew's Cargo comes before
   rustup's on your `PATH`, run `export PATH="$HOME/.cargo/bin:$PATH"` first.
+
+Good to know: each time you open it, the marketplace downloads the whole
+catalog index, about 1.2 MB. We're happy with that for now, and V2 will bring
+a small server so you can skip that download.
 
 To update, run the install command again, then close and reopen the
 marketplace.
