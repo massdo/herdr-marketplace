@@ -12,7 +12,7 @@ use herdr_marketplace::adapters::tui::details::{
 };
 use herdr_marketplace::adapters::tui::{details_view, markdown};
 use herdr_marketplace::application::load_readme::{Readme, load_readme};
-use herdr_marketplace::application::open_details::{Shown, close_details, show_details};
+use herdr_marketplace::application::open_details::{Reveal, Shown, close_details, show_details};
 use herdr_marketplace::application::ports::{FetchError, Fetcher};
 use herdr_marketplace::domain::compat::Platform;
 use herdr_marketplace::domain::details::DetailsTarget;
@@ -499,7 +499,15 @@ fn a_preview_opens_right_of_the_sidebar_and_leaves_it_the_focus() {
         pane("w1:work", "w1:t1", None),
     ]);
 
-    let shown = show_details(&herdr, &PaneId("w1:side".into()), &target(""), false, None).unwrap();
+    let shown = show_details(
+        &herdr,
+        &PaneId("w1:side".into()),
+        &target(""),
+        Reveal::Preview,
+        None,
+    )
+    .unwrap()
+    .unwrap();
 
     assert_eq!(
         *herdr.calls.borrow(),
@@ -525,7 +533,14 @@ fn enter_opens_right_of_the_sidebar_with_the_focus() {
         pane("w1:work", "w1:t1", None),
     ]);
 
-    show_details(&herdr, &PaneId("w1:side".into()), &target(""), true, None).unwrap();
+    show_details(
+        &herdr,
+        &PaneId("w1:side".into()),
+        &target(""),
+        Reveal::Focus,
+        None,
+    )
+    .unwrap();
 
     assert_eq!(
         herdr.calls.borrow()[..2],
@@ -550,7 +565,14 @@ fn opening_b_while_a_is_shown_replaces_a_in_place() {
     };
     let b = target("alt");
 
-    show_details(&herdr, &PaneId("w1:side".into()), &b, false, Some(&a)).unwrap();
+    show_details(
+        &herdr,
+        &PaneId("w1:side".into()),
+        &b,
+        Reveal::Preview,
+        Some(&a),
+    )
+    .unwrap();
 
     assert_eq!(
         *herdr.calls.borrow(),
@@ -584,8 +606,8 @@ fn the_plugin_already_shown_keeps_its_pane_and_enter_focuses_it() {
 
     let herdr = FakePanes::new(panes.clone());
     assert_eq!(
-        show_details(&herdr, &sidebar, &target(""), false, Some(&a)).unwrap(),
-        a
+        show_details(&herdr, &sidebar, &target(""), Reveal::Preview, Some(&a)).unwrap(),
+        Some(a.clone())
     );
     assert!(
         herdr.calls.borrow().is_empty(),
@@ -594,7 +616,7 @@ fn the_plugin_already_shown_keeps_its_pane_and_enter_focuses_it() {
     );
 
     let herdr = FakePanes::new(panes);
-    show_details(&herdr, &sidebar, &target(""), true, Some(&a)).unwrap();
+    show_details(&herdr, &sidebar, &target(""), Reveal::Focus, Some(&a)).unwrap();
     assert_eq!(*herdr.calls.borrow(), ["focus w1:details-a"]);
 
     // Closed since with Esc: it opens again.
@@ -602,8 +624,53 @@ fn the_plugin_already_shown_keeps_its_pane_and_enter_focuses_it() {
         pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
         pane("w1:work", "w1:t1", None),
     ]);
-    show_details(&herdr, &sidebar, &target(""), true, Some(&a)).unwrap();
+    show_details(&herdr, &sidebar, &target(""), Reveal::Focus, Some(&a)).unwrap();
     assert_eq!(herdr.calls.borrow()[0], "open details next to w1:work");
+}
+
+#[test]
+fn a_search_moves_open_details_and_opens_none() {
+    let sidebar = PaneId("w1:side".into());
+    let herdr = FakePanes::new(vec![
+        pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
+        pane("w1:work", "w1:t1", None),
+        pane("w1:details-other-tab", "w1:t2", Some(DETAILS_TOKEN_KEY)),
+    ]);
+    assert_eq!(
+        show_details(&herdr, &sidebar, &target(""), Reveal::Follow, None).unwrap(),
+        None
+    );
+    assert!(
+        herdr.calls.borrow().is_empty(),
+        "{:?}",
+        herdr.calls.borrow()
+    );
+
+    let herdr = FakePanes::new(vec![
+        pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
+        pane("w1:work", "w1:t1", None),
+        pane("w1:details-a", "w1:t1", Some(DETAILS_TOKEN_KEY)),
+    ]);
+    let a = Shown {
+        pane_id: PaneId("w1:details-a".into()),
+        target: target(""),
+    };
+    let followed = show_details(&herdr, &sidebar, &target("alt"), Reveal::Follow, Some(&a))
+        .unwrap()
+        .unwrap();
+    assert_eq!(followed.target, target("alt"));
+    assert_eq!(
+        herdr.calls.borrow()[..3],
+        [
+            "open details next to w1:details-a",
+            "identity w1:new herdr_marketplace_details",
+            "close w1:details-a",
+        ]
+    );
+    assert!(
+        !herdr.opened.borrow()[0].focus,
+        "the sidebar keeps the focus"
+    );
 }
 
 #[test]
