@@ -1,5 +1,5 @@
 # Publishes the prebuilt binaries that scripts/fetch-or-build.sh installs.
-# Adapted from herdr-npm v0.2.0, itself adapted from herdr-sidebar 0.13.0
+# Adapted from herdr-npm v0.1.0, itself adapted from herdr-sidebar 0.13.0
 # .github/workflows/release.yml (MIT, see NOTICE). A pull request that touches
 # the release path builds the three binaries without publishing anything.
 name: release

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Use the prebuilt binary of release v<version> only when it was built from
 # this exact checkout; otherwise build from source and keep only the binary.
-# Adapted from herdr-npm v0.2.0, itself adapted from herdr-sidebar 0.13.0
+# Adapted from herdr-npm v0.1.0, itself adapted from herdr-sidebar 0.13.0
 # scripts/fetch-or-build.sh (MIT, see NOTICE).
 set -u
 
