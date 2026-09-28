@@ -62,7 +62,7 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 
 | Key | Where | Action |
 | --- | --- | --- |
-| Type | Sidebar | Search |
+| Type | Sidebar | Search; an open preview shows the first result |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Sidebar | Move, and preview the plugin beside the list |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Details | Scroll |
 | `Enter` | Sidebar | Open the selected plugin and focus it |
