@@ -40,6 +40,8 @@ BROWSER_USAGE = "\n".join([
 ])
 # herdr-sidebar's README shows a PNG next to it and links to the root README.
 SIDEBAR_SHA = "1a5d37ef84edc91e5b3d3d4e39daa32952e6ecf2"
+# This plugin's README opens on docs/demo/demo.webp, an animation.
+MARKETPLACE_SHA = "f3ead2303f9554163ea30e853869c6cc4fc19e4d"
 # Installs fetch the fixture from GitHub and build it.
 OPERATION_TIMEOUT = 180
 CLIENT_COLS, CLIENT_ROWS = 200, 50
@@ -764,12 +766,65 @@ def prove_readme():
     close_all(tab)
 
 
+def layer_frames(since):
+    """Images Herdr sent the client on a pane layer since byte `since` of
+    the client log, each with its size and the cells it covers. The pane
+    draws its own images as raw pixels; a layer sends PNG."""
+    log = CLIENT_LOG.read_bytes()[since:]
+    cells = {i: (int(c), int(r)) for i, c, r in
+             re.findall(rb"\x1b_Ga=p,i=(\d+),p=\d+,c=(\d+),r=(\d+),z=1", log)}
+    return [(int(w), int(h), cells.get(i))
+            for w, h, i in re.findall(rb"\x1b_Ga=t,t=d,f=100,s=(\d+),v=(\d+),i=(\d+)", log)]
+
+
+def prove_animation():
+    """herdr-marketplace's README opens on an animated WebP: Herdr draws its
+    frames in turn on a layer of the pane, each within the cells of the
+    picture (8 × 17 pixels a cell here), cut to the rows the pane shows, and
+    none once the picture is scrolled away."""
+    INDEX.write_text(json.dumps({
+        "schemaVersion": 1, "generatedAt": "2026-09-25T00:00:00Z",
+        "pluginCount": 1, "repositoryCount": 1,
+        "plugins": [repo("massdo", "herdr-marketplace", MARKETPLACE_SHA, 1, [
+            manifest("herdr-plugin.toml", "herdr-marketplace", "herdr-marketplace",
+                     "Search, read and install Herdr plugins from a sidebar."),
+        ])],
+    }))
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
+    details = open_details(sidebar, "marketplace", " All 1 ")
+    wait(lambda: "Real marketplace screens" in read(details),
+         "the herdr-marketplace README was not rendered")
+    since = CLIENT_LOG.stat().st_size
+    frames = wait(lambda: len(found := layer_frames(since)) >= 10 and found,
+                  "the demo did not play", 90)
+    columns, rows = next(cells for _, _, cells in frames if cells)
+    assert all(w <= columns * 8 and h <= rows * 17 for w, h, _ in frames), frames
+    print("animation_plays_ok", flush=True)
+
+    for _ in range(rows // 2 + 4):
+        keys(details, "down")
+    since = CLIENT_LOG.stat().st_size
+    cut = wait(lambda: [f for f in layer_frames(since) if f[2] and f[2][1] < rows],
+               "the demo was not cut to the rows shown", 30)
+    assert all(h <= r * 17 for _, h, (_, r) in cut), cut
+    type_text(details, END)
+    time.sleep(1)
+    since = CLIENT_LOG.stat().st_size
+    time.sleep(2)
+    assert not layer_frames(since), "the demo played once scrolled away"
+    print("animation_follows_scroll_ok", flush=True)
+    close_all(tab)
+
+
 def main():
     check_isolation()
     prove_sidebar()
     prove_details()
     prove_preview()
     prove_readme()
+    prove_animation()
     prove_install_preview()
     prove_install()
     prove_switch()
