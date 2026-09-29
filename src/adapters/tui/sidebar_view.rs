@@ -28,6 +28,8 @@ const BOX_WIDTH: usize = 8;
 pub enum Hit {
     /// This position in the list of results.
     Row(usize),
+    /// The Update button of this position.
+    Update(usize),
     Retry,
     Filter(Filter),
     /// The × that empties the search.
@@ -94,7 +96,22 @@ pub fn hit(app: &SidebarApp, width: u16, height: u16, column: u16, row: u16) -> 
         LoadState::Ready(_) => {
             let shown = line / ROW_HEIGHT;
             let position = app.offset + shown;
-            (shown < app.page && position < app.visible.len()).then_some(Hit::Row(position))
+            if shown >= app.page || position >= app.visible.len() {
+                return None;
+            }
+            // The button starts the third line of a row, inside the card.
+            let plugin = &app.rows()[app.visible[position]];
+            let start = if (width as usize) < CARD_WIDTH { 0 } else { 2 };
+            let on_button = update_button(plugin, width as usize).is_some_and(|button| {
+                line % ROW_HEIGHT == 2
+                    && !app.is_updating(&plugin.entry.source)
+                    && (start..start + button.width()).contains(&(column as usize))
+            });
+            Some(if on_button {
+                Hit::Update(position)
+            } else {
+                Hit::Row(position)
+            })
         }
         LoadState::Failed(error) => {
             let retry = failure(error, width as usize).len() - 1;
@@ -144,9 +161,9 @@ fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     }
     if let Some(notice) = &app.notice {
         lines.extend(
-            wrap(&clean(notice), width)
+            wrap(&clean(&notice.text), width)
                 .into_iter()
-                .map(|line| Line::styled(line, Style::default().fg(ERROR))),
+                .map(|line| Line::styled(line, Style::default().fg(notice.color))),
         );
     }
     lines.push(Line::styled("─".repeat(width), muted()));
@@ -282,7 +299,11 @@ fn list(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
         .enumerate()
         .skip(app.offset)
         .take(app.page)
-        .flat_map(|(position, &index)| row_lines(&rows[index], width, selected == Some(position)))
+        .flat_map(|(position, &index)| {
+            let row = &rows[index];
+            let updating = app.is_updating(&row.entry.source);
+            row_lines(row, width, selected == Some(position), updating)
+        })
         .collect()
 }
 
@@ -294,9 +315,9 @@ fn more() -> Line<'static> {
 /// A plugin as a card with a light frame, blue when it is selected. The
 /// top edge carries the name and the golden star; inside, owner/repo, then
 /// the marks and the description.
-fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
+fn row_lines(row: &Row, width: usize, selected: bool, updating: bool) -> Vec<Line<'static>> {
     if width < CARD_WIDTH {
-        let mut lines = plain_row(row, width, selected);
+        let mut lines = plain_row(row, width, selected, updating);
         lines.push(Line::default());
         return lines;
     }
@@ -332,9 +353,10 @@ fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
     )];
     let mut details = Vec::new();
     let mut used = 0;
-    if let Some(button) = update_button(row, inner) {
-        used = button.width();
-        details.push(Span::styled(button, Tone::Primary.style()));
+    if let Some(button) = update_button(row, width) {
+        let update = update_span(button, updating, inner);
+        used = update.content.width();
+        details.push(update);
     }
     for (mark, color) in marks(row) {
         if used >= inner {
@@ -380,7 +402,7 @@ fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
 
 /// Name and stars, owner/repo, marks and description on three plain lines,
 /// for a pane too narrow for cards.
-fn plain_row(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
+fn plain_row(row: &Row, width: usize, selected: bool, updating: bool) -> Vec<Line<'static>> {
     let entry = &row.entry;
     let stars = if row.in_catalog {
         format!(" ★ {}", entry.stars)
@@ -399,11 +421,8 @@ fn plain_row(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
             ellipsize_middle(&clean(&entry.source.to_string()), width),
             muted(),
         ),
-        match row.update() {
-            Some(_) => Line::from(Span::styled(
-                ellipsize(" Update ", width),
-                Tone::Primary.style(),
-            )),
+        match update_button(row, width) {
+            Some(button) => Line::from(update_span(button, updating, width)),
             None => Line::styled(
                 ellipsize(
                     &clean(entry.description.as_deref().unwrap_or_default()),
@@ -433,15 +452,30 @@ fn highlight(spans: &mut [Span<'static>]) {
     }
 }
 
-/// The button a card shows in `inner` cells when its plugin has an update:
-/// with the version when it fits.
-fn update_button(row: &Row, inner: usize) -> Option<String> {
-    let label = format!(" Update to {} ", clean(row.update()?));
-    Some(if label.width() > inner {
+/// The button that starts the third line of a row drawn `width` cells wide
+/// when its plugin has an update: in a card, with the version when it fits;
+/// on a plain line, cut to the line.
+fn update_button(row: &Row, width: usize) -> Option<String> {
+    let version = row.update()?;
+    if width < CARD_WIDTH {
+        return Some(ellipsize(" Update ", width));
+    }
+    let label = format!(" Update to {} ", clean(version));
+    Some(if label.width() > width - 4 {
         " Update ".to_string()
     } else {
         label
     })
+}
+
+/// The Update button, or "Updating…" while the update runs, in `room`
+/// cells.
+fn update_span(button: String, updating: bool, room: usize) -> Span<'static> {
+    if updating {
+        Span::styled(ellipsize("Updating…", room), Style::default().fg(WARN))
+    } else {
+        Span::styled(button, Tone::Primary.style())
+    }
 }
 
 /// The button of an update takes the place of the installed mark.

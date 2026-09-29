@@ -3,12 +3,20 @@
 mod support;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use herdr_marketplace::adapters::tui::sidebar::{Counts, Filter, Intent, LoadState, SidebarApp};
+use herdr_marketplace::adapters::tui::sidebar::{
+    Counts, Filter, Intent, LoadState, Notice, SidebarApp,
+};
 use herdr_marketplace::adapters::tui::sidebar_view;
 use herdr_marketplace::application::load_catalog::LoadedCatalog;
 use herdr_marketplace::application::load_listing::LoadedListing;
 use herdr_marketplace::application::open_details::Reveal;
 use herdr_marketplace::domain::compat::Platform;
+use herdr_marketplace::domain::details::DetailsTarget;
+use herdr_marketplace::domain::install::Plan;
+use herdr_marketplace::domain::manifest::parse_manifest;
+use herdr_marketplace::domain::operation::{
+    Confirmation, OperationKind, OperationRecord, OperationRequest, Status,
+};
 use herdr_marketplace::domain::registry::parse_registry;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -798,14 +806,238 @@ fn a_narrow_row_offers_the_update_instead_of_the_description() {
 }
 
 #[test]
-fn a_click_on_the_update_button_previews_the_plugin_as_the_card_does() {
+fn a_click_on_the_update_button_updates_without_details_or_moving_the_selection() {
     let mut app = outdated_app("1.1.0", "1.0.0");
     app.set_page(sidebar_view::page_rows(&app, 32, 15));
     app.handle_mouse(click(5, 11), 32, 15);
     match app.intents.as_slice() {
-        [Intent::Open(row, Reveal::Preview)] => {
-            assert_eq!(row.entry.source.repo, "herdr-marketplace-fixture")
-        }
+        [Intent::Update(row)] => assert_eq!(row.entry.source.repo, "herdr-marketplace-fixture"),
         other => panic!("{other:?}"),
+    }
+    assert_eq!(selected_repo(&app), "plugin", "the selection stays");
+    assert_eq!(
+        app.updating.as_ref().map(|source| source.repo.as_str()),
+        Some("herdr-marketplace-fixture")
+    );
+
+    // Beside the button, the card previews the plugin as before.
+    let mut app = outdated_app("1.1.0", "1.0.0");
+    app.set_page(sidebar_view::page_rows(&app, 32, 15));
+    for (column, row) in [(25, 11), (5, 10)] {
+        app.intents.clear();
+        app.handle_mouse(click(column, row), 32, 15);
+        match app.intents.as_slice() {
+            [Intent::Open(row, Reveal::Preview)] => {
+                assert_eq!(row.entry.source.repo, "herdr-marketplace-fixture")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+/// Two plugins installed at `SHA_B` in 1.0.0, the catalogue announcing
+/// 1.1.0 for both: their buttons are on lines 7 and 11 of a 32 × 15 pane.
+fn two_outdated() -> SidebarApp {
+    let outdated = |name: &str, stars| {
+        let mut plugin = manifest("herdr-plugin.toml", &format!("acme.{name}"));
+        plugin["version"] = json!("1.1.0");
+        repo("acme", name, stars, vec![plugin])
+    };
+    let mut app = ready(
+        vec![outdated("first", 10), outdated("second", 5)],
+        vec![
+            github_plugin("acme.first", "acme", "first", None, SHA_B),
+            github_plugin("acme.second", "acme", "second", None, SHA_B),
+        ],
+    );
+    app.set_page(sidebar_view::page_rows(&app, 32, 15));
+    app
+}
+
+#[test]
+fn one_update_at_a_time_and_a_running_one_shows_on_its_card() {
+    use herdr_marketplace::adapters::tui::sidebar_view::Hit;
+    use herdr_marketplace::adapters::tui::style::{ERROR, WARN};
+    let mut app = two_outdated();
+    app.handle_mouse(click(5, 7), 32, 15);
+    assert!(matches!(app.intents.as_slice(), [Intent::Update(_)]));
+    app.intents.clear();
+    app.handle_mouse(click(5, 11), 32, 15);
+    assert!(app.intents.is_empty(), "{:?}", app.intents);
+    let notice = app.notice.clone().expect("a notice");
+    assert_eq!(
+        notice.text,
+        "Another marketplace operation is running: update refused"
+    );
+    assert_eq!(notice.color, ERROR);
+
+    // The notice takes two lines above the list: the cards move down.
+    let (buffer, text) = draw(&mut app, 32, 20);
+    assert!(text[9].starts_with("│ Updating… · acme"), "{text:#?}");
+    assert_eq!(buffer[(2, 9)].fg, WARN);
+    assert!(text[13].starts_with("│  Update to 1.1.0 "), "{text:#?}");
+
+    app.notice = None;
+    let second = app.rows()[app.visible[1]].entry.source.clone();
+    app.set_running_updates(std::collections::HashSet::from([second]));
+    let (_, text) = draw(&mut app, 32, 15);
+    assert!(text[11].starts_with("│ Updating… · "), "{text:#?}");
+    assert_eq!(
+        sidebar_view::hit(&app, 32, 15, 5, 11),
+        Some(Hit::Row(1)),
+        "Updating… is no button"
+    );
+}
+
+/// The result of an update of the first plugin to 1.1.0, with `status`.
+fn update_result(app: &SidebarApp, id: &str, status: Status) -> OperationRecord {
+    let row = &app.rows()[0];
+    let manifest = parse_manifest(&format!(
+        "id = \"{id}\"\nname = \"first\"\nversion = \"1.1.0\"\nmin_herdr_version = \"0.9.1\"\n"
+    ))
+    .unwrap();
+    let mut record = OperationRecord::running(&OperationRequest {
+        id: "op".into(),
+        kind: OperationKind::Update,
+        source: row.entry.source.clone(),
+        commit: SHA_A.into(),
+        args: vec![],
+        confirmation: Some(Confirmation::Install {
+            target: DetailsTarget::from_row(row),
+            manifest: Box::new(manifest),
+            plan: Plan::Switch { from: SHA_B.into() },
+        }),
+    });
+    record.status = status;
+    record
+}
+
+#[test]
+fn the_end_of_an_update_is_told_above_the_list() {
+    use herdr_marketplace::adapters::tui::style::{ERROR, OK, WARN};
+    let notice = |status, exit_code: Option<i32>, output: &str| {
+        let mut app = two_outdated();
+        let mut record = update_result(&app, "acme.first", status);
+        record.exit_code = exit_code;
+        record.output = output.into();
+        app.update_finished(&record);
+        app.notice.map(|notice| (notice.text, notice.color))
+    };
+    assert_eq!(
+        notice(Status::Succeeded, Some(0), ""),
+        Some((
+            "acme.first name updated to 1.1.0. Reopen its panes to use it.".into(),
+            OK
+        ))
+    );
+    assert_eq!(
+        notice(Status::Failed, Some(1), "error: build failed"),
+        Some((
+            "Update of acme.first name failed (code 1). Open it to see Herdr's output.".into(),
+            ERROR
+        ))
+    );
+    assert_eq!(
+        notice(Status::Failed, None, "").map(|(text, _)| text),
+        Some(
+            "Update of acme.first name failed (no exit code). Open it to see Herdr's output."
+                .into()
+        )
+    );
+    assert_eq!(
+        notice(Status::Unconfirmed, Some(0), ""),
+        Some((
+            "Update of acme.first name: result not confirmed. Open it to check.".into(),
+            WARN
+        ))
+    );
+    assert_eq!(
+        notice(
+            Status::Refused,
+            None,
+            "\ninstallation changed since the preview\nsecond line"
+        ),
+        Some((
+            "Update of acme.first name refused: installation changed since the preview".into(),
+            ERROR
+        ))
+    );
+    assert_eq!(notice(Status::Running, None, ""), None);
+
+    let mut app = two_outdated();
+    app.update_finished(&update_result(&app, "herdr-marketplace", Status::Succeeded));
+    assert_eq!(
+        app.notice.map(|notice| notice.text).as_deref(),
+        Some("Marketplace updated to 1.1.0. Close and reopen it to use it.")
+    );
+}
+
+#[test]
+fn a_launched_update_holds_until_the_registry_is_read_after_its_end() {
+    let mut app = two_outdated();
+    let first = app.rows()[0].entry.source.clone();
+    let registry = || {
+        parse_registry(&registry(vec![
+            github_plugin("acme.first", "acme", "first", None, SHA_B),
+            github_plugin("acme.second", "acme", "second", None, SHA_B),
+        ]))
+    };
+    app.handle_mouse(click(5, 7), 32, 15);
+    app.registry_refreshed(registry(), Platform::Macos);
+    assert!(app.is_updating(&first), "still running");
+    app.update_finished(&update_result(&app, "acme.first", Status::Failed));
+    assert!(app.is_updating(&first), "until the registry is read");
+    app.registry_refreshed(registry(), Platform::Macos);
+    assert_eq!(app.updating, None);
+    let (_, text) = draw(&mut app, 32, 15);
+    assert!(
+        text.iter()
+            .any(|line| line.starts_with("│  Update to 1.1.0 ")),
+        "the button is back, to try again: {text:#?}"
+    );
+}
+
+#[test]
+fn an_update_refused_or_not_started_says_why_in_red() {
+    use herdr_marketplace::adapters::tui::style::ERROR;
+    let mut app = two_outdated();
+    app.handle_mouse(click(5, 7), 32, 15);
+    app.update_refused("network error: timed out");
+    assert_eq!(app.updating, None);
+    let notice = app.notice.clone().unwrap();
+    assert_eq!(
+        notice.text,
+        "Update of acme.first name refused: network error: timed out"
+    );
+    assert_eq!(notice.color, ERROR);
+
+    // The notice moves the list down: a click on the button, where it is
+    // now, tries again.
+    let (_, text) = draw(&mut app, 32, 15);
+    let button = text
+        .iter()
+        .position(|line| line.starts_with("│  Update to 1.1.0 "))
+        .unwrap_or_else(|| panic!("{text:#?}"));
+    app.handle_mouse(click(5, button as u16), 32, 15);
+    assert!(app.updating.is_some());
+    app.update_not_started("Could not start the update: no binary".into());
+    assert_eq!(app.updating, None);
+    let notice = app.notice.clone().unwrap();
+    assert_eq!(notice.text, "Could not start the update: no binary");
+    assert_eq!(notice.color, ERROR);
+}
+
+#[test]
+fn a_notice_is_drawn_in_its_color() {
+    use herdr_marketplace::adapters::tui::style::{ERROR, OK};
+    let mut app = loaded_app();
+    for color in [ERROR, OK] {
+        app.notice = Some(Notice {
+            text: "Details not opened: no pane".into(),
+            color,
+        });
+        let (buffer, text) = draw(&mut app, 40, 19);
+        assert!(text[4].starts_with("Details not opened"), "{text:#?}");
+        assert_eq!(buffer[(0, 4)].fg, color);
     }
 }

@@ -180,6 +180,16 @@ def click_text(pane, text):
     CLIENT.click(*screen_cell(pane, row, column + len(text) // 2))
 
 
+def click_focused(pane, text):
+    """Clicks `text` on `pane`: a pane without the focus takes the first
+    click only as the focus, so a second click follows."""
+    had_focus = focused() == pane
+    click_text(pane, text)
+    if not had_focus:
+        wait(lambda: focused() == pane, "a click did not focus the pane")
+        click_text(pane, text)
+
+
 def drag_text(pane, first, last):
     """Drags through the attached client from the first cell of `first` to
     the last cell of `last`, where `pane` shows them, as a user selects."""
@@ -742,6 +752,56 @@ def prove_update_from_details():
     print("update_from_details_ok", flush=True)
 
 
+def flat(pane):
+    """The text of `pane` on one line: a notice wraps anywhere."""
+    return " ".join(read(pane).split())
+
+
+def prove_update_from_sidebar():
+    """A click on the card's Update button updates the fixture from A to B,
+    opening nothing; a failed build keeps B and brings the button back."""
+    fixture_at_a()
+    write_catalog(SHA_B)
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
+    type_text(sidebar, "fixture")
+    wait(lambda: " All 2 " in (text := read(sidebar)) and "Update to 1.1.0" in text,
+         "the card did not offer the update")
+    click_focused(sidebar, "Update to 1.1.0")
+
+    def running():
+        assert not details_panes(tab), "the update opened a details pane"
+        return "Updating…" in read(sidebar)
+
+    wait(running, "the card did not show the running update")
+    wait(lambda: (*FIXTURE, "", SHA_B) in registry(), "the update did not reach the registry",
+         OPERATION_TIMEOUT)
+    marker = Path(fixture_plugin()["plugin_root"]) / "build-marker.txt"
+    assert marker.read_text().strip() == "1.1.0", marker.read_text()
+    wait(lambda: "updated to 1.1.0" in (text := flat(sidebar)) and "Reopen its panes" in text,
+         "the sidebar did not tell the update succeeded")
+    wait(lambda: "installed · Test fixture." in read(sidebar), "the card did not return to 'installed'")
+    assert not details_panes(tab), "the update opened a details pane"
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+
+    write_catalog(SHA_C)
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    type_text(sidebar, "fixture")
+    wait(lambda: " All 2 " in (text := read(sidebar)) and "Update to 1.2.0" in text,
+         "the card did not offer the update")
+    click_focused(sidebar, "Update to 1.2.0")
+    wait(lambda: "failed" in flat(sidebar), "the failed build was not told", OPERATION_TIMEOUT)
+    assert (*FIXTURE, "", SHA_B) in registry(), registry()
+    wait(lambda: "Update to 1.2.0" in read(sidebar), "the button did not come back")
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+    fixture_at_a()
+    print("update_from_sidebar_ok", flush=True)
+
+
 def remove(details):
     keys(details, "r")
     shown = wait(lambda: "Enter: confirm" in (text := read(details)) and text,
@@ -891,6 +951,7 @@ def main():
     prove_details_closed_during_install()
     prove_update_shown()
     prove_update_from_details()
+    prove_update_from_sidebar()
     prove_uninstall()
     prove_full_journey()
     print("journey_ok", flush=True)

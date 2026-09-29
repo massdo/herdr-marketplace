@@ -55,8 +55,9 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 - **Install with one key.** `i` previews the source, the commit and the
   commands the plugin declares; `Enter` confirms, `Esc` cancels. The same key
   moves an installed plugin to the catalog's commit, and `r` removes it.
-- **See updates.** When the catalog has a newer version of an installed
-  plugin, its card shows **Update to x.y.z**.
+- **Update in one click.** When the catalog has a newer version of an
+  installed plugin, its card shows **Update to x.y.z**: one click updates
+  it, without a preview.
 - **Keyboard or mouse.** Click, scroll and drag to copy text, or never leave
   the keyboard.
 
@@ -68,6 +69,7 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Sidebar | Move, and preview the plugin beside the list |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Details | Scroll |
 | Click a plugin | Sidebar | Preview it, the sidebar keeps the focus |
+| Click **Update** on a card | Sidebar | Update the plugin, without a preview |
 | `Enter` | Sidebar | Open the selected plugin and focus it |
 | `Tab` | Sidebar | Switch between **All** and **Installed** |
 | `i` | Details | Install, or switch to the catalog's commit |
@@ -100,7 +102,8 @@ compressed, then again only when it changes. We're happy with that for now,
 and V2 will bring a small server so you can skip that download.
 
 To update, run the install command again, then close and reopen the
-marketplace.
+marketplace. A marketplace installed from GitHub also announces its own
+updates on its card: update it there, then close and reopen it.
 
 ## License
 
