@@ -51,7 +51,7 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
   topic, author or description. Typos are forgiven: `anotate` finds Annotate.
 - **Read before you install.** Every README is drawn like on GitHub, with
   headings, code, tables, alerts, images and links, at the exact commit you
-  would install.
+  would install. Animated GIF, WebP and PNG images play.
 - **Install with one key.** `i` previews the source, the commit and the
   commands the plugin declares; `Enter` confirms, `Esc` cancels. The same key
   moves an installed plugin to the catalog's commit, and `r` removes it.
