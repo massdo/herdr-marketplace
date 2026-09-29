@@ -367,6 +367,8 @@ pub struct Pictures {
     states: HashMap<String, PictureState>,
     animations: HashMap<String, AnimationState>,
     blocks: HashMap<(String, u16, u16), Vec<Line<'static>>>,
+    /// Half-block images of the current layout: url and size.
+    drawn: HashSet<(String, u16, u16)>,
     sent: HashSet<u32>,
     /// Kitty images of the current layout: id, url and size.
     wanted: HashMap<u32, (String, u16, u16)>,
@@ -419,15 +421,13 @@ impl Pictures {
 
     /// The file of animated picture `url` and the bytes its frames may take,
     /// when they must decode for cells of `fit` pixels: once per size of
-    /// the cells. `None` when they did, or when the animations of the README
-    /// took the room.
+    /// the cells, and one decoding at a time, so that resizing the pane does
+    /// not pile them up; the last size decodes once the one under way ends.
+    /// `None` otherwise, or when the animations of the README took the room.
     pub fn frames_to_decode(&mut self, url: &str, fit: (u32, u32)) -> Option<(Arc<[u8]>, usize)> {
         match self.animations.get(url) {
-            Some(AnimationState::Failed(_)) => return None,
-            Some(
-                AnimationState::Decoding { fit: done, .. }
-                | AnimationState::Ready { fit: done, .. },
-            ) if *done == fit => return None,
+            Some(AnimationState::Failed(_) | AnimationState::Decoding { .. }) => return None,
+            Some(AnimationState::Ready { fit: done, .. }) if *done == fit => return None,
             _ => {}
         }
         let Some(PictureState::Ready(picture)) = self.states.get(url) else {
@@ -491,8 +491,11 @@ impl Pictures {
     }
 
     /// A new layout starts: the images it does not draw again are freed.
+    /// Half blocks keep the sizes of the layout before, for this one.
     pub fn begin_layout(&mut self) {
         self.wanted.clear();
+        let drawn = std::mem::take(&mut self.drawn);
+        self.blocks.retain(|key, _| drawn.contains(key));
     }
 
     /// Lines drawing `url` within `room` columns; `None` while it loads,
@@ -521,6 +524,7 @@ impl Pictures {
                     let lines = block_lines(&picture.rgba, columns, rows);
                     self.blocks.insert(key.clone(), lines);
                 }
+                self.drawn.insert(key.clone());
                 self.blocks.get(&key).cloned()
             }
         }
@@ -854,3 +858,34 @@ static DIACRITICS: [char; 297] = [
     '\u{1D243}',
     '\u{1D244}',
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::images::decode;
+
+    #[test]
+    fn half_blocks_keep_only_the_sizes_of_the_last_layouts() {
+        let mut png = Vec::new();
+        RgbaImage::from_pixel(800, 80, Rgba([200, 30, 30, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let url = "https://example.com/logo.png";
+        let mut pictures = Pictures::new(Graphics::Blocks);
+        pictures.loaded(url, Ok(Arc::new(decode(&png).unwrap())));
+        // 100 columns wide at most: each room draws another size.
+        for room in [40, 30, 20, 10] {
+            pictures.begin_layout();
+            assert_eq!(pictures.lines(url, None, room).unwrap()[0].width(), room);
+        }
+        assert_eq!(
+            pictures.blocks.len(),
+            2,
+            "a pane resized again and again keeps two sizes, not every one"
+        );
+        pictures.begin_layout();
+        pictures.lines(url, None, 10).unwrap();
+        pictures.begin_layout();
+        assert_eq!(pictures.blocks.len(), 1);
+    }
+}

@@ -265,6 +265,10 @@ fn frames_decode_once_for_each_size_of_their_cells() {
     assert_eq!(&*file, &bytes[..], "the file of the picture");
     assert_eq!(budget, FRAMES_BUDGET);
     assert!(pictures.frames_to_decode(DEMO, (16, 16)).is_none(), "once");
+    assert!(
+        pictures.frames_to_decode(DEMO, (24, 24)).is_none(),
+        "a pane resized while they decode waits for them"
+    );
     let small = Arc::new(frames(&file, (16, 16)).unwrap());
     pictures.frames_decoded(DEMO, (16, 16), Ok(small.clone()));
     assert!(pictures.animation(DEMO, (16, 16)).is_some());
