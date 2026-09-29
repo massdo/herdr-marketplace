@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -5,7 +6,7 @@ use ratatui::text::Line;
 
 use super::details_view;
 use super::graphics::{Graphics, Pictures};
-use super::markdown::{self, LinkArea};
+use super::markdown::{self, LinkArea, Place};
 use super::preview::preview_lines;
 use super::selection::{Flow, Selection};
 use super::style::Tone;
@@ -128,7 +129,12 @@ pub struct DetailsApp {
     pub links: Vec<LinkArea>,
     /// First line of each README heading, by anchor.
     pub anchors: Vec<(String, usize)>,
+    /// Where the README draws its images.
+    pub places: Vec<Place>,
     pub pictures: Pictures,
+    /// Animated images whose frames Herdr draws over their cells, which stay
+    /// empty: their first frame would show through transparent pixels.
+    pub covered: HashSet<String>,
     pub width: usize,
     pub scroll: usize,
     /// Body lines the pane shows.
@@ -164,7 +170,9 @@ impl DetailsApp {
             flows: Vec::new(),
             links: Vec::new(),
             anchors: Vec::new(),
+            places: Vec::new(),
             pictures: Pictures::default(),
+            covered: HashSet::new(),
             width: 80,
             scroll: 0,
             page: 1,
@@ -578,6 +586,7 @@ impl DetailsApp {
         self.flows = rendered.flows;
         self.links = rendered.links;
         self.anchors = rendered.anchors;
+        self.places = rendered.places;
         let wanted: Vec<String> = rendered
             .images
             .into_iter()
