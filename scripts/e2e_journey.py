@@ -208,9 +208,9 @@ def others():
     }
 
 
-def manifest(path, plugin_id, name, description, min_herdr="0.9.1"):
+def manifest(path, plugin_id, name, description, min_herdr="0.9.1", version="1.0.0"):
     return {
-        "path": path, "id": plugin_id, "name": name, "version": "1.0.0",
+        "path": path, "id": plugin_id, "name": name, "version": version,
         "description": description, "platforms": ["linux", "macos"],
         "minHerdrVersion": min_herdr,
     }
@@ -225,12 +225,14 @@ def repo(owner, name, sha, stars, manifests, topics=()):
 
 
 def write_catalog(fixture_sha):
-    """Frozen test catalogue: the fixture at `fixture_sha`, terminal-browser,
-    one incompatible plugin and fillers long enough to scroll."""
+    """Frozen test catalogue: the fixture at `fixture_sha`, with the version
+    its root manifest declares there, terminal-browser, one incompatible
+    plugin and fillers long enough to scroll."""
+    version = {SHA_A: "1.0.0", SHA_B: "1.1.0", SHA_C: "1.2.0"}[fixture_sha]
     repos = [
         repo(*FIXTURE, fixture_sha, 50, [
             manifest("herdr-plugin.toml", "herdr-marketplace-fixture",
-                     "herdr-marketplace fixture", "Test fixture."),
+                     "herdr-marketplace fixture", "Test fixture.", version=version),
             manifest("alt/herdr-plugin.toml", "herdr-marketplace-fixture",
                      "herdr-marketplace fixture (alt)", "Second source, same id."),
         ]),
@@ -683,6 +685,40 @@ def prove_details_closed_during_install():
     close_all(tab)
 
 
+def fixture_at_a():
+    """The fixture installed at A, through Herdr's command line if needed."""
+    if (*FIXTURE, "", SHA_A) not in registry():
+        herdr("plugin", "install", "/".join(FIXTURE), "--ref", SHA_A, "--yes")
+    assert (*FIXTURE, "", SHA_A) in registry(), registry()
+
+
+def prove_update_shown():
+    """A newer version in the catalogue: the card of the installed fixture
+    offers it, the card of alt/, not installed, does not."""
+    fixture_at_a()
+    write_catalog(SHA_B)
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    type_text(sidebar, "fixture")
+    shown = wait(lambda: " All 2 " in (text := read(sidebar)) and "Update to 1.1.0" in text and text,
+                 "the card did not offer the update")
+    assert "massdo/herdr-…-fixture/alt" in shown, shown
+    assert shown.count("Update to 1.1.0") == 1, shown
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+
+    write_catalog(SHA_A)
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    type_text(sidebar, "fixture")
+    shown = wait(lambda: " All 2 " in (text := read(sidebar)) and text, "search fixture did not settle")
+    assert "Update to" not in shown, shown
+    assert "installed · Test fixture." in shown, shown
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+    print("update_shown_ok", flush=True)
+
+
 def remove(details):
     keys(details, "r")
     shown = wait(lambda: "Enter: confirm" in (text := read(details)) and text,
@@ -830,6 +866,7 @@ def main():
     prove_switch()
     prove_failed_build()
     prove_details_closed_during_install()
+    prove_update_shown()
     prove_uninstall()
     prove_full_journey()
     print("journey_ok", flush=True)

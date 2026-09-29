@@ -12,6 +12,7 @@ use herdr_marketplace::domain::compat::Platform;
 use herdr_marketplace::domain::registry::parse_registry;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use serde_json::json;
 use support::*;
 
@@ -701,4 +702,110 @@ fn all_status_marks_fit_inside_a_narrow_card() {
         "the final mark is visibly truncated: {rows:#?}"
     );
     assert!(marks.ends_with('│'), "{rows:#?}");
+}
+
+/// A plugin, then the fixture: installed at `installed` from `SHA_B` while
+/// the catalogue announces `version` at `SHA_A`.
+fn outdated_app(version: &str, installed: &str) -> SidebarApp {
+    let mut fixture = manifest("herdr-plugin.toml", "herdr-marketplace-fixture");
+    fixture["version"] = json!(version);
+    let mut plugin = github_plugin(
+        "herdr-marketplace-fixture",
+        "massdo",
+        "herdr-marketplace-fixture",
+        None,
+        SHA_B,
+    );
+    plugin["version"] = json!(installed);
+    ready(
+        vec![
+            repo(
+                "acme",
+                "plugin",
+                10,
+                vec![manifest("herdr-plugin.toml", "acme.plugin")],
+            ),
+            repo("massdo", "herdr-marketplace-fixture", 5, vec![fixture]),
+        ],
+        vec![plugin],
+    )
+}
+
+/// `app` drawn in a `width` × `height` pane, its page set first as the
+/// sidebar loop does, and the text of each line.
+fn draw(app: &mut SidebarApp, width: u16, height: u16) -> (Buffer, Vec<String>) {
+    app.set_page(sidebar_view::page_rows(app, width, height));
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    terminal
+        .draw(|frame| sidebar_view::render(frame, app))
+        .unwrap();
+    let buffer = terminal.backend().buffer().clone();
+    let text = buffer
+        .content()
+        .chunks(width as usize)
+        .map(|line| line.iter().map(|cell| cell.symbol()).collect())
+        .collect();
+    (buffer, text)
+}
+
+#[test]
+fn an_outdated_card_offers_its_update_instead_of_installed() {
+    use herdr_marketplace::adapters::tui::style::ACCENT;
+    let mut app = outdated_app("1.1.0", "1.0.0");
+    // 32 × 15: search box, filters and separator, then the cards; the
+    // fixture's is the second, lines 9 to 12.
+    let (buffer, text) = draw(&mut app, 32, 15);
+    assert!(text[10].starts_with("│ massdo/herdr"), "{text:#?}");
+    assert!(
+        text[11].starts_with("│  Update to 1.1.0  · herdr"),
+        "the description follows the button: {text:#?}"
+    );
+    assert!((2..19).all(|column| buffer[(column, 11)].bg == ACCENT));
+    assert_ne!(buffer[(19, 11)].bg, ACCENT, "{text:#?}");
+    assert!(!text[9..13].join("\n").contains("installed"), "{text:#?}");
+
+    let mut app = outdated_app("1.0.0-beta.1234567890", "0.9.0");
+    let (buffer, text) = draw(&mut app, 32, 15);
+    assert!(
+        text[11].starts_with("│  Update  · herdr"),
+        "a version too long for the card: {text:#?}"
+    );
+    assert!((2..10).all(|column| buffer[(column, 11)].bg == ACCENT));
+}
+
+#[test]
+fn a_selected_card_keeps_the_colors_of_its_update_button() {
+    use herdr_marketplace::adapters::tui::style::{ACCENT, SELECTION_BG};
+    let mut app = outdated_app("1.1.0", "1.0.0");
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(selected_repo(&app), "herdr-marketplace-fixture");
+    let (buffer, text) = draw(&mut app, 32, 15);
+    assert!(text[11].starts_with("│  Update to 1.1.0 "), "{text:#?}");
+    assert!((2..19).all(|column| buffer[(column, 11)].bg == ACCENT));
+    assert_eq!(buffer[(1, 11)].bg, SELECTION_BG);
+    assert!((19..31).all(|column| buffer[(column, 11)].bg == SELECTION_BG));
+}
+
+#[test]
+fn a_narrow_row_offers_the_update_instead_of_the_description() {
+    use herdr_marketplace::adapters::tui::style::ACCENT;
+    let mut app = outdated_app("1.1.0", "1.0.0");
+    // 14 columns: plain lines, the fixture's from line 9.
+    let (buffer, text) = draw(&mut app, 14, 15);
+    assert!(text[10].starts_with("massdo/"), "{text:#?}");
+    assert!(text[11].starts_with(" Update "), "{text:#?}");
+    assert!((0..8).all(|column| buffer[(column, 11)].bg == ACCENT));
+}
+
+#[test]
+fn a_click_on_the_update_button_previews_the_plugin_as_the_card_does() {
+    let mut app = outdated_app("1.1.0", "1.0.0");
+    app.set_page(sidebar_view::page_rows(&app, 32, 15));
+    app.handle_mouse(click(5, 11), 32, 15);
+    match app.intents.as_slice() {
+        [Intent::Open(row, Reveal::Preview)] => {
+            assert_eq!(row.entry.source.repo, "herdr-marketplace-fixture")
+        }
+        other => panic!("{other:?}"),
+    }
 }

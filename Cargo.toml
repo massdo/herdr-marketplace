@@ -26,6 +26,7 @@ percent-encoding = "2"
 pulldown-cmark = { version = "0.13", default-features = false }
 ratatui = "0.30"
 resvg = { version = "0.48", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 syntect = { version = "5.3", default-features = false, features = ["default-syntaxes", "default-themes", "regex-fancy"] }

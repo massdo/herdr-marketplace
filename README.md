@@ -55,6 +55,8 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 - **Install with one key.** `i` previews the source, the commit and the
   commands the plugin declares; `Enter` confirms, `Esc` cancels. The same key
   moves an installed plugin to the catalog's commit, and `r` removes it.
+- **See updates.** When the catalog has a newer version of an installed
+  plugin, its card shows **Update to x.y.z**.
 - **Keyboard or mouse.** Click, scroll and drag to copy text, or never leave
   the keyboard.
 

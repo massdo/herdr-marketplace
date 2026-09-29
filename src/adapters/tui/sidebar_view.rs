@@ -332,6 +332,10 @@ fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
     )];
     let mut details = Vec::new();
     let mut used = 0;
+    if let Some(button) = update_button(row, inner) {
+        used = button.width();
+        details.push(Span::styled(button, Tone::Primary.style()));
+    }
     for (mark, color) in marks(row) {
         if used >= inner {
             break;
@@ -395,13 +399,19 @@ fn plain_row(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
             ellipsize_middle(&clean(&entry.source.to_string()), width),
             muted(),
         ),
-        Line::styled(
-            ellipsize(
-                &clean(entry.description.as_deref().unwrap_or_default()),
-                width,
+        match row.update() {
+            Some(_) => Line::from(Span::styled(
+                ellipsize(" Update ", width),
+                Tone::Primary.style(),
+            )),
+            None => Line::styled(
+                ellipsize(
+                    &clean(entry.description.as_deref().unwrap_or_default()),
+                    width,
+                ),
+                muted(),
             ),
-            muted(),
-        ),
+        },
     ];
     if selected {
         for line in &mut lines {
@@ -411,9 +421,10 @@ fn plain_row(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
     lines
 }
 
-/// The selection's background, text kept readable on it.
+/// The selection's background, text kept readable on it. A span with a
+/// background of its own, a button, keeps its colors.
 fn highlight(spans: &mut [Span<'static>]) {
-    for span in spans {
+    for span in spans.iter_mut().filter(|span| span.style.bg.is_none()) {
         let fg = match span.style.fg {
             None | Some(MUTED) => SELECTION_FG,
             Some(color) => color,
@@ -422,9 +433,21 @@ fn highlight(spans: &mut [Span<'static>]) {
     }
 }
 
+/// The button a card shows in `inner` cells when its plugin has an update:
+/// with the version when it fits.
+fn update_button(row: &Row, inner: usize) -> Option<String> {
+    let label = format!(" Update to {} ", clean(row.update()?));
+    Some(if label.width() > inner {
+        " Update ".to_string()
+    } else {
+        label
+    })
+}
+
+/// The button of an update takes the place of the installed mark.
 fn marks(row: &Row) -> Vec<(&'static str, ratatui::style::Color)> {
     let mut marks = Vec::new();
-    if row.installed.is_some() {
+    if row.installed.is_some() && row.update().is_none() {
         marks.push(("installed", OK));
     }
     if !row.compatible {

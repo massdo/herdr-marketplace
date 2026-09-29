@@ -701,6 +701,7 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "resvg",
+ "semver",
  "serde",
  "serde_json",
  "syntect",
