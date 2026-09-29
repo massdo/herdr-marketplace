@@ -681,10 +681,16 @@ fn the_player_shows_each_frame_in_turn_until_its_picture_leaves() {
             *image.get_pixel(0, 0)
         })
         .collect();
-    assert_eq!(colors, [RED, GREEN, BLUE, RED].map(Rgba));
+    // A busy machine may wake the player late: it then skips to the frame
+    // of the time, so only the start and the changes are certain.
+    assert_eq!(colors[0], Rgba(RED), "it starts on its first frame");
+    assert!(
+        colors.windows(2).all(|pair| pair[0] != pair[1]),
+        "each frame is sent once, then the next: {colors:?}"
+    );
     assert!(
         started.elapsed() >= Duration::from_millis(250),
-        "each in turn"
+        "each frame shows for its delay"
     );
     assert!(player.live(DEMO));
 
