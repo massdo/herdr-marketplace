@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod details;
 pub mod details_view;
 pub mod focus;
@@ -32,11 +33,11 @@ use crate::adapters::fetch::HttpFetcher;
 use crate::adapters::herdr_cli::HerdrCommand;
 use crate::adapters::herdr_socket::HerdrSocket;
 use crate::adapters::image_fetch::ImageFetcher;
-use crate::adapters::images::{Picture, load_in_background};
+use crate::adapters::images::{Animation, Picture, frames_within, load_in_background};
 use crate::adapters::operations::{FsOperations, spawn_operation};
 use crate::application::load_listing::{LoadedListing, load_listing, read_registry};
 use crate::application::load_readme::{Readme, load_readme};
-use crate::application::open_details::{close_details, open_details};
+use crate::application::open_details::{Reveal, Shown, close_details, show_details};
 use crate::application::ports::{HerdrCli, HerdrPort, Operations};
 use crate::application::prepare_install::{Prepared, prepare_install};
 use crate::application::prepare_removal::prepare_removal;
@@ -52,9 +53,10 @@ use crate::domain::registry::InstalledPlugin;
 use crate::domain::source::PluginSource;
 use crate::domain::uninstall::RemovalPlan;
 
+use self::animation::Player;
 use self::details::{DetailsApp, DetailsIntent, InstalledView};
 use self::focus::FocusClicks;
-use self::graphics::Probe;
+use self::graphics::{Graphics, Probe};
 use self::sidebar::{Intent, SidebarApp};
 
 type Screen = Terminal<CrosstermBackend<io::Stdout>>;
@@ -74,9 +76,16 @@ enum DetailsAnswer {
     Removal(u64, Box<Result<RemovalPlan, String>>),
     Operation(Box<OperationRecord>),
     Picture(String, Result<Arc<Picture>, String>),
+    /// Frames of an animated image, made for cells of this many pixels.
+    Frames(String, (u32, u32), Result<Arc<Animation>, String>),
 }
 
 const POLL: Duration = Duration::from_millis(100);
+/// How long the selection rests before the details follow it: holding an
+/// arrow opens no pane for the plugins it passes, and typing a word shows
+/// only the plugin it finds.
+const PREVIEW_DELAY: Duration = Duration::from_millis(200);
+const SEARCH_DELAY: Duration = Duration::from_millis(500);
 /// Command that opens an address in the browser.
 pub const OPEN_ENV: &str = "HERDR_MARKETPLACE_OPEN";
 const OPERATION_CHECK: Duration = Duration::from_secs(1);
@@ -115,6 +124,9 @@ fn sidebar_loop(
     let mut seen_finish = operations.latest_finish();
     let mut last_check = Instant::now();
     let mut focus = FocusClicks::default();
+    let mut shown = None::<Shown>;
+    // The plugin the details will show once the selection rests, and when.
+    let mut pending = None::<(DetailsTarget, Reveal, Instant)>;
     loop {
         // An operation that ended since the last look: read the registry again.
         if last_check.elapsed() >= OPERATION_CHECK {
@@ -132,18 +144,28 @@ fn sidebar_loop(
         for intent in std::mem::take(&mut app.intents) {
             match intent {
                 Intent::Load => spawn_load(sender.clone()),
-                Intent::Open(row) => {
-                    let opened = match &process.own_pane_id {
-                        Some(sidebar) => {
-                            open_details(herdr, sidebar, &DetailsTarget::from_row(&row)).map(drop)
-                        }
-                        None => Err(AppError::OriginMissing),
+                Intent::Open(row, reveal) => {
+                    pending = None;
+                    let target = DetailsTarget::from_row(&row);
+                    show(herdr, process, app, &mut shown, &target, reveal);
+                }
+                Intent::Preview(row) => {
+                    let due = Instant::now() + PREVIEW_DELAY;
+                    pending = Some((DetailsTarget::from_row(&row), Reveal::Preview, due));
+                }
+                Intent::Follow(row) => {
+                    // The arrows asked for details: the search does not cancel them.
+                    let reveal = match pending {
+                        Some((_, Reveal::Preview, _)) => Reveal::Preview,
+                        _ => Reveal::Follow,
                     };
-                    app.notice = opened
-                        .err()
-                        .map(|error| format!("Details not opened: {error}"));
+                    let due = Instant::now() + SEARCH_DELAY;
+                    pending = Some((DetailsTarget::from_row(&row), reveal, due));
                 }
             }
+        }
+        if let Some((target, reveal, _)) = pending.take_if(|(_, _, due)| Instant::now() >= *due) {
+            show(herdr, process, app, &mut shown, &target, reveal);
         }
         while let Ok(answer) = receiver.try_recv() {
             match answer {
@@ -156,7 +178,10 @@ fn sidebar_loop(
         let size = terminal.size()?;
         app.set_page(sidebar_view::page_rows(app, size.width, size.height));
         terminal.draw(|frame| sidebar_view::render(frame, app))?;
-        match next_input()? {
+        let wait = pending.as_ref().map_or(POLL, |(_, _, due)| {
+            due.saturating_duration_since(Instant::now()).min(POLL)
+        });
+        match next_input(wait)? {
             Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),
             Some((Input::Mouse(mouse), at)) if !focus.swallows(&mouse, at) => {
                 app.handle_mouse(mouse, size.width, size.height)
@@ -168,6 +193,29 @@ fn sidebar_loop(
             Some((Input::FocusLost, _)) => app.focus(false),
             _ => {}
         }
+    }
+}
+
+/// The details of `target` beside the sidebar; the notice says why not.
+fn show(
+    herdr: &HerdrSocket,
+    process: &ProcessEnv,
+    app: &mut SidebarApp,
+    shown: &mut Option<Shown>,
+    target: &DetailsTarget,
+    reveal: Reveal,
+) {
+    let result = match &process.own_pane_id {
+        Some(sidebar) => show_details(herdr, sidebar, target, reveal, shown.as_ref()),
+        None => Err(AppError::OriginMissing),
+    };
+    match result {
+        Ok(Some(now)) => {
+            *shown = Some(now);
+            app.notice = None;
+        }
+        Ok(None) => {}
+        Err(error) => app.notice = Some(format!("Details not opened: {error}")),
     }
 }
 
@@ -196,10 +244,16 @@ pub fn run_details(process: ProcessEnv, target: DetailsTarget) -> Result<(), App
     let mut terminal = setup(Mouse::Drags)?;
     // Before the event reader starts: the answers come on the input.
     let probe = graphics::probe();
+    // Herdr plays the animated images of a pane it knows.
+    let mut player = process
+        .own_pane_id
+        .as_ref()
+        .map(|pane| Player::new(process.socket_path.clone(), pane.as_str().to_string()));
     let result = details_loop(
         &mut terminal,
         &mut app,
         probe,
+        player.as_mut(),
         &operations,
         &sender,
         &receiver,
@@ -215,6 +269,7 @@ fn details_loop(
     terminal: &mut Screen,
     app: &mut DetailsApp,
     probe: Probe,
+    mut player: Option<&mut Player>,
     operations: &FsOperations,
     sender: &Sender<DetailsAnswer>,
     receiver: &Receiver<DetailsAnswer>,
@@ -333,6 +388,9 @@ fn details_loop(
                 DetailsAnswer::Removal(request, plan) => app.removal_prepared(request, *plan),
                 DetailsAnswer::Operation(record) => app.operation_finished(*record),
                 DetailsAnswer::Picture(url, picture) => app.picture_loaded(&url, picture),
+                DetailsAnswer::Frames(url, fit, frames) => {
+                    app.pictures.frames_decoded(&url, fit, frames)
+                }
             }
         }
         if last_operation_check.is_none_or(|last| last.elapsed() >= OPERATION_CHECK) {
@@ -349,7 +407,10 @@ fn details_loop(
             terminal.backend_mut().flush()?;
         }
         terminal.draw(|frame| details_view::render(frame, app))?;
-        match next_input()? {
+        if let Some(player) = player.as_deref_mut() {
+            animate(app, player, size.width, size.height, sender);
+        }
+        match next_input(POLL)? {
             Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),
             Some((Input::Mouse(mouse), at)) if focus.swallows(&mouse, at) => {
                 app.focus_click(mouse, size.width, size.height)
@@ -359,6 +420,46 @@ fn details_loop(
             _ => {}
         }
     }
+}
+
+/// Plays the animated images the pane shows over their first frame; their
+/// frames decode in the background the first time they show.
+fn animate(
+    app: &mut DetailsApp,
+    player: &mut Player,
+    width: u16,
+    height: u16,
+    sender: &Sender<DetailsAnswer>,
+) {
+    let mut shown = Vec::new();
+    if let Some(Graphics::Kitty {
+        cell_width,
+        cell_height,
+    }) = app.pictures.graphics()
+    {
+        for (url, spot) in details_view::spots(app, width, height) {
+            // Herdr cuts a layer larger than its cells: frames fit in them.
+            let fit = (
+                u32::from(spot.cells.columns) * u32::from(cell_width),
+                u32::from(spot.rows) * u32::from(cell_height),
+            );
+            if let Some((file, budget)) = app.pictures.frames_to_decode(&url, fit) {
+                let sender = sender.clone();
+                thread::spawn(move || {
+                    let frames = frames_within(&file, fit, budget).map(Arc::new);
+                    let _ = sender.send(DetailsAnswer::Frames(url, fit, frames));
+                });
+            } else if let Some(animation) = app.pictures.animation(&url, fit) {
+                shown.push((url, animation.clone(), spot));
+            }
+        }
+    }
+    player.show(&shown);
+    app.covered = shown
+        .iter()
+        .filter(|(url, animation, _)| !animation.opaque && player.live(url))
+        .map(|(url, ..)| url.clone())
+        .collect();
 }
 
 /// Starts a confirmed request outside the details pane, unless an operation
@@ -483,9 +584,9 @@ enum Input {
     FocusLost,
 }
 
-/// The next input and when it was read.
-fn next_input() -> Result<Option<(Input, Instant)>, AppError> {
-    if !event::poll(POLL)? {
+/// The next input within `wait`, and when it was read.
+fn next_input(wait: Duration) -> Result<Option<(Input, Instant)>, AppError> {
+    if !event::poll(wait)? {
         return Ok(None);
     }
     let input = match event::read()? {

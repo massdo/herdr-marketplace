@@ -7,6 +7,7 @@ use herdr_marketplace::adapters::tui::sidebar::{Counts, Filter, Intent, LoadStat
 use herdr_marketplace::adapters::tui::sidebar_view;
 use herdr_marketplace::application::load_catalog::LoadedCatalog;
 use herdr_marketplace::application::load_listing::LoadedListing;
+use herdr_marketplace::application::open_details::Reveal;
 use herdr_marketplace::domain::compat::Platform;
 use herdr_marketplace::domain::registry::parse_registry;
 use ratatui::Terminal;
@@ -87,7 +88,7 @@ fn typing_never_reloads_the_catalogue() {
     app.handle_key(key(KeyCode::Backspace));
     app.handle_key(key(KeyCode::Down));
     type_text(&mut app, "zz");
-    assert!(app.intents.is_empty(), "{:?}", app.intents);
+    assert!(!app.intents.contains(&Intent::Load), "{:?}", app.intents);
 }
 
 #[test]
@@ -238,11 +239,77 @@ fn a_failed_load_is_retried_with_enter() {
 fn enter_asks_for_the_details_of_the_selected_plugin() {
     let mut app = loaded_app();
     app.handle_key(key(KeyCode::Down));
+    app.intents.clear();
     app.handle_key(key(KeyCode::Enter));
     match app.intents.as_slice() {
-        [Intent::Open(row)] => assert_eq!(row.entry.source.repo, "plugin-01"),
+        [Intent::Open(row, Reveal::Focus)] => assert_eq!(row.entry.source.repo, "plugin-01"),
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn moving_with_the_keyboard_previews_the_selected_plugin() {
+    let mut app = loaded_app();
+    let previewed = |app: &mut SidebarApp| match std::mem::take(&mut app.intents).as_slice() {
+        [Intent::Preview(row)] => row.entry.source.repo.clone(),
+        other => panic!("{other:?}"),
+    };
+    app.handle_key(key(KeyCode::Down));
+    assert_eq!(previewed(&mut app), "plugin-01");
+    app.handle_key(key(KeyCode::PageDown));
+    assert_eq!(previewed(&mut app), "plugin-04");
+    app.handle_key(key(KeyCode::End));
+    assert_eq!(previewed(&mut app), "plugin-11");
+    app.handle_key(key(KeyCode::Home));
+    assert_eq!(previewed(&mut app), "plugin-00");
+    app.handle_key(key(KeyCode::Up));
+    assert_eq!(
+        previewed(&mut app),
+        "plugin-00",
+        "the first plugin stays shown"
+    );
+
+    type_text(&mut app, "zz");
+    app.intents.clear();
+    app.handle_key(key(KeyCode::Down));
+    assert!(
+        app.intents.is_empty(),
+        "no plugin to show: {:?}",
+        app.intents
+    );
+}
+
+#[test]
+fn a_search_asks_open_details_to_follow_its_first_result() {
+    let mut app = loaded_app();
+    let followed = |app: &mut SidebarApp| -> Vec<String> {
+        std::mem::take(&mut app.intents)
+            .into_iter()
+            .map(|intent| match intent {
+                Intent::Follow(row) => row.entry.source.repo,
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    };
+    type_text(&mut app, "plugin-1");
+    assert_eq!(
+        followed(&mut app).last().map(String::as_str),
+        Some("plugin-10")
+    );
+    app.handle_key(key(KeyCode::Backspace));
+    assert_eq!(followed(&mut app), ["plugin-00"]);
+    app.handle_key(key(KeyCode::Tab));
+    assert!(
+        followed(&mut app).is_empty(),
+        "no installed plugin, nothing to show"
+    );
+    app.handle_key(key(KeyCode::Esc));
+    assert!(
+        followed(&mut app).is_empty(),
+        "search cleared, still Installed"
+    );
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(followed(&mut app), ["plugin-00"], "back to All");
 }
 
 #[test]
@@ -357,46 +424,101 @@ fn a_row_shows_the_name_owner_repo_marks_and_description() {
 }
 
 #[test]
-fn one_click_on_a_plugin_selects_it_and_opens_its_details() {
+fn one_click_on_a_plugin_selects_it_and_shows_its_details_without_the_focus() {
     let mut app = loaded_app();
-    // 40 × 18: search box, filters and separator, 3 cards of 4 lines,
-    // footer.
-    app.set_page(sidebar_view::page_rows(&app, 40, 18));
+    // 40 × 19: search box, filters and separator, 3 cards of 4 lines, the
+    // arrow, footer.
+    app.set_page(sidebar_view::page_rows(&app, 40, 19));
     assert_eq!(app.page, 3);
-    app.handle_mouse(click(5, 5 + 4 + 2), 40, 18);
+    app.handle_mouse(click(5, 5 + 4 + 2), 40, 19);
     assert_eq!(selected_repo(&app), "plugin-01");
     match app.intents.as_slice() {
-        [Intent::Open(row)] => assert_eq!(row.entry.source.repo, "plugin-01"),
+        [Intent::Open(row, Reveal::Preview)] => assert_eq!(row.entry.source.repo, "plugin-01"),
         other => panic!("{other:?}"),
     }
     app.intents.clear();
-    for row in [0, 1, 4, 17] {
-        app.handle_mouse(click(5, row), 40, 18);
+    for row in [0, 1, 4, 17, 18] {
+        app.handle_mouse(click(5, row), 40, 19);
     }
     assert!(
         app.intents.is_empty(),
-        "search, separator and footer open nothing"
+        "search, separator, arrow and footer open nothing"
     );
 }
 
 #[test]
 fn the_wheel_scrolls_the_list_without_moving_the_selection() {
     let mut app = loaded_app();
-    app.set_page(sidebar_view::page_rows(&app, 40, 18));
-    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 18);
-    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 18);
+    app.set_page(sidebar_view::page_rows(&app, 40, 19));
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 19);
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 19);
     assert_eq!(app.offset, 2);
     assert_eq!(selected_repo(&app), "plugin-00");
-    app.set_page(sidebar_view::page_rows(&app, 40, 18));
+    app.set_page(sidebar_view::page_rows(&app, 40, 19));
     assert_eq!(app.offset, 2, "drawing again keeps the scrolled list");
-    app.handle_mouse(click(5, 5), 40, 18);
+    app.handle_mouse(click(5, 5), 40, 19);
     assert_eq!(selected_repo(&app), "plugin-02", "the first plugin shown");
     for _ in 0..20 {
-        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 18);
+        app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 19);
     }
     assert_eq!(app.offset, 9, "no further than the last page");
-    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 7), 40, 18);
+    app.handle_mouse(mouse(MouseEventKind::ScrollUp, 5, 7), 40, 19);
     assert_eq!(app.offset, 8);
+}
+
+/// The lines of `app` drawn in a 40 × `height` pane, its page set first as
+/// the sidebar loop does.
+fn drawn(app: &mut SidebarApp, height: u16) -> Vec<String> {
+    app.set_page(sidebar_view::page_rows(app, 40, height));
+    let mut terminal = Terminal::new(TestBackend::new(40, height)).unwrap();
+    terminal
+        .draw(|frame| sidebar_view::render(frame, app))
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .chunks(40)
+        .map(|line| line.iter().map(|cell| cell.symbol()).collect())
+        .collect()
+}
+
+#[test]
+fn an_arrow_under_the_cards_says_more_plugins_follow() {
+    let mut app = loaded_app();
+    // 40 × 19: search box, filters and separator, 3 cards, the arrow, footer.
+    let text = drawn(&mut app, 19);
+    assert_eq!(app.page, 3);
+    assert_eq!(text[17].trim(), "↓", "{text:#?}");
+    assert_eq!(text[17].find('↓'), Some(20), "centered: {text:#?}");
+    // 40 × 21: two lines left under the cards, the arrow sits on the last.
+    let text = drawn(&mut app, 21);
+    assert_eq!(text[17].trim(), "", "{text:#?}");
+    assert_eq!(text[19].trim(), "↓", "just above the footer: {text:#?}");
+    app.handle_key(key(KeyCode::End));
+    let text = drawn(&mut app, 19);
+    assert!(text[16].starts_with('╰'), "{text:#?}");
+    assert_eq!(text[17].trim(), "", "the last plugin is shown: {text:#?}");
+
+    // Three plugins fill 12 lines; twelve keep one of them for the arrow.
+    let few = (0..3)
+        .map(|index| {
+            repo(
+                "acme",
+                &format!("plugin-{index:02}"),
+                10,
+                vec![manifest(
+                    "herdr-plugin.toml",
+                    &format!("acme.plugin-{index:02}"),
+                )],
+            )
+        })
+        .collect();
+    let mut few = ready(few, vec![]);
+    let text = drawn(&mut few, 18);
+    assert_eq!(few.page, 3);
+    assert!(!text.join("\n").contains('↓'), "{text:#?}");
+    assert_eq!(sidebar_view::page_rows(&loaded_app(), 40, 18), 2);
 }
 
 #[test]
@@ -501,7 +623,13 @@ fn a_click_on_a_filter_tab_switches_it() {
     assert_eq!(app.filter, Filter::Installed);
     app.handle_mouse(click(2, 3), 40, 15);
     assert_eq!(app.filter, Filter::All);
-    assert!(app.intents.is_empty());
+    assert!(
+        app.intents
+            .iter()
+            .all(|intent| matches!(intent, Intent::Follow(_))),
+        "{:?}",
+        app.intents
+    );
 }
 
 #[test]

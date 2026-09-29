@@ -1,7 +1,8 @@
 //! Pictures in a terminal pane. Through Herdr, the kitty graphics protocol
 //! draws real images, placed with unicode placeholders: each row of an image
 //! is a row of text cells, so it scrolls and clips with the README. Without
-//! it, half blocks draw two pixels per cell.
+//! it, half blocks draw two pixels per cell. An animated image is drawn as
+//! its first frame, and `animation` plays the others over it.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -14,7 +15,7 @@ use image::{Rgba, RgbaImage};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
-use crate::adapters::images::Picture;
+use crate::adapters::images::{Animation, FRAMES_BUDGET, Picture};
 
 /// `kitty`, `blocks` or `off` forces how images are drawn.
 pub const IMAGES_ENV: &str = "HERDR_MARKETPLACE_IMAGES";
@@ -23,6 +24,10 @@ pub const IMAGES_ENV: &str = "HERDR_MARKETPLACE_IMAGES";
 pub const QUERY: &str = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t\x1b[c";
 /// Images a README may load.
 pub const MAX_PICTURES: usize = 16;
+/// Bytes the frames of a README's animations may take together.
+pub const ANIMATIONS_BUDGET: usize = 2 * FRAMES_BUDGET;
+/// Less room than this for frames: the animation stays still.
+const MIN_FRAMES_BUDGET: usize = 1024 * 1024;
 /// How long a new pane waits for Herdr to give it its size in pixels.
 pub const LAYOUT_WAIT: Duration = Duration::from_secs(3);
 /// Rows an image may take, so that a tall one does not fill the pane.
@@ -249,6 +254,23 @@ pub fn kitty_delete(id: u32) -> String {
     format!("\x1b_Ga=d,d=I,q=2,i={id}\x1b\\")
 }
 
+/// `line` with the cells of its kitty image left empty.
+pub fn without_image(line: Line<'static>) -> Line<'static> {
+    let spans = line
+        .spans
+        .into_iter()
+        .map(|span| {
+            if span.content.starts_with(PLACEHOLDER) {
+                let cells = span.content.chars().filter(|ch| *ch == PLACEHOLDER).count();
+                Span::raw(" ".repeat(cells))
+            } else {
+                span
+            }
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans)
+}
+
 /// Row `row` of image `id`, `columns` cells wide: the first cell names the
 /// row and column, the next ones follow it.
 pub fn kitty_row(id: u32, row: u16, columns: u16) -> Line<'static> {
@@ -322,6 +344,19 @@ pub enum PictureState {
     Ready(Arc<Picture>),
 }
 
+/// The frames of an animated picture, made for cells of `fit` pixels.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AnimationState {
+    /// Decoding within `budget` bytes.
+    Decoding { fit: (u32, u32), budget: usize },
+    Ready {
+        fit: (u32, u32),
+        animation: Arc<Animation>,
+    },
+    /// It stays still.
+    Failed(String),
+}
+
 /// Images of a details pane: loaded or not, drawn at the size of the last
 /// layout, and the kitty images the terminal holds.
 #[derive(Debug, Clone, Default)]
@@ -330,7 +365,10 @@ pub struct Pictures {
     /// already download but show their alternative text.
     graphics: Option<Graphics>,
     states: HashMap<String, PictureState>,
+    animations: HashMap<String, AnimationState>,
     blocks: HashMap<(String, u16, u16), Vec<Line<'static>>>,
+    /// Half-block images of the current layout: url and size.
+    drawn: HashSet<(String, u16, u16)>,
     sent: HashSet<u32>,
     /// Kitty images of the current layout: id, url and size.
     wanted: HashMap<u32, (String, u16, u16)>,
@@ -376,9 +414,88 @@ impl Pictures {
         self.states.get(url)
     }
 
+    /// Whether `url` is a loaded picture with frames to play.
+    pub fn animated(&self, url: &str) -> bool {
+        matches!(self.states.get(url), Some(PictureState::Ready(picture)) if picture.animated.is_some())
+    }
+
+    /// The file of animated picture `url` and the bytes its frames may take,
+    /// when they must decode for cells of `fit` pixels: once per size of
+    /// the cells, and one decoding at a time, so that resizing the pane does
+    /// not pile them up; the last size decodes once the one under way ends.
+    /// `None` otherwise, or when the animations of the README took the room.
+    pub fn frames_to_decode(&mut self, url: &str, fit: (u32, u32)) -> Option<(Arc<[u8]>, usize)> {
+        match self.animations.get(url) {
+            Some(AnimationState::Failed(_) | AnimationState::Decoding { .. }) => return None,
+            Some(AnimationState::Ready { fit: done, .. }) if *done == fit => return None,
+            _ => {}
+        }
+        let Some(PictureState::Ready(picture)) = self.states.get(url) else {
+            return None;
+        };
+        let file = picture.animated.clone()?;
+        let taken: usize = self
+            .animations
+            .iter()
+            .filter(|(other, _)| *other != url)
+            .map(|(_, state)| match state {
+                AnimationState::Decoding { budget, .. } => *budget,
+                AnimationState::Ready { animation, .. } => animation.size(),
+                AnimationState::Failed(_) => 0,
+            })
+            .sum();
+        let budget = ANIMATIONS_BUDGET.saturating_sub(taken).min(FRAMES_BUDGET);
+        if budget < MIN_FRAMES_BUDGET {
+            self.animations.insert(
+                url.to_string(),
+                AnimationState::Failed("no room left for frames".into()),
+            );
+            return None;
+        }
+        self.animations
+            .insert(url.to_string(), AnimationState::Decoding { fit, budget });
+        Some((file, budget))
+    }
+
+    /// Frames of `url` decoded for cells of `fit` pixels; those of an
+    /// earlier size are dropped.
+    pub fn frames_decoded(
+        &mut self,
+        url: &str,
+        fit: (u32, u32),
+        frames: Result<Arc<Animation>, String>,
+    ) {
+        let current = matches!(
+            self.animations.get(url),
+            Some(AnimationState::Decoding { fit: asked, .. }) if *asked == fit
+        );
+        if !current {
+            return;
+        }
+        let state = match frames {
+            Ok(animation) => AnimationState::Ready { fit, animation },
+            Err(error) => AnimationState::Failed(error),
+        };
+        self.animations.insert(url.to_string(), state);
+    }
+
+    /// The frames of `url` for cells of `fit` pixels, once decoded.
+    pub fn animation(&self, url: &str, fit: (u32, u32)) -> Option<&Arc<Animation>> {
+        match self.animations.get(url) {
+            Some(AnimationState::Ready {
+                fit: made,
+                animation,
+            }) if *made == fit => Some(animation),
+            _ => None,
+        }
+    }
+
     /// A new layout starts: the images it does not draw again are freed.
+    /// Half blocks keep the sizes of the layout before, for this one.
     pub fn begin_layout(&mut self) {
         self.wanted.clear();
+        let drawn = std::mem::take(&mut self.drawn);
+        self.blocks.retain(|key, _| drawn.contains(key));
     }
 
     /// Lines drawing `url` within `room` columns; `None` while it loads,
@@ -407,6 +524,7 @@ impl Pictures {
                     let lines = block_lines(&picture.rgba, columns, rows);
                     self.blocks.insert(key.clone(), lines);
                 }
+                self.drawn.insert(key.clone());
                 self.blocks.get(&key).cloned()
             }
         }
@@ -740,3 +858,34 @@ static DIACRITICS: [char; 297] = [
     '\u{1D243}',
     '\u{1D244}',
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapters::images::decode;
+
+    #[test]
+    fn half_blocks_keep_only_the_sizes_of_the_last_layouts() {
+        let mut png = Vec::new();
+        RgbaImage::from_pixel(800, 80, Rgba([200, 30, 30, 255]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let url = "https://example.com/logo.png";
+        let mut pictures = Pictures::new(Graphics::Blocks);
+        pictures.loaded(url, Ok(Arc::new(decode(&png).unwrap())));
+        // 100 columns wide at most: each room draws another size.
+        for room in [40, 30, 20, 10] {
+            pictures.begin_layout();
+            assert_eq!(pictures.lines(url, None, room).unwrap()[0].width(), room);
+        }
+        assert_eq!(
+            pictures.blocks.len(),
+            2,
+            "a pane resized again and again keeps two sizes, not every one"
+        );
+        pictures.begin_layout();
+        pictures.lines(url, None, 10).unwrap();
+        pictures.begin_layout();
+        assert_eq!(pictures.blocks.len(), 1);
+    }
+}

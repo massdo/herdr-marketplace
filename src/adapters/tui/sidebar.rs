@@ -2,6 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 
 use super::sidebar_view::{self, Hit};
 use crate::application::load_listing::LoadedListing;
+use crate::application::open_details::Reveal;
 use crate::domain::compat::Platform;
 use crate::domain::listing::Row;
 use crate::domain::registry::InstalledPlugin;
@@ -12,8 +13,13 @@ use crate::domain::source::PluginSource;
 pub enum Intent {
     /// Load the index and the registry in the background.
     Load,
-    /// Open the details pane of this row.
-    Open(Box<Row>),
+    /// Show the details of this row now: Enter gives them the focus, a
+    /// click leaves it in the sidebar.
+    Open(Box<Row>, Reveal),
+    /// Show the details of this row and leave the focus in the sidebar.
+    Preview(Box<Row>),
+    /// A search selected this row: details already open show it.
+    Follow(Box<Row>),
 }
 
 /// Which plugins the list shows, as the filters of VS Code's extensions view.
@@ -155,27 +161,28 @@ impl SidebarApp {
                     self.search_changed();
                 }
             }
-            KeyCode::Up => self.move_by(-1),
-            KeyCode::Down => self.move_by(1),
-            KeyCode::PageUp => self.move_by(-(self.page as isize)),
-            KeyCode::PageDown => self.move_by(self.page as isize),
-            KeyCode::Home => self.move_to(0),
-            KeyCode::End => self.move_to(self.visible.len().saturating_sub(1)),
+            KeyCode::Up => self.browse_by(-1),
+            KeyCode::Down => self.browse_by(1),
+            KeyCode::PageUp => self.browse_by(-(self.page as isize)),
+            KeyCode::PageDown => self.browse_by(self.page as isize),
+            KeyCode::Home => self.browse_to(0),
+            KeyCode::End => self.browse_to(self.visible.len().saturating_sub(1)),
             KeyCode::Enter => self.enter(),
             _ => {}
         }
         false
     }
 
-    /// One click on a plugin selects it and opens its details, as in VS
-    /// Code; the wheel scrolls the list without moving the selection.
+    /// One click on a plugin selects it and shows its details, as in VS
+    /// Code, and the sidebar keeps the focus; the wheel scrolls the list
+    /// without moving the selection.
     pub fn handle_mouse(&mut self, mouse: MouseEvent, width: u16, height: u16) {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 match sidebar_view::hit(self, width, height, mouse.column, mouse.row) {
                     Some(Hit::Row(position)) => {
                         self.move_to(position);
-                        self.enter();
+                        self.open(Reveal::Preview);
                     }
                     Some(Hit::Retry) => self.enter(),
                     Some(Hit::Filter(filter)) => self.set_filter(filter),
@@ -232,12 +239,15 @@ impl SidebarApp {
                 self.state = LoadState::Loading;
                 self.intents.push(Intent::Load);
             }
-            LoadState::Ready(_) => {
-                if let Some(row) = self.selected_row() {
-                    self.intents.push(Intent::Open(Box::new(row.clone())));
-                }
-            }
+            LoadState::Ready(_) => self.open(Reveal::Focus),
             LoadState::Loading => {}
+        }
+    }
+
+    fn open(&mut self, reveal: Reveal) {
+        if let Some(row) = self.selected_row() {
+            self.intents
+                .push(Intent::Open(Box::new(row.clone()), reveal));
         }
     }
 
@@ -261,10 +271,14 @@ impl SidebarApp {
         self.filter = Filter::Installed;
     }
 
-    /// A new search starts from its most relevant result.
+    /// A new search starts from its most relevant result, and open details
+    /// follow it.
     fn search_changed(&mut self) {
         self.selected = None;
         self.refilter();
+        if let Some(row) = self.selected_row() {
+            self.intents.push(Intent::Follow(Box::new(row.clone())));
+        }
     }
 
     fn refilter(&mut self) {
@@ -301,9 +315,18 @@ impl SidebarApp {
         self.ensure_visible();
     }
 
-    fn move_by(&mut self, delta: isize) {
+    fn browse_by(&mut self, delta: isize) {
         let position = self.selected_position().unwrap_or(0) as isize;
-        self.move_to((position + delta).max(0) as usize);
+        self.browse_to((position + delta).max(0) as usize);
+    }
+
+    /// The keyboard moves the selection and the details follow it without
+    /// the focus; a click selects and opens instead.
+    fn browse_to(&mut self, position: usize) {
+        self.move_to(position);
+        if let Some(row) = self.selected_row() {
+            self.intents.push(Intent::Preview(Box::new(row.clone())));
+        }
     }
 
     fn move_to(&mut self, position: usize) {

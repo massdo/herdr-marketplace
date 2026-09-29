@@ -40,6 +40,8 @@ BROWSER_USAGE = "\n".join([
 ])
 # herdr-sidebar's README shows a PNG next to it and links to the root README.
 SIDEBAR_SHA = "1a5d37ef84edc91e5b3d3d4e39daa32952e6ecf2"
+# This plugin's README opens on docs/demo/demo.webp, an animation.
+MARKETPLACE_SHA = "f3ead2303f9554163ea30e853869c6cc4fc19e4d"
 # Installs fetch the fixture from GitHub and build it.
 OPERATION_TIMEOUT = 180
 CLIENT_COLS, CLIENT_ROWS = 200, 50
@@ -319,6 +321,11 @@ def prove_sidebar():
 
     type_text(sidebar, END)
     wait(lambda: "Last Plugin" in read(sidebar), "the list did not reach its last entry")
+    # The key previews the plugin it reaches; Esc in the preview closes it.
+    preview = wait(lambda: with_token(DETAILS_TOKEN), "End did not preview the last plugin")["pane_id"]
+    wait(lambda: "acme/zz-last" in read(preview), "the preview is not the last plugin")
+    keys(preview, "q")
+    wait(lambda: with_token(DETAILS_TOKEN) is None, "q did not close the preview")
     print("last_entry_ok", flush=True)
 
     toggle()
@@ -349,7 +356,9 @@ def focused():
 
 
 def open_details(sidebar, query, expected_results):
-    """Search in the sidebar, press Enter on the first result, return its details pane."""
+    """Search in the sidebar, press Enter on the first result, return its
+    details pane. The search stays: erasing it would move the details."""
+    keys(sidebar, *["backspace"] * 30)
     type_text(sidebar, query)
     wait(lambda: expected_results in read(sidebar), f"search {query!r} did not settle")
     before = {p["pane_id"] for p in panes()}
@@ -357,7 +366,6 @@ def open_details(sidebar, query, expected_results):
     details = wait(lambda: next((p for p in panes() if p["pane_id"] not in before
                                and (p.get("tokens") or {}).get(DETAILS_TOKEN) == "v1"), None),
                  f"Enter on {query!r} did not open a details pane")["pane_id"]
-    keys(sidebar, *["backspace"] * len(query))
     return details
 
 
@@ -392,9 +400,12 @@ def prove_details():
     print("details_copy_ok", flush=True)
 
     keys(details, "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+    time.sleep(1)
+    assert details_panes(tab), "escape closed the details pane"
+    keys(details, "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
     wait(lambda: focused() == sidebar, "focus did not return to the sidebar")
-    print("details_escape_ok", flush=True)
+    print("details_quit_ok", flush=True)
 
     details = open_details(sidebar, "fixture", " All 2 ")
     shown = wait(lambda: "[image: fixture logo]" in (text := read(details)) and text,
@@ -406,8 +417,7 @@ def prove_details():
          "the last README line was not reachable")
     print("details_last_line_ok", flush=True)
 
-    type_text(sidebar, "fixture")
-    wait(lambda: " All 2 " in read(sidebar), "search fixture did not settle")
+    wait(lambda: " All 2 " in read(sidebar), "search fixture did not stay")
     keys(sidebar, "down", "enter")
     alt = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != details), None),
                "Enter on the alt source did not open its details pane")
@@ -421,13 +431,14 @@ def prove_details():
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
     assert "massdo/herdr-marketplace-fixture/alt" in read(alt), "the details pane lost its plugin"
-    keys(alt, "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+    keys(alt, "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
     wait(lambda: focused() is not None and focused() in others(), "focus did not go to a remaining pane")
     print("details_outlives_sidebar_ok", flush=True)
 
     # A click on the sidebar without the focus only focuses it, so that a
-    # search can be typed; then one click on a plugin opens its details.
+    # search can be typed; then one click on a plugin shows its details and
+    # the sidebar keeps the focus, until Enter.
     sidebar = open_sidebar()
     wait(lambda: listed(read(sidebar)), "the catalogue did not load")
     herdr("pane", "focus", "--pane", sidebar, "--direction", "right")
@@ -443,9 +454,78 @@ def prove_details():
                    "a click on a plugin did not open its details pane")
     wait(lambda: "zenbu-labs/terminal-browser/herdr-plugin" in read(details),
          "the clicked plugin is not the one shown")
+    assert focused() == sidebar, "the click gave the details pane the focus"
+    keys(sidebar, "enter")
+    wait(lambda: focused() == details, "enter did not focus the clicked plugin's pane")
+    assert [p["pane_id"] for p in details_panes(tab)] == [details], "enter opened another pane"
     print("details_click_ok", flush=True)
-    keys(details, "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+    keys(details, "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+
+
+def rects(pane):
+    """Every pane of the tab of `pane`, left to right, with its rectangle."""
+    layout = data("pane", "layout", "--pane", pane)["layout"]
+    return sorted(((p["pane_id"], p["rect"]) for p in layout["panes"]),
+                  key=lambda item: (item[1]["x"], item[1]["y"]))
+
+
+def prove_preview():
+    """The arrows show the selected plugin right of the sidebar and leave
+    it the focus; Enter then hands the focus to that pane."""
+    write_catalog(SHA_A)
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
+    type_text(sidebar, "fixture")
+    wait(lambda: " All 2 " in read(sidebar), "search fixture did not settle")
+    time.sleep(1)
+    assert not details_panes(tab), "typing opened a preview"
+
+    keys(sidebar, "down")
+    alt = wait(lambda: next(iter(details_panes(tab)), None), "down did not preview the plugin")["pane_id"]
+    wait(lambda: "No README in alt/" in read(alt), "the preview is not the selected plugin")
+    assert focused() == sidebar, "the preview took the focus"
+    order = rects(sidebar)
+    assert [pane for pane, _ in order[:2]] == [sidebar, alt], order
+    working = order[2]
+    print("preview_beside_sidebar_ok", flush=True)
+
+    keys(sidebar, "up")
+    root = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != alt), None),
+                "up did not preview the plugin above")
+    wait(lambda: "[image: fixture logo]" in read(root), "the preview did not follow the selection")
+    assert [p["pane_id"] for p in details_panes(tab)] == [root], "the old preview stayed open"
+    assert focused() == sidebar, "the new preview took the focus"
+    assert [pane for pane, _ in rects(sidebar)[:2]] == [sidebar, root], rects(sidebar)
+    assert working in rects(sidebar), "the working pane moved or changed width"
+    print("preview_follows_arrows_ok", flush=True)
+
+    # A search moves the open preview to its first result.
+    type_text(sidebar, " (alt)")
+    wait(lambda: " All 1 " in read(sidebar), "search fixture (alt) did not settle")
+    alt = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != root), None),
+               "the preview did not follow the search")
+    wait(lambda: "No README in alt/" in read(alt), "the preview is not the first result")
+    keys(sidebar, *["backspace"] * len(" (alt)"))
+    root = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != alt), None),
+                "the preview did not follow the erased search")
+    wait(lambda: "[image: fixture logo]" in read(root), "the preview is not the first result")
+    assert [p["pane_id"] for p in details_panes(tab)] == [root], "the old preview stayed open"
+    assert focused() == sidebar, "the search moved the focus"
+    assert working in rects(sidebar), "the working pane moved or changed width"
+    print("preview_follows_search_ok", flush=True)
+
+    keys(sidebar, "enter")
+    wait(lambda: focused() == root, "enter did not focus the preview")
+    assert [p["pane_id"] for p in details_panes(tab)] == [root], "enter opened another pane"
+    print("enter_focuses_preview_ok", flush=True)
+
+    keys(root, "q")
+    wait(lambda: not details_panes(tab), "q did not close the preview")
+    wait(lambda: focused() == sidebar, "focus did not return to the sidebar")
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
 
@@ -492,8 +572,8 @@ def prove_install_preview():
     assert details_panes(tab), "cancelling the preview closed the details pane"
     print("install_cancel_ok", flush=True)
 
-    keys(details, "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+    keys(details, "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
 
@@ -524,8 +604,8 @@ def confirm_install(details, expected):
 
 def close_all(tab):
     for pane in details_panes(tab):
-        keys(pane["pane_id"], "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+        keys(pane["pane_id"], "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
     if with_token(SIDEBAR_TOKEN):
         toggle()
         wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
@@ -554,11 +634,12 @@ def prove_install():
     click_text(sidebar, "Installed 1")
     wait(lambda: focused() == sidebar, "a click did not focus the sidebar")
     click_text(sidebar, "Installed 1")
-    shown = wait(lambda: "Terminal Browser" not in (text := read(sidebar)) and text,
+    # The search "fixture" stays: the alt source is the one not installed.
+    shown = wait(lambda: "massdo/herdr-…-fixture/alt" not in (text := read(sidebar)) and text,
                  "the Installed filter did not apply")
     assert "massdo/herdr-…lace-fixture" in shown and "installed · Test fixture." in shown, shown
     type_text(sidebar, "\t")
-    wait(lambda: "Terminal Browser" in read(sidebar), "Tab did not return to all plugins")
+    wait(lambda: "massdo/herdr-…-fixture/alt" in read(sidebar), "Tab did not return to all plugins")
     print("installed_filter_ok", flush=True)
     close_all(tab)
 
@@ -591,8 +672,8 @@ def prove_details_closed_during_install():
     sidebar, tab, details = fixture_details(SHA_A)
     confirm_install(details, "another commit?")
     wait(lambda: "Installing" in read(details), "the details pane did not show the running install")
-    keys(details, "esc")
-    wait(lambda: not details_panes(tab), "escape did not close the details pane")
+    keys(details, "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
     wait(lambda: (*FIXTURE, "", SHA_A) in registry(),
          "the install stopped with its details pane", OPERATION_TIMEOUT)
     details = open_details(sidebar, "fixture", " All 2 ")
@@ -685,11 +766,65 @@ def prove_readme():
     close_all(tab)
 
 
+def layer_frames(since):
+    """Images Herdr sent the client on a pane layer since byte `since` of
+    the client log, each with its size and the cells it covers. The pane
+    draws its own images as raw pixels; a layer sends PNG."""
+    log = CLIENT_LOG.read_bytes()[since:]
+    cells = {i: (int(c), int(r)) for i, c, r in
+             re.findall(rb"\x1b_Ga=p,i=(\d+),p=\d+,c=(\d+),r=(\d+),z=1", log)}
+    return [(int(w), int(h), cells.get(i))
+            for w, h, i in re.findall(rb"\x1b_Ga=t,t=d,f=100,s=(\d+),v=(\d+),i=(\d+)", log)]
+
+
+def prove_animation():
+    """herdr-marketplace's README opens on an animated WebP: Herdr draws its
+    frames in turn on a layer of the pane, each within the cells of the
+    picture (8 × 17 pixels a cell here), cut to the rows the pane shows, and
+    none once the picture is scrolled away."""
+    INDEX.write_text(json.dumps({
+        "schemaVersion": 1, "generatedAt": "2026-09-25T00:00:00Z",
+        "pluginCount": 1, "repositoryCount": 1,
+        "plugins": [repo("massdo", "herdr-marketplace", MARKETPLACE_SHA, 1, [
+            manifest("herdr-plugin.toml", "herdr-marketplace", "herdr-marketplace",
+                     "Search, read and install Herdr plugins from a sidebar."),
+        ])],
+    }))
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
+    details = open_details(sidebar, "marketplace", " All 1 ")
+    wait(lambda: "Real marketplace screens" in read(details),
+         "the herdr-marketplace README was not rendered")
+    since = CLIENT_LOG.stat().st_size
+    frames = wait(lambda: len(found := layer_frames(since)) >= 10 and found,
+                  "the demo did not play", 90)
+    columns, rows = next(cells for _, _, cells in frames if cells)
+    assert all(w <= columns * 8 and h <= rows * 17 for w, h, _ in frames), frames
+    print("animation_plays_ok", flush=True)
+
+    for _ in range(rows // 2 + 4):
+        keys(details, "down")
+    since = CLIENT_LOG.stat().st_size
+    cut = wait(lambda: [f for f in layer_frames(since) if f[2] and f[2][1] < rows],
+               "the demo was not cut to the rows shown", 30)
+    assert all(h <= r * 17 for _, h, (_, r) in cut), cut
+    type_text(details, END)
+    time.sleep(1)
+    since = CLIENT_LOG.stat().st_size
+    time.sleep(2)
+    assert not layer_frames(since), "the demo played once scrolled away"
+    print("animation_follows_scroll_ok", flush=True)
+    close_all(tab)
+
+
 def main():
     check_isolation()
     prove_sidebar()
     prove_details()
+    prove_preview()
     prove_readme()
+    prove_animation()
     prove_install_preview()
     prove_install()
     prove_switch()

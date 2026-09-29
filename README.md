@@ -51,7 +51,7 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
   topic, author or description. Typos are forgiven: `anotate` finds Annotate.
 - **Read before you install.** Every README is drawn like on GitHub, with
   headings, code, tables, alerts, images and links, at the exact commit you
-  would install.
+  would install. Animated GIF, WebP and PNG images play.
 - **Install with one key.** `i` previews the source, the commit and the
   commands the plugin declares; `Enter` confirms, `Esc` cancels. The same key
   moves an installed plugin to the catalog's commit, and `r` removes it.
@@ -62,9 +62,11 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 
 | Key | Where | Action |
 | --- | --- | --- |
-| Type | Sidebar | Search |
-| `↑` `↓` `PgUp` `PgDn` `Home` `End` | Sidebar, details | Move, scroll |
-| `Enter` | Sidebar | Open the selected plugin |
+| Type | Sidebar | Search; an open preview shows the first result |
+| `↑` `↓` `PgUp` `PgDn` `Home` `End` | Sidebar | Move, and preview the plugin beside the list |
+| `↑` `↓` `PgUp` `PgDn` `Home` `End` | Details | Scroll |
+| Click a plugin | Sidebar | Preview it, the sidebar keeps the focus |
+| `Enter` | Sidebar | Open the selected plugin and focus it |
 | `Tab` | Sidebar | Switch between **All** and **Installed** |
 | `i` | Details | Install, or switch to the catalog's commit |
 | `r` | Details | Remove |
@@ -72,7 +74,7 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 | `s` | Details | Show the full commit SHA |
 | `Enter` / `Esc` | Install or removal | Confirm / cancel |
 | `Esc` | Sidebar | Clear the search, show All, then close |
-| `Esc` | Details | Close the pane |
+| `q` | Details | Close the pane |
 
 > [!IMPORTANT]
 > A community plugin, not an official Herdr product. The catalog is indexed

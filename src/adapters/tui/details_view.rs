@@ -8,17 +8,20 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
 use unicode_width::UnicodeWidthStr;
 
+use super::animation::Spot;
 use super::details::{
     Button, Command, DetailsApp, InstallState, InstalledView, ReadmeState, RemovalState,
 };
+use super::graphics::without_image;
 use super::selection::{self, Flow, Selection};
 use super::style::{
     ERROR, MUTED, OK, WARN, bold, button_text, ellipsize, ellipsize_middle, muted, wrap,
 };
+use crate::adapters::pane_graphics::Cells;
 use crate::domain::operation::{OperationKind, Status};
 use crate::domain::text::clean;
 
-const FOOTER: &str = "s: full SHA · Esc: close · ↑↓ PgUp PgDn Home End";
+const FOOTER: &str = "s: full SHA · q: close · ↑↓ PgUp PgDn Home End";
 const PREVIEW_FOOTER: &str = "Enter: confirm · Esc: cancel · ↑↓ PgUp PgDn";
 /// Header lines: title, source, commit, then the action bar.
 const COMMIT_LINE: usize = 2;
@@ -68,6 +71,19 @@ fn rows(app: &DetailsApp, width: u16, height: u16) -> (Vec<Line<'static>>, Vec<F
         app.scroll
     };
     let (prefix, content, content_flows) = body_lines(app, cells);
+    // Body lines of the images an animation covers.
+    let covered: Vec<_> = if showing_readme(app) {
+        app.places
+            .iter()
+            .filter(|place| app.covered.contains(&place.url))
+            .map(|place| {
+                let first = prefix.len() + place.line;
+                first..first + usize::from(place.rows)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let body_flows = iter::repeat_n(Flow::default(), prefix.len())
         .chain(content_flows.iter().copied())
         .chain(iter::repeat(Flow::default()));
@@ -75,11 +91,16 @@ fn rows(app: &DetailsApp, width: u16, height: u16) -> (Vec<Line<'static>>, Vec<F
         .into_iter()
         .chain(content.iter().cloned())
         .zip(body_flows)
+        .enumerate()
         .skip(scroll)
         .take(body_height);
     let first = lines.len();
-    for (line, flow) in body {
-        lines.push(line);
+    for (index, (line, flow)) in body {
+        if covered.iter().any(|rows| rows.contains(&index)) {
+            lines.push(without_image(line));
+        } else {
+            lines.push(line);
+        }
         flows.push(flow);
     }
     // The first row of the body never goes on from the header above it.
@@ -100,6 +121,49 @@ fn rows(app: &DetailsApp, width: u16, height: u16) -> (Vec<Line<'static>>, Vec<F
     lines.push(Line::styled(ellipsize(footer, cells), muted()));
     flows.push(Flow::default());
     (lines, flows)
+}
+
+/// Where the animated images of the README show in a `width` × `height`
+/// pane, laid out as `render` draws it: the cells of the rows the body shows
+/// of each, over its first frame.
+pub fn spots(app: &DetailsApp, width: u16, height: u16) -> Vec<(String, Spot)> {
+    if !showing_readme(app) {
+        return Vec::new();
+    }
+    let top = header(app, width as usize)
+        .len()
+        .min(height.saturating_sub(2) as usize);
+    let page = page_rows(app, width, height);
+    let (prefix, _, _) = body_lines(app, width as usize);
+    let mut spots: Vec<(String, Spot)> = Vec::new();
+    for place in &app.places {
+        if !app.pictures.animated(&place.url) || spots.iter().any(|(url, _)| *url == place.url) {
+            continue;
+        }
+        let first = prefix.len() + place.line;
+        let from = app.scroll.max(first);
+        let to = (app.scroll + page).min(first + usize::from(place.rows));
+        if from >= to {
+            continue;
+        }
+        let spot = Spot {
+            cells: Cells {
+                column: place.column as u16,
+                row: (top + from - app.scroll) as u16,
+                columns: place.columns,
+                rows: (to - from) as u16,
+            },
+            first: (from - first) as u16,
+            rows: place.rows,
+        };
+        spots.push((place.url.clone(), spot));
+    }
+    spots
+}
+
+/// The body shows the README, which no confirmation replaces.
+fn showing_readme(app: &DetailsApp) -> bool {
+    !app.showing_confirmation() && matches!(app.readme, ReadmeState::Found { .. })
 }
 
 /// What a click at `column`, `row` of a `width` × `height` pane runs, laid

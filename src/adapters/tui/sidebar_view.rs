@@ -34,10 +34,16 @@ pub enum Hit {
     Clear,
 }
 
-/// Plugins the list area of a `width` × `height` pane shows.
+/// Plugins the list area of a `width` × `height` pane shows. A list longer
+/// than the area keeps its last line for the arrow of `more`.
 pub fn page_rows(app: &SidebarApp, width: u16, height: u16) -> usize {
     let used = header(app, width as usize).len() + 1;
-    (height as usize).saturating_sub(used) / ROW_HEIGHT
+    let room = (height as usize).saturating_sub(used);
+    if app.visible.len() > room / ROW_HEIGHT {
+        room.saturating_sub(1) / ROW_HEIGHT
+    } else {
+        room / ROW_HEIGHT
+    }
 }
 
 pub fn render(frame: &mut Frame, app: &SidebarApp) {
@@ -52,6 +58,10 @@ pub fn render(frame: &mut Frame, app: &SidebarApp) {
     };
     body.truncate(list_height);
     body.resize(list_height, Line::default());
+    let below = app.offset + app.page < app.visible.len();
+    if let (LoadState::Ready(_), true, Some(last)) = (&app.state, below, body.last_mut()) {
+        *last = more();
+    }
     lines.extend(body);
     lines.push(Line::styled(ellipsize(FOOTER, width), muted()));
     frame.render_widget(Paragraph::new(lines), area);
@@ -274,6 +284,11 @@ fn list(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
         .take(app.page)
         .flat_map(|(position, &index)| row_lines(&rows[index], width, selected == Some(position)))
         .collect()
+}
+
+/// Above the footer, an arrow while plugins follow below the cards.
+fn more() -> Line<'static> {
+    Line::styled("↓", muted()).centered()
 }
 
 /// A plugin as a card with a light frame, blue when it is selected. The

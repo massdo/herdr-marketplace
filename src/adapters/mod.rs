@@ -7,4 +7,5 @@ pub mod image_fetch;
 pub mod images;
 pub mod launcher_lock;
 pub mod operations;
+pub mod pane_graphics;
 pub mod tui;
