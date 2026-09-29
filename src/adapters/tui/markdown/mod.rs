@@ -43,6 +43,20 @@ pub struct Rendered {
     pub anchors: Vec<(String, usize)>,
     /// Images the README shows, in order, loaded or not.
     pub images: Vec<String>,
+    /// Where the loaded images are drawn.
+    pub places: Vec<Place>,
+}
+
+/// Cells an image takes in the lines of a README.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place {
+    pub url: String,
+    /// Its first line.
+    pub line: usize,
+    /// Its first column.
+    pub column: usize,
+    pub columns: u16,
+    pub rows: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -847,8 +861,10 @@ impl<'a> Renderer<'a> {
             self.out.images.push(url.clone());
         }
         let room = self.room();
-        let lines = url.and_then(|url| self.pictures.lines(&url, hint, room));
-        let Some(lines) = lines else {
+        let lines = url
+            .as_ref()
+            .and_then(|url| self.pictures.lines(url, hint, room));
+        let (Some(url), Some(lines)) = (url, lines) else {
             let text = if alt.is_empty() {
                 "[image]".to_string()
             } else {
@@ -858,7 +874,8 @@ impl<'a> Renderer<'a> {
             self.push_text(vec![Seg::new(text, style, link)]);
             return;
         };
-        for image_line in lines {
+        let rows = lines.len() as u16;
+        for (row, image_line) in lines.into_iter().enumerate() {
             let width = image_line.width();
             let pad = if self.centered() {
                 room.saturating_sub(width) / 2
@@ -867,6 +884,15 @@ impl<'a> Renderer<'a> {
             };
             let line = self.out.lines.len();
             let start = self.prefix_width() + pad;
+            if row == 0 {
+                self.out.places.push(Place {
+                    url: url.clone(),
+                    line,
+                    column: start,
+                    columns: width as u16,
+                    rows,
+                });
+            }
             self.area(line, start, start + width, link);
             let mut spans = self.prefix();
             spans.push(Span::raw(" ".repeat(pad)));

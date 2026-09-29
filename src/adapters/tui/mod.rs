@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod details;
 pub mod details_view;
 pub mod focus;
@@ -32,7 +33,7 @@ use crate::adapters::fetch::HttpFetcher;
 use crate::adapters::herdr_cli::HerdrCommand;
 use crate::adapters::herdr_socket::HerdrSocket;
 use crate::adapters::image_fetch::ImageFetcher;
-use crate::adapters::images::{Picture, load_in_background};
+use crate::adapters::images::{Animation, Picture, frames_within, load_in_background};
 use crate::adapters::operations::{FsOperations, spawn_operation};
 use crate::application::load_listing::{LoadedListing, load_listing, read_registry};
 use crate::application::load_readme::{Readme, load_readme};
@@ -52,9 +53,10 @@ use crate::domain::registry::InstalledPlugin;
 use crate::domain::source::PluginSource;
 use crate::domain::uninstall::RemovalPlan;
 
+use self::animation::Player;
 use self::details::{DetailsApp, DetailsIntent, InstalledView};
 use self::focus::FocusClicks;
-use self::graphics::Probe;
+use self::graphics::{Graphics, Probe};
 use self::sidebar::{Intent, SidebarApp};
 
 type Screen = Terminal<CrosstermBackend<io::Stdout>>;
@@ -74,6 +76,8 @@ enum DetailsAnswer {
     Removal(u64, Box<Result<RemovalPlan, String>>),
     Operation(Box<OperationRecord>),
     Picture(String, Result<Arc<Picture>, String>),
+    /// Frames of an animated image, made for cells of this many pixels.
+    Frames(String, (u32, u32), Result<Arc<Animation>, String>),
 }
 
 const POLL: Duration = Duration::from_millis(100);
@@ -240,10 +244,16 @@ pub fn run_details(process: ProcessEnv, target: DetailsTarget) -> Result<(), App
     let mut terminal = setup(Mouse::Drags)?;
     // Before the event reader starts: the answers come on the input.
     let probe = graphics::probe();
+    // Herdr plays the animated images of a pane it knows.
+    let mut player = process
+        .own_pane_id
+        .as_ref()
+        .map(|pane| Player::new(process.socket_path.clone(), pane.as_str().to_string()));
     let result = details_loop(
         &mut terminal,
         &mut app,
         probe,
+        player.as_mut(),
         &operations,
         &sender,
         &receiver,
@@ -259,6 +269,7 @@ fn details_loop(
     terminal: &mut Screen,
     app: &mut DetailsApp,
     probe: Probe,
+    mut player: Option<&mut Player>,
     operations: &FsOperations,
     sender: &Sender<DetailsAnswer>,
     receiver: &Receiver<DetailsAnswer>,
@@ -377,6 +388,9 @@ fn details_loop(
                 DetailsAnswer::Removal(request, plan) => app.removal_prepared(request, *plan),
                 DetailsAnswer::Operation(record) => app.operation_finished(*record),
                 DetailsAnswer::Picture(url, picture) => app.picture_loaded(&url, picture),
+                DetailsAnswer::Frames(url, fit, frames) => {
+                    app.pictures.frames_decoded(&url, fit, frames)
+                }
             }
         }
         if last_operation_check.is_none_or(|last| last.elapsed() >= OPERATION_CHECK) {
@@ -393,6 +407,9 @@ fn details_loop(
             terminal.backend_mut().flush()?;
         }
         terminal.draw(|frame| details_view::render(frame, app))?;
+        if let Some(player) = player.as_deref_mut() {
+            animate(app, player, size.width, size.height, sender);
+        }
         match next_input(POLL)? {
             Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),
             Some((Input::Mouse(mouse), at)) if focus.swallows(&mouse, at) => {
@@ -403,6 +420,46 @@ fn details_loop(
             _ => {}
         }
     }
+}
+
+/// Plays the animated images the pane shows over their first frame; their
+/// frames decode in the background the first time they show.
+fn animate(
+    app: &mut DetailsApp,
+    player: &mut Player,
+    width: u16,
+    height: u16,
+    sender: &Sender<DetailsAnswer>,
+) {
+    let mut shown = Vec::new();
+    if let Some(Graphics::Kitty {
+        cell_width,
+        cell_height,
+    }) = app.pictures.graphics()
+    {
+        for (url, spot) in details_view::spots(app, width, height) {
+            // Herdr cuts a layer larger than its cells: frames fit in them.
+            let fit = (
+                u32::from(spot.cells.columns) * u32::from(cell_width),
+                u32::from(spot.rows) * u32::from(cell_height),
+            );
+            if let Some((file, budget)) = app.pictures.frames_to_decode(&url, fit) {
+                let sender = sender.clone();
+                thread::spawn(move || {
+                    let frames = frames_within(&file, fit, budget).map(Arc::new);
+                    let _ = sender.send(DetailsAnswer::Frames(url, fit, frames));
+                });
+            } else if let Some(animation) = app.pictures.animation(&url, fit) {
+                shown.push((url, animation.clone(), spot));
+            }
+        }
+    }
+    player.show(&shown);
+    app.covered = shown
+        .iter()
+        .filter(|(url, animation, _)| !animation.opaque && player.live(url))
+        .map(|(url, ..)| url.clone())
+        .collect();
 }
 
 /// Starts a confirmed request outside the details pane, unless an operation
