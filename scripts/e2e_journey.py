@@ -719,6 +719,29 @@ def prove_update_shown():
     print("update_shown_ok", flush=True)
 
 
+def prove_update_from_details():
+    """`u` in the details pane updates the fixture from A to B, never
+    showing a preview."""
+    fixture_at_a()
+    sidebar, tab, details = fixture_details(SHA_B)
+    wait(lambda: "Update to 1.1.0 (u)" in read(details), "the details pane did not offer the update")
+    keys(details, "u")
+
+    def updated():
+        text = read(details)
+        assert "Enter: confirm" not in text, f"the update showed a preview: {text}"
+        return "Update to 1.1.0 succeeded" in text and text
+
+    shown = wait(updated, "the update did not succeed", OPERATION_TIMEOUT)
+    assert "Reopen its panes to use it." in shown, shown
+    assert (*FIXTURE, "", SHA_B) in registry(), registry()
+    marker = Path(fixture_plugin()["plugin_root"]) / "build-marker.txt"
+    assert marker.read_text().strip() == "1.1.0", marker.read_text()
+    close_all(tab)
+    fixture_at_a()
+    print("update_from_details_ok", flush=True)
+
+
 def remove(details):
     keys(details, "r")
     shown = wait(lambda: "Enter: confirm" in (text := read(details)) and text,
@@ -867,6 +890,7 @@ def main():
     prove_failed_build()
     prove_details_closed_during_install()
     prove_update_shown()
+    prove_update_from_details()
     prove_uninstall()
     prove_full_journey()
     print("journey_ok", flush=True)

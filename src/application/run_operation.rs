@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::application::load_listing::read_registry;
 use crate::application::ports::{HerdrCli, Operations};
 use crate::domain::compat::Platform;
-use crate::domain::install::{check_target, install_args, plan};
+use crate::domain::install::{Plan, check_target, install_args, plan};
 use crate::domain::operation::{
     Confirmation, OperationKind, OperationRecord, OperationRequest, Status, operation_status,
     registry_state,
@@ -72,18 +72,22 @@ pub fn run_locked_operation<H: HerdrCli, O: Operations>(
 
 /// Rebuild the command from the confirmed target and a fresh registry. A
 /// changed installation needs a new preview, including a switch whose old
-/// commit changed while the preview was open.
+/// commit changed while the preview was open. An update is an install that
+/// only replaces an installed plugin.
 fn revalidate<H: HerdrCli>(herdr: &H, request: &OperationRequest) -> Result<Vec<String>, String> {
     let changed = "installation changed since the preview; open it again to confirm";
     let args = match (&request.kind, &request.confirmation) {
         (
-            OperationKind::Install,
+            OperationKind::Install | OperationKind::Update,
             Some(Confirmation::Install {
                 target,
                 manifest,
                 plan: confirmed,
             }),
         ) => {
+            if request.kind == OperationKind::Update && !matches!(confirmed, Plan::Switch { .. }) {
+                return Err("an update only replaces an installed plugin".into());
+            }
             check_target(target)?;
             if target.source != request.source || target.commit != request.commit {
                 return Err("request does not match the confirmed target".into());

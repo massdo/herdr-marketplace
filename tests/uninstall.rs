@@ -379,7 +379,13 @@ fn the_remove_button_asks_and_confirm_removal_removes() {
     )
     .unwrap();
     let mut app = DetailsApp::new(target(true, true));
-    app.registry_read(1, InstalledView::At(SHA_A.into()));
+    app.registry_read(
+        1,
+        InstalledView::At {
+            commit: SHA_A.into(),
+            version: "1.0.0".into(),
+        },
+    );
     app.set_viewport(90, details_view::page_rows(&app, 90, 30));
     app.intents.clear();
 

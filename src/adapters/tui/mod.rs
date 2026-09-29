@@ -39,9 +39,10 @@ use crate::application::load_listing::{LoadedListing, load_listing, read_registr
 use crate::application::load_readme::{Readme, load_readme};
 use crate::application::open_details::{Reveal, Shown, close_details, show_details};
 use crate::application::ports::{HerdrCli, HerdrPort, Operations};
-use crate::application::prepare_install::{Prepared, prepare_install};
+use crate::application::prepare_install::{InstallPreview, Prepared, prepare_install};
 use crate::application::prepare_removal::prepare_removal;
 use crate::application::run_operation::current_operation;
+use crate::application::update_plugin::prepare_update;
 use crate::domain::compat::Platform;
 use crate::domain::details::DetailsTarget;
 use crate::domain::error::AppError;
@@ -72,6 +73,7 @@ enum SidebarAnswer {
 enum DetailsAnswer {
     Readme(u64, Result<Readme, String>),
     Install(u64, Prepared),
+    Update(u64, Box<Result<InstallPreview, String>>),
     Registry(u64, InstalledView),
     Removal(u64, Box<Result<RemovalPlan, String>>),
     Operation(Box<OperationRecord>),
@@ -336,6 +338,32 @@ fn details_loop(
                         confirmation,
                     )
                 }
+                DetailsIntent::PrepareUpdate(request) => {
+                    thread::spawn(move || {
+                        let result = prepare_update(
+                            &HttpFetcher::new(),
+                            &HerdrCommand::new(env::herdr_bin()),
+                            &target,
+                            Platform::current(),
+                        );
+                        let _ = sender.send(DetailsAnswer::Update(request, Box::new(result)));
+                    });
+                }
+                DetailsIntent::Update(preview) => {
+                    let confirmation = Confirmation::Install {
+                        target,
+                        manifest: Box::new(preview.manifest),
+                        plan: preview.plan,
+                    };
+                    launch(
+                        app,
+                        operations,
+                        sender,
+                        OperationKind::Update,
+                        preview.args,
+                        confirmation,
+                    )
+                }
                 DetailsIntent::Uninstall(plan) => {
                     let confirmation = Confirmation::Uninstall {
                         installed: plan.installed,
@@ -382,6 +410,7 @@ fn details_loop(
                 DetailsAnswer::Install(request, prepared) => {
                     app.install_prepared(request, prepared)
                 }
+                DetailsAnswer::Update(request, result) => app.update_prepared(request, *result),
                 DetailsAnswer::Registry(request, installed) => {
                     app.registry_read(request, installed)
                 }
@@ -569,9 +598,10 @@ fn installed_view<H: HerdrCli>(herdr: &H, source: &PluginSource) -> InstalledVie
         Err(error) => return InstalledView::Uncertain(error),
     };
     match installed_from(&registry, source) {
-        Ok(Some(plugin)) => {
-            InstalledView::At(plugin.resolved_commit().unwrap_or_default().to_string())
-        }
+        Ok(Some(plugin)) => InstalledView::At {
+            commit: plugin.resolved_commit().unwrap_or_default().to_string(),
+            version: plugin.version.clone(),
+        },
         Ok(None) => InstalledView::NotInstalled,
         Err(error) => InstalledView::Uncertain(error),
     }

@@ -71,6 +71,7 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 | `Enter` | Sidebar | Open the selected plugin and focus it |
 | `Tab` | Sidebar | Switch between **All** and **Installed** |
 | `i` | Details | Install, or switch to the catalog's commit |
+| `u` | Details | Update to the catalog's newer version, without a preview |
 | `r` | Details | Remove |
 | `o` | Details | Open on GitHub |
 | `s` | Details | Show the full commit SHA |

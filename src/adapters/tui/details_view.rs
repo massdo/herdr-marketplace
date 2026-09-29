@@ -11,6 +11,7 @@ use unicode_width::UnicodeWidthStr;
 use super::animation::Spot;
 use super::details::{
     Button, Command, DetailsApp, InstallState, InstalledView, ReadmeState, RemovalState,
+    UpdateState,
 };
 use super::graphics::without_image;
 use super::selection::{self, Flow, Selection};
@@ -18,7 +19,8 @@ use super::style::{
     ERROR, MUTED, OK, WARN, bold, button_text, ellipsize, ellipsize_middle, muted, wrap,
 };
 use crate::adapters::pane_graphics::Cells;
-use crate::domain::operation::{OperationKind, Status};
+use crate::domain::PLUGIN_ID;
+use crate::domain::operation::{Confirmation, OperationKind, Status};
 use crate::domain::text::clean;
 
 const FOOTER: &str = "s: full SHA · q: close · ↑↓ PgUp PgDn Home End";
@@ -328,11 +330,11 @@ fn header(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
     };
     let installed = match &app.installed {
         InstalledView::Unknown => Span::raw(""),
-        InstalledView::At(sha) if *sha == target.commit => {
+        InstalledView::At { commit, .. } if *commit == target.commit => {
             Span::styled(" · installed", Style::default().fg(OK))
         }
-        InstalledView::At(sha) => Span::styled(
-            format!(" · installed at {}", short(sha)),
+        InstalledView::At { commit, .. } => Span::styled(
+            format!(" · installed at {}", short(commit)),
             Style::default().fg(OK),
         ),
         InstalledView::NotInstalled => Span::styled(" · not installed", muted()),
@@ -393,7 +395,12 @@ fn notices(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
         }
         _ => None,
     };
-    if let Some((status, color)) = status {
+    let update = match &app.update {
+        UpdateState::Idle => None,
+        UpdateState::Preparing => Some(("Preparing update…".to_string(), MUTED)),
+        UpdateState::Refused(reason) => Some((format!("Update refused: {}", clean(reason)), ERROR)),
+    };
+    for (status, color) in status.into_iter().chain(update) {
         lines.extend(
             wrap(&status, width)
                 .into_iter()
@@ -416,6 +423,7 @@ fn operation_lines(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
     if let Some((_, kind)) = &app.launched {
         let text = match kind {
             OperationKind::Install => "Installing…",
+            OperationKind::Update => "Updating…",
             OperationKind::Uninstall => "Removing…",
         };
         return vec![Line::styled(text, Style::default().fg(WARN))];
@@ -424,7 +432,12 @@ fn operation_lines(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
         return Vec::new();
     };
     let sha = short(&record.request.commit);
-    let install = record.request.kind == OperationKind::Install;
+    // An update is named by the version of the manifest it confirmed.
+    let manifest = match &record.request.confirmation {
+        Some(Confirmation::Install { manifest, .. }) => Some(manifest),
+        _ => None,
+    };
+    let version = manifest.map_or_else(|| sha.clone(), |manifest| clean(&manifest.version));
     let registry = record
         .registry_after
         .as_deref()
@@ -432,23 +445,60 @@ fn operation_lines(app: &DetailsApp, width: usize) -> Vec<Line<'static>> {
     let code = record
         .exit_code
         .map_or("no exit code".to_string(), |code| format!("code {code}"));
-    let (headline, color, details) = match (record.status, install) {
-        (Status::Running, true) => (format!("Installing {sha}…"), WARN, None),
-        (Status::Running, false) => ("Removing…".to_string(), WARN, None),
-        (Status::Succeeded, true) => (format!("Install of {sha} succeeded"), OK, None),
-        (Status::Succeeded, false) => ("Removal succeeded".to_string(), OK, registry),
-        (Status::Failed, true) => (format!("Install of {sha} failed ({code})"), ERROR, registry),
-        (Status::Failed, false) => (format!("Removal failed ({code})"), ERROR, registry),
-        (Status::Unconfirmed, true) => (
+    let (headline, color, details) = match (record.status, record.request.kind) {
+        (Status::Running, OperationKind::Install) => (format!("Installing {sha}…"), WARN, None),
+        (Status::Running, OperationKind::Update) => (format!("Updating to {version}…"), WARN, None),
+        (Status::Running, OperationKind::Uninstall) => ("Removing…".to_string(), WARN, None),
+        (Status::Succeeded, OperationKind::Install) => {
+            (format!("Install of {sha} succeeded"), OK, None)
+        }
+        (Status::Succeeded, OperationKind::Update) => {
+            // Herdr relaunches no pane: the new version runs once reopened.
+            let reopen = if manifest.is_some_and(|manifest| manifest.id == PLUGIN_ID) {
+                "Close and reopen the marketplace to use it."
+            } else {
+                "Reopen its panes to use it."
+            };
+            (
+                format!("Update to {version} succeeded"),
+                OK,
+                Some(reopen.to_string()),
+            )
+        }
+        (Status::Succeeded, OperationKind::Uninstall) => {
+            ("Removal succeeded".to_string(), OK, registry)
+        }
+        (Status::Failed, OperationKind::Install) => {
+            (format!("Install of {sha} failed ({code})"), ERROR, registry)
+        }
+        (Status::Failed, OperationKind::Update) => (
+            format!("Update to {version} failed ({code})"),
+            ERROR,
+            registry,
+        ),
+        (Status::Failed, OperationKind::Uninstall) => {
+            (format!("Removal failed ({code})"), ERROR, registry)
+        }
+        (Status::Unconfirmed, OperationKind::Install) => (
             format!("Install of {sha}: result not confirmed"),
             WARN,
             registry,
         ),
-        (Status::Unconfirmed, false) => {
+        (Status::Unconfirmed, OperationKind::Update) => (
+            format!("Update to {version}: result not confirmed"),
+            WARN,
+            registry,
+        ),
+        (Status::Unconfirmed, OperationKind::Uninstall) => {
             ("Removal: result not confirmed".to_string(), WARN, registry)
         }
-        (Status::Refused, true) => (format!("Install of {sha} refused"), ERROR, None),
-        (Status::Refused, false) => ("Removal refused".to_string(), ERROR, None),
+        (Status::Refused, OperationKind::Install) => {
+            (format!("Install of {sha} refused"), ERROR, None)
+        }
+        (Status::Refused, OperationKind::Update) => {
+            (format!("Update to {version} refused"), ERROR, None)
+        }
+        (Status::Refused, OperationKind::Uninstall) => ("Removal refused".to_string(), ERROR, None),
     };
     let mut lines: Vec<Line<'static>> = wrap(&headline, width)
         .into_iter()
