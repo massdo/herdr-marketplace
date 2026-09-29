@@ -2,7 +2,7 @@
 
 # herdr-marketplace
 
-**Search, read and install [Herdr](https://herdr.dev) plugins without leaving your terminal.**
+**Search, read, install and update [Herdr](https://herdr.dev) plugins without leaving your terminal.**
 
 [![CI](https://github.com/massdo/herdr-marketplace/actions/workflows/ci.yml/badge.svg)](https://github.com/massdo/herdr-marketplace/actions/workflows/ci.yml)
 [![Herdr 0.9.1+](https://img.shields.io/badge/Herdr-0.9.1%2B-89b4fa)](https://herdr.dev)
