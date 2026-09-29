@@ -24,3 +24,17 @@ fn the_real_index_loads() {
     assert_eq!(catalog.entries.len() + catalog.rejected, catalog.read);
     assert!(!catalog.entries.is_empty());
 }
+
+#[test]
+#[ignore = "downloads an image uploaded to a GitHub README"]
+fn an_image_uploaded_to_a_readme_loads_through_its_github_redirect() {
+    use herdr_marketplace::adapters::image_fetch::ImageFetcher;
+    use herdr_marketplace::adapters::images::{IMAGE_LIMIT, decode};
+    // The first image of ChmaraX/herdr-gitview's README.
+    let url = "https://github.com/user-attachments/assets/23ee0639-4a6e-42c5-a003-6e71ab619c43";
+    let bytes = ImageFetcher::default()
+        .fetch(url, IMAGE_LIMIT)
+        .expect("follow GitHub's redirect to its storage");
+    let picture = decode(&bytes).expect("decode the uploaded image");
+    assert!(picture.width > 0 && picture.height > 0);
+}

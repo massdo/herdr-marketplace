@@ -35,11 +35,24 @@ impl ImageFetcher {
 
 impl Fetcher for ImageFetcher {
     fn fetch(&self, url: &str, limit: u64) -> Result<Vec<u8>, FetchError> {
-        let mut response = self
-            .0
-            .get(url)
-            .call()
-            .map_err(|error| FetchError::Failed(error.to_string()))?;
+        let failed = |error: ureq::Error| FetchError::Failed(error.to_string());
+        let mut response = self.0.get(url).call().map_err(failed)?;
+        // GitHub serves the files uploaded to a README through one redirect
+        // to its storage. It is the only redirect followed.
+        if response.status().is_redirection() && github_attachment(url) {
+            let location = response
+                .headers()
+                .get(ureq::http::header::LOCATION)
+                .and_then(|location| location.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            if !github_storage(&location) {
+                return Err(FetchError::Failed(
+                    "GitHub attachment redirected outside GitHub's storage".into(),
+                ));
+            }
+            response = self.0.get(&location).call().map_err(failed)?;
+        }
         if !response.status().is_success() {
             return Err(FetchError::Failed(format!(
                 "image HTTP status {} (redirects disabled)",
@@ -53,6 +66,25 @@ impl Fetcher for ImageFetcher {
             .read_to_vec()
             .map_err(|error| FetchError::Failed(error.to_string()))
     }
+}
+
+/// A file uploaded to a README: `https://github.com/user-attachments/assets/…`.
+fn github_attachment(url: &str) -> bool {
+    url.strip_prefix("https://github.com/user-attachments/assets/")
+        .is_some_and(|rest| !rest.is_empty())
+}
+
+/// Where GitHub keeps those files: its S3 buckets and githubusercontent.com,
+/// over HTTPS.
+fn github_storage(url: &str) -> bool {
+    let Ok(uri) = url.parse::<ureq::http::Uri>() else {
+        return false;
+    };
+    let host = uri.host().unwrap_or_default().to_ascii_lowercase();
+    uri.scheme_str() == Some("https")
+        && (host.ends_with(".githubusercontent.com")
+            || (host.starts_with("github-production-user-asset-")
+                && host.ends_with(".s3.amazonaws.com")))
 }
 
 #[derive(Debug)]
@@ -181,5 +213,38 @@ mod tests {
         assert_eq!(fetcher.0.config().max_redirects(), 0);
         assert!(fetcher.0.config().https_only());
         assert!(fetcher.0.config().proxy().is_none());
+    }
+
+    #[test]
+    fn only_a_github_attachment_follows_its_redirect_to_github_storage() {
+        let upload =
+            "https://github.com/user-attachments/assets/23ee0639-4a6e-42c5-a003-6e71ab619c43";
+        assert!(github_attachment(upload));
+        for other in [
+            "https://github.com/user-attachments/assets/",
+            "https://github.com/owner/repo/blob/main/demo.gif",
+            "http://github.com/user-attachments/assets/23ee0639",
+            "https://example.com/user-attachments/assets/23ee0639",
+        ] {
+            assert!(!github_attachment(other), "{other}");
+        }
+        for storage in [
+            "https://github-production-user-asset-6210df.s3.amazonaws.com/9/1-a.gif?X-Amz-Signature=0",
+            "https://private-user-images.githubusercontent.com/9/1-a.gif?jwt=0",
+        ] {
+            assert!(github_storage(storage), "{storage}");
+        }
+        for elsewhere in [
+            "http://private-user-images.githubusercontent.com/9/1-a.gif",
+            "https://githubusercontent.com.example.com/1-a.gif",
+            "https://example.com/?host=.githubusercontent.com",
+            "https://s3.amazonaws.com/github-production-user-asset-6210df/1-a.gif",
+            "https://github-production-user-asset-6210df.s3.amazonaws.com.example.com/1-a.gif",
+            "https://github.com/login",
+            "/relative/1-a.gif",
+            "",
+        ] {
+            assert!(!github_storage(elsewhere), "{elsewhere}");
+        }
     }
 }
