@@ -43,25 +43,41 @@ pub enum Filter {
     #[default]
     All,
     Installed,
+    /// Installed plugins the catalogue has a newer version of.
+    Updates,
 }
 
 impl Filter {
-    fn other(self) -> Self {
+    /// Tab: All, Installed, then Updates while its tab shows.
+    fn next(self, updates_tab: bool) -> Self {
         match self {
             Self::All => Self::Installed,
+            Self::Installed if updates_tab => Self::Updates,
+            Self::Installed | Self::Updates => Self::All,
+        }
+    }
+
+    /// Shift+Tab: the other way round.
+    fn previous(self, updates_tab: bool) -> Self {
+        match self {
+            Self::All if updates_tab => Self::Updates,
+            Self::All | Self::Updates => Self::Installed,
             Self::Installed => Self::All,
         }
     }
 }
 
-/// Typed in the search, as in VS Code, it shows the installed plugins.
+/// Typed in the search, as in VS Code, they pick the Installed and the
+/// Updates filters.
 pub const INSTALLED_TOKEN: &str = "@installed";
+pub const OUTDATED_TOKEN: &str = "@outdated";
 
 /// Plugins matching the query, under each filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Counts {
     pub all: usize,
     pub installed: usize,
+    pub updates: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,7 +197,8 @@ impl SidebarApp {
             }
             KeyCode::Esc if self.filter != Filter::All => self.set_filter(Filter::All),
             KeyCode::Esc => return true,
-            KeyCode::Tab | KeyCode::BackTab => self.set_filter(self.filter.other()),
+            KeyCode::Tab => self.set_filter(self.filter.next(self.updates_tab())),
+            KeyCode::BackTab => self.set_filter(self.filter.previous(self.updates_tab())),
             KeyCode::Char(ch) => {
                 self.query.push(ch);
                 self.take_filter_token();
@@ -334,6 +351,12 @@ impl SidebarApp {
         self.intents.push(Intent::Update(Box::new(row)));
     }
 
+    /// The Updates tab shows while a listed plugin has an update, whatever
+    /// the search, and while it is the filter.
+    pub fn updates_tab(&self) -> bool {
+        self.filter == Filter::Updates || self.rows().iter().any(|row| row.update().is_some())
+    }
+
     /// Another filter starts from its first plugin, as a new search does.
     pub fn set_filter(&mut self, filter: Filter) {
         self.filter = filter;
@@ -382,24 +405,21 @@ impl SidebarApp {
         }
     }
 
-    /// `@installed` typed as a word switches the filter and leaves the
-    /// search.
+    /// `@installed` or `@outdated` typed as a word switches the filter and
+    /// leaves the search.
     fn take_filter_token(&mut self) {
         let words: Vec<&str> = self.query.split(' ').collect();
-        if !words
-            .iter()
-            .any(|word| word.eq_ignore_ascii_case(INSTALLED_TOKEN))
-        {
+        let Some(filter) = words.iter().find_map(|word| token_filter(word)) else {
             return;
-        }
+        };
         self.query = words
             .into_iter()
-            .filter(|word| !word.eq_ignore_ascii_case(INSTALLED_TOKEN))
+            .filter(|word| token_filter(word).is_none())
             .collect::<Vec<_>>()
             .join(" ")
             .trim_start()
             .to_string();
-        self.filter = Filter::Installed;
+        self.filter = filter;
     }
 
     /// A new search starts from its most relevant result, and open details
@@ -426,13 +446,20 @@ impl SidebarApp {
             .copied()
             .filter(|&index| rows[index].installed.is_some())
             .collect();
+        let updates: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|&index| rows[index].update().is_some())
+            .collect();
         self.counts = Counts {
             all: all.len(),
             installed: installed.len(),
+            updates: updates.len(),
         };
         let visible = match self.filter {
             Filter::All => all,
             Filter::Installed => installed,
+            Filter::Updates => updates,
         };
         let first = visible
             .first()
@@ -488,4 +515,15 @@ impl SidebarApp {
             self.offset = position + 1 - self.page;
         }
     }
+}
+
+/// The filter a word typed in the search picks.
+fn token_filter(word: &str) -> Option<Filter> {
+    [
+        (INSTALLED_TOKEN, Filter::Installed),
+        (OUTDATED_TOKEN, Filter::Updates),
+    ]
+    .into_iter()
+    .find(|(token, _)| word.eq_ignore_ascii_case(token))
+    .map(|(_, filter)| filter)
 }

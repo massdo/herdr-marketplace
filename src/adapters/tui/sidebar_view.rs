@@ -82,7 +82,7 @@ pub fn hit(app: &SidebarApp, width: u16, height: u16, column: u16, row: u16) -> 
         return Some(Hit::Clear);
     }
     if line == boxed && matches!(app.state, LoadState::Ready(_)) {
-        return tab_cells(app)
+        return tab_cells(app, width as usize)
             .into_iter()
             .find(|(_, start, end)| (*start..*end).contains(&cells))
             .map(|(filter, _, _)| Hit::Filter(filter));
@@ -226,10 +226,10 @@ fn tail(text: &str, width: usize) -> String {
 }
 
 /// Filter tabs and the columns each covers; the one shown is filled.
-fn tab_cells(app: &SidebarApp) -> Vec<(Filter, usize, usize)> {
+fn tab_cells(app: &SidebarApp, width: usize) -> Vec<(Filter, usize, usize)> {
     let mut cells = Vec::new();
     let mut used = 0;
-    for (filter, label) in tab_labels(app) {
+    for (filter, label) in tab_labels(app, width) {
         let start = if cells.is_empty() { 0 } else { used + 1 };
         let end = start + label.width();
         cells.push((filter, start, end));
@@ -238,20 +238,38 @@ fn tab_cells(app: &SidebarApp) -> Vec<(Filter, usize, usize)> {
     cells
 }
 
-fn tab_labels(app: &SidebarApp) -> [(Filter, String); 2] {
-    [
+/// All and Installed, then Updates while it shows: in full when the three
+/// tabs fit in `width`, else as an arrow.
+fn tab_labels(app: &SidebarApp, width: usize) -> Vec<(Filter, String)> {
+    let mut labels = vec![
         (Filter::All, format!(" All {} ", app.counts.all)),
         (
             Filter::Installed,
             format!(" Installed {} ", app.counts.installed),
         ),
-    ]
+    ];
+    if app.updates_tab() {
+        let updates = app.counts.updates;
+        let full = format!(" Updates {updates} ");
+        // Each tab is followed by a cell of space.
+        let used: usize = labels.iter().map(|(_, label)| label.width() + 1).sum();
+        let label = if used + full.width() <= width {
+            full
+        } else {
+            format!(" ↑{updates} ")
+        };
+        labels.push((Filter::Updates, label));
+    }
+    labels
 }
 
 fn tabs(app: &SidebarApp, width: usize) -> Line<'static> {
     let mut spans = Vec::new();
     let mut used = 0;
-    for ((filter, label), (_, start, end)) in tab_labels(app).into_iter().zip(tab_cells(app)) {
+    for ((filter, label), (_, start, end)) in tab_labels(app, width)
+        .into_iter()
+        .zip(tab_cells(app, width))
+    {
         if end > width {
             break;
         }
@@ -285,10 +303,10 @@ fn failure(error: &str, width: usize) -> Vec<Line<'static>> {
 
 fn list(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     if app.visible.is_empty() {
-        let empty = if app.filter == Filter::Installed && app.query.trim().is_empty() {
-            "No plugin installed from GitHub"
-        } else {
-            "No matching plugin"
+        let empty = match app.filter {
+            Filter::Installed if app.query.trim().is_empty() => "No plugin installed from GitHub",
+            Filter::Updates if app.query.trim().is_empty() => "All plugins are up to date",
+            _ => "No matching plugin",
         };
         return vec![Line::styled(ellipsize(empty, width), muted())];
     }

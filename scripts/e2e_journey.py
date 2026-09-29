@@ -802,6 +802,48 @@ def prove_update_from_sidebar():
     print("update_from_sidebar_ok", flush=True)
 
 
+def tabs_line(pane):
+    """The line of the filters and their counts, empty while loading."""
+    return next((line for line in read(pane).split("\n") if listed(line)), "")
+
+
+def only_the_update(text):
+    """The list shows the root fixture's card, nothing else."""
+    return ("massdo/herdr-…lace-fixture" in text and "massdo/herdr-…-fixture/alt" not in text
+            and "Filler" not in text)
+
+
+def prove_updates_tab():
+    """While an installed plugin has an update, the Updates tab lists it
+    alone: a click or @outdated picks it, Esc leaves it."""
+    fixture_at_a()
+    write_catalog(SHA_B)
+    sidebar = open_sidebar()
+    # The full label when the three tabs fit, else the arrow.
+    label = wait(lambda: next((label for label in ("Updates 1", "↑1") if label in tabs_line(sidebar)), None),
+                 "the Updates tab did not show")
+    click_focused(sidebar, label)
+    wait(lambda: only_the_update(read(sidebar)), "the Updates tab did not list only the update")
+    keys(sidebar, "esc")
+    wait(lambda: "Filler" in read(sidebar), "Esc did not return to all plugins")
+    type_text(sidebar, "@outdated")
+    shown = wait(lambda: only_the_update(text := read(sidebar)) and text,
+                 "@outdated did not pick the Updates tab")
+    assert "@outdated" not in shown, shown
+    keys(sidebar, "esc")
+    wait(lambda: "Filler" in read(sidebar), "Esc did not return to all plugins")
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+
+    write_catalog(SHA_A)
+    sidebar = open_sidebar()
+    tabs = wait(lambda: tabs_line(sidebar), "the catalogue did not load")
+    assert "Updates" not in tabs and "↑" not in tabs, tabs
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+    print("updates_tab_ok", flush=True)
+
+
 def remove(details):
     keys(details, "r")
     shown = wait(lambda: "Enter: confirm" in (text := read(details)) and text,
@@ -952,6 +994,7 @@ def main():
     prove_update_shown()
     prove_update_from_details()
     prove_update_from_sidebar()
+    prove_updates_tab()
     prove_uninstall()
     prove_full_journey()
     print("journey_ok", flush=True)

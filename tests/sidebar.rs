@@ -588,7 +588,8 @@ fn the_installed_filter_shows_only_installed_plugins() {
         app.counts,
         Counts {
             all: 12,
-            installed: 2
+            installed: 2,
+            updates: 0
         }
     );
     app.handle_key(key(KeyCode::Tab));
@@ -605,7 +606,8 @@ fn the_installed_filter_shows_only_installed_plugins() {
         app.counts,
         Counts {
             all: 1,
-            installed: 1
+            installed: 1,
+            updates: 0
         },
         "counts follow the search"
     );
@@ -1040,4 +1042,142 @@ fn a_notice_is_drawn_in_its_color() {
         assert!(text[4].starts_with("Details not opened"), "{text:#?}");
         assert_eq!(buffer[(0, 4)].fg, color);
     }
+}
+
+#[test]
+fn without_an_update_the_tabs_stay_all_and_installed() {
+    let mut app = installed_app();
+    assert!(!app.updates_tab());
+    let (_, text) = draw(&mut app, 60, 19);
+    assert!(text[3].starts_with(" All 12   Installed 2 "), "{text:#?}");
+    assert!(
+        !text[3].contains("Updates") && !text[3].contains('↑'),
+        "{text:#?}"
+    );
+}
+
+#[test]
+fn an_update_adds_the_updates_tab_in_full_or_as_an_arrow() {
+    let mut app = outdated_app("1.1.0", "1.0.0");
+    let (_, text) = draw(&mut app, 60, 15);
+    assert!(
+        text[3].starts_with(" All 2   Installed 1   Updates 1 "),
+        "{text:#?}"
+    );
+    let (_, text) = draw(&mut app, 32, 15);
+    assert!(
+        text[3].starts_with(" All 2   Installed 1   ↑1 "),
+        "{text:#?}"
+    );
+}
+
+#[test]
+fn the_updates_count_follows_the_search_and_its_tab_stays() {
+    let mut app = outdated_app("1.1.0", "1.0.0");
+    assert_eq!(
+        app.counts,
+        Counts {
+            all: 2,
+            installed: 1,
+            updates: 1
+        }
+    );
+    type_text(&mut app, "acme.plugin");
+    assert_eq!(
+        app.counts,
+        Counts {
+            all: 1,
+            installed: 0,
+            updates: 0
+        }
+    );
+    let (_, text) = draw(&mut app, 60, 15);
+    assert!(text[3].contains(" Updates 0 "), "{text:#?}");
+    let (_, text) = draw(&mut app, 32, 15);
+    assert!(text[3].contains(" ↑0 "), "{text:#?}");
+}
+
+#[test]
+fn tab_reaches_the_updates_tab_only_while_it_shows() {
+    let mut app = outdated_app("1.1.0", "1.0.0");
+    for expected in [Filter::Installed, Filter::Updates, Filter::All] {
+        app.handle_key(key(KeyCode::Tab));
+        assert_eq!(app.filter, expected);
+    }
+    for expected in [Filter::Updates, Filter::Installed, Filter::All] {
+        app.handle_key(key(KeyCode::BackTab));
+        assert_eq!(app.filter, expected);
+    }
+
+    let mut app = installed_app();
+    for code in [KeyCode::Tab, KeyCode::BackTab] {
+        for expected in [Filter::Installed, Filter::All] {
+            app.handle_key(key(code));
+            assert_eq!(app.filter, expected, "{code:?}");
+        }
+    }
+}
+
+#[test]
+fn a_click_on_the_updates_tab_shows_only_the_updates() {
+    // " All 2   Installed 1 " then " Updates 1 " from column 22, or " ↑1 ".
+    for (width, column) in [(60, 25), (32, 23)] {
+        let mut app = outdated_app("1.1.0", "1.0.0");
+        app.set_page(sidebar_view::page_rows(&app, width, 15));
+        app.handle_mouse(click(column, 3), width, 15);
+        assert_eq!(app.filter, Filter::Updates, "{width} columns");
+        assert_eq!(visible_repos(&app), ["herdr-marketplace-fixture"]);
+    }
+}
+
+#[test]
+fn at_outdated_typed_in_the_search_picks_the_updates_filter() {
+    let mut app = outdated_app("1.1.0", "1.0.0");
+    type_text(&mut app, "@outdated");
+    assert_eq!(app.filter, Filter::Updates);
+    assert_eq!(app.query, "", "the word leaves the search");
+    assert_eq!(visible_repos(&app), ["herdr-marketplace-fixture"]);
+    assert!(!app.handle_key(key(KeyCode::Esc)));
+    assert_eq!(app.filter, Filter::All);
+    type_text(&mut app, "@OUTDATED");
+    assert_eq!((app.query.as_str(), app.filter), ("", Filter::Updates));
+}
+
+#[test]
+fn an_empty_updates_list_says_all_plugins_are_up_to_date() {
+    let mut app = installed_app();
+    app.set_filter(Filter::Updates);
+    let (_, text) = draw(&mut app, 40, 19);
+    assert!(
+        text[5].starts_with("All plugins are up to date"),
+        "{text:#?}"
+    );
+    type_text(&mut app, "plugin-03");
+    let (_, text) = draw(&mut app, 40, 19);
+    assert!(text[5].starts_with("No matching plugin"), "{text:#?}");
+}
+
+#[test]
+fn the_updates_filter_stays_once_the_update_is_installed() {
+    let mut app = outdated_app("1.1.0", "1.0.0");
+    app.set_filter(Filter::Updates);
+    // The fixture now runs the catalogue's commit.
+    app.registry_refreshed(
+        parse_registry(&registry(vec![github_plugin(
+            "herdr-marketplace-fixture",
+            "massdo",
+            "herdr-marketplace-fixture",
+            None,
+            SHA_A,
+        )])),
+        Platform::Macos,
+    );
+    assert_eq!(app.filter, Filter::Updates);
+    assert!(app.visible.is_empty());
+    let (_, text) = draw(&mut app, 60, 15);
+    assert!(text[3].contains(" Updates 0 "), "{text:#?}");
+    assert!(
+        text[5].starts_with("All plugins are up to date"),
+        "{text:#?}"
+    );
 }

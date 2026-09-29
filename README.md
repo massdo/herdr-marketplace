@@ -57,7 +57,7 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
   moves an installed plugin to the catalog's commit, and `r` removes it.
 - **Update in one click.** When the catalog has a newer version of an
   installed plugin, its card shows **Update to x.y.z**: one click updates
-  it, without a preview.
+  it, without a preview. The **Updates** tab lists them.
 - **Keyboard or mouse.** Click, scroll and drag to copy text, or never leave
   the keyboard.
 
@@ -65,13 +65,13 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 
 | Key | Where | Action |
 | --- | --- | --- |
-| Type | Sidebar | Search; an open preview shows the first result |
+| Type | Sidebar | Search; `@installed` and `@outdated` pick a filter; an open preview shows the first result |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Sidebar | Move, and preview the plugin beside the list |
 | `↑` `↓` `PgUp` `PgDn` `Home` `End` | Details | Scroll |
 | Click a plugin | Sidebar | Preview it, the sidebar keeps the focus |
 | Click **Update** on a card | Sidebar | Update the plugin, without a preview |
 | `Enter` | Sidebar | Open the selected plugin and focus it |
-| `Tab` | Sidebar | Switch between **All** and **Installed** |
+| `Tab` | Sidebar | Switch between **All**, **Installed** and **Updates** |
 | `i` | Details | Install, or switch to the catalog's commit |
 | `u` | Details | Update to the catalog's newer version, without a preview |
 | `r` | Details | Remove |
