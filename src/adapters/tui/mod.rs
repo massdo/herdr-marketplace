@@ -32,7 +32,7 @@ use crate::adapters::env::{self, ProcessEnv};
 use crate::adapters::fetch::HttpFetcher;
 use crate::adapters::herdr_cli::HerdrCommand;
 use crate::adapters::herdr_socket::HerdrSocket;
-use crate::adapters::image_fetch::ImageFetcher;
+use crate::adapters::image_fetch::{self, ImageFetcher};
 use crate::adapters::images::{Animation, Picture, frames_within, load_in_background};
 use crate::adapters::operations::{FsOperations, spawn_operation};
 use crate::application::load_listing::{LoadedListing, load_listing, read_registry};
@@ -78,6 +78,7 @@ enum DetailsAnswer {
     Picture(String, Result<Arc<Picture>, String>),
     /// Frames of an animated image, made for cells of this many pixels.
     Frames(String, (u32, u32), Result<Arc<Animation>, String>),
+    VideoProbed(String, Result<image_fetch::Probe, String>),
 }
 
 const POLL: Duration = Duration::from_millis(100);
@@ -249,6 +250,8 @@ pub fn run_details(process: ProcessEnv, target: DetailsTarget) -> Result<(), App
         .own_pane_id
         .as_ref()
         .map(|pane| Player::new(process.socket_path.clone(), pane.as_str().to_string()));
+    // Videos play the same way, their frames made by the private FFmpeg.
+    app.video_player(player.is_some() && env::ffmpeg_bin().is_some());
     let result = details_loop(
         &mut terminal,
         &mut app,
@@ -368,6 +371,15 @@ fn details_loop(
                         let _ = images.send(url);
                     }
                 }
+                DetailsIntent::ProbeVideos(urls) => {
+                    thread::spawn(move || {
+                        let fetcher = ImageFetcher::default();
+                        for url in urls {
+                            let probe = fetcher.probe(&url).map_err(|error| error.to_string());
+                            let _ = sender.send(DetailsAnswer::VideoProbed(url, probe));
+                        }
+                    });
+                }
                 DetailsIntent::OpenUrl(url) => open_url(&url),
                 DetailsIntent::Copy(text) => {
                     let backend = terminal.backend_mut();
@@ -391,6 +403,7 @@ fn details_loop(
                 DetailsAnswer::Frames(url, fit, frames) => {
                     app.pictures.frames_decoded(&url, fit, frames)
                 }
+                DetailsAnswer::VideoProbed(url, probe) => app.video_probed(&url, probe),
             }
         }
         if last_operation_check.is_none_or(|last| last.elapsed() >= OPERATION_CHECK) {
