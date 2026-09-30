@@ -1,5 +1,5 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -112,6 +112,29 @@ pub fn herdr_bin() -> PathBuf {
     env_string("HERDR_BIN_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("herdr"))
+}
+
+/// The private FFmpeg that plays README videos; `None` without one.
+pub fn ffmpeg_bin() -> Option<PathBuf> {
+    let exe = env::current_exe().ok();
+    ffmpeg_from(
+        env::var("HERDR_MARKETPLACE_FFMPEG").ok().as_deref(),
+        exe.as_deref(),
+    )
+}
+
+/// `HERDR_MARKETPLACE_FFMPEG` when it names a file, for tests and
+/// development; else `ffmpeg` next to the executable `exe`, where a verified
+/// install puts it.
+pub fn ffmpeg_from(variable: Option<&str>, exe: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = variable.filter(|path| !path.is_empty()).map(PathBuf::from)
+        && path.is_file()
+    {
+        return Some(path);
+    }
+    exe?.parent()
+        .map(|folder| folder.join("ffmpeg"))
+        .filter(|path| path.is_file())
 }
 
 fn plugin_context() -> Option<PluginContextJson> {

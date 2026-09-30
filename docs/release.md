@@ -26,8 +26,11 @@ every new install compile: tag each version as soon as it reaches `main`.
    binaries, then publishes `herdr-marketplace-aarch64-apple-darwin`,
    `herdr-marketplace-x86_64-apple-darwin`,
    `herdr-marketplace-x86_64-unknown-linux-musl`, `SHA256SUMS` and
-   `SOURCE_COMMIT`. A failed run can be run again: it resumes the draft and
-   never overwrites a published release.
+   `SOURCE_COMMIT`. It also publishes the private FFmpeg that plays README
+   videos, `ffmpeg-aarch64-apple-darwin`, `ffmpeg-x86_64-apple-darwin` and
+   `ffmpeg-x86_64-unknown-linux-musl`, built by `scripts/build-ffmpeg.sh` and
+   checked by `scripts/check-ffmpeg.sh`. A failed run can be run again: it
+   resumes the draft and never overwrites a published release.
 5. Check an install. Herdr hides the output of a build that succeeds, so ask
    the script for its log:
 

@@ -19,17 +19,23 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use self::html::Token;
 use super::graphics::Pictures;
 use super::selection::Flow;
-use super::style::{ACCENT, MUTED, OK};
+use super::style::{ACCENT, MUTED, OK, megabytes};
+use crate::adapters::image_fetch::github_attachment;
 use crate::domain::readme::{LinkTarget, ReadmePlace, absolute_image, absolute_link, anchor};
 
 /// Inline code and image chips: light text on grey, readable on any theme.
-const CHIP_FG: Color = Color::Rgb(0xe6, 0xed, 0xf3);
-const CHIP_BG: Color = Color::Rgb(0x3d, 0x44, 0x4d);
+pub(super) const CHIP_FG: Color = Color::Rgb(0xe6, 0xed, 0xf3);
+pub(super) const CHIP_BG: Color = Color::Rgb(0x3d, 0x44, 0x4d);
 /// Text of a quote, GitHub's grey.
 const QUOTE: Color = Color::Rgb(0x9d, 0xa5, 0xb0);
 const LIST_MARKERS: [&str; 3] = ["• ", "◦ ", "▪ "];
 /// Images the HTML makes this narrow are icons, left in the text.
 const ICON_PIXELS: u32 = 48;
+/// A video that cannot play in the pane: a chip that opens it.
+const VIDEO_CHIP: &str = "\u{a0}▶\u{a0}video\u{a0}";
+const OPEN_VIDEO: &str = "Open in browser";
+/// Cells between the play button of a video and the link after it.
+const VIDEO_GAP: usize = 2;
 
 /// A README laid out for a width.
 #[derive(Debug, Clone, Default)]
@@ -45,6 +51,27 @@ pub struct Rendered {
     pub images: Vec<String>,
     /// Where the loaded images are drawn.
     pub places: Vec<Place>,
+    /// Videos the README shows, in order, each once: the addresses to probe.
+    pub videos: Vec<String>,
+    /// Where the videos that can play are drawn.
+    pub video_places: Vec<VideoPlace>,
+}
+
+/// Cells a video plays in, in the lines of a README, and its play button.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoPlace {
+    pub url: String,
+    /// Its first line.
+    pub line: usize,
+    /// Its first column.
+    pub column: usize,
+    pub columns: u16,
+    pub rows: u16,
+    /// The line of its button, and the columns `start..end` it covers.
+    pub button_line: usize,
+    pub button: (usize, usize),
+    /// Its HTML asks it to start over at its end.
+    pub looped: bool,
 }
 
 /// Cells an image takes in the lines of a README.
@@ -122,6 +149,14 @@ enum Piece {
         alt: String,
         /// Width the HTML asks for, in pixels.
         hint: Option<u32>,
+        link: Option<usize>,
+    },
+    Video {
+        url: Option<String>,
+        /// Size the HTML asks for, in pixels.
+        width: Option<u32>,
+        height: Option<u32>,
+        looped: bool,
         link: Option<usize>,
     },
 }
@@ -346,6 +381,7 @@ impl<'a> Renderer<'a> {
     fn end(&mut self, tag: TagEnd) {
         match tag {
             TagEnd::Paragraph => {
+                self.lone_video();
                 self.flush();
                 if self.items.is_empty() {
                     self.blank();
@@ -576,12 +612,20 @@ impl<'a> Renderer<'a> {
                 if let Some(src) = html::attribute(attributes, "src") {
                     self.open_link(&src);
                     let link = self.open_links.last().copied();
-                    self.pieces.push(Piece::Text {
-                        text: "\u{a0}▶\u{a0}video\u{a0}".into(),
-                        style: Style::default().fg(CHIP_FG).bg(CHIP_BG),
+                    self.open_links.pop();
+                    let url = match self.place {
+                        Some(place) => place.image(&src),
+                        None => absolute_image(&src),
+                    };
+                    let size =
+                        |name| html::attribute(attributes, name).and_then(|size| width_hint(&size));
+                    self.pieces.push(Piece::Video {
+                        url,
+                        width: size("width"),
+                        height: size("height"),
+                        looped: html::flag(attributes, "loop"),
                         link,
                     });
-                    self.open_links.pop();
                 }
             }
             "br" => self.flush(),
@@ -741,7 +785,8 @@ impl<'a> Renderer<'a> {
     /// Lays out the pending inline content. Images take their own lines, as
     /// a browser shows those wider than the text around them; badges, icons
     /// and images without an address stay labels in the text, unless they are
-    /// all a paragraph has.
+    /// all a paragraph has. A video that can play takes a block of its own; a
+    /// chip otherwise.
     fn flush(&mut self) {
         let pieces = std::mem::take(&mut self.pieces);
         if pieces.is_empty() {
@@ -750,6 +795,7 @@ impl<'a> Renderer<'a> {
         let pictures_only = pieces.iter().all(|piece| match piece {
             Piece::Image { .. } => true,
             Piece::Text { text, .. } => text.trim().is_empty(),
+            Piece::Video { .. } => false,
         });
         let mut text = Vec::new();
         for piece in pieces {
@@ -760,7 +806,18 @@ impl<'a> Renderer<'a> {
                     ..
                 } => !is_badge(url) && hint.is_none_or(|width| width > ICON_PIXELS),
                 Piece::Image { url: None, .. } => pictures_only,
-                Piece::Text { .. } => false,
+                Piece::Video {
+                    url: Some(url),
+                    width,
+                    height,
+                    ..
+                } => {
+                    self.list_video(url);
+                    self.pictures
+                        .video_block(url, *width, *height, self.room())
+                        .is_some()
+                }
+                Piece::Video { url: None, .. } | Piece::Text { .. } => false,
             };
             match piece {
                 Piece::Image {
@@ -773,11 +830,63 @@ impl<'a> Renderer<'a> {
                     self.push_text(before);
                     self.picture(url, &alt, hint, link);
                 }
+                Piece::Video {
+                    url: Some(url),
+                    width,
+                    height,
+                    looped,
+                    link,
+                } if block => {
+                    let before = self.segments(std::mem::take(&mut text));
+                    self.push_text(before);
+                    self.video(url, width, height, looped, link);
+                }
                 piece => text.push(piece),
             }
         }
         let after = self.segments(text);
         self.push_text(after);
+    }
+
+    /// Adds `url` to the videos to probe, once.
+    fn list_video(&mut self, url: &str) {
+        if !self.out.videos.iter().any(|listed| listed == url) {
+            self.out.videos.push(url.to_string());
+        }
+    }
+
+    /// A paragraph whose only content is the address of a file uploaded to
+    /// a README is a video on GitHub when the file is one. It becomes a
+    /// video when it can play here; its text stays otherwise.
+    fn lone_video(&mut self) {
+        let mut address = String::new();
+        for piece in &self.pieces {
+            match piece {
+                Piece::Text { text, .. } => address.push_str(text),
+                _ => return,
+            }
+        }
+        let url = address.trim().to_string();
+        if !github_attachment(&url) || url.contains(char::is_whitespace) {
+            return;
+        }
+        self.list_video(&url);
+        if self
+            .pictures
+            .video_block(&url, None, None, self.room())
+            .is_some()
+        {
+            self.open_link(&url);
+            let link = self.open_links.last().copied();
+            self.open_links.pop();
+            self.pieces = vec![Piece::Video {
+                url: Some(url),
+                width: None,
+                height: None,
+                looped: false,
+                link,
+            }];
+        }
     }
 
     /// Text segments of inline content: images become labels.
@@ -805,6 +914,11 @@ impl<'a> Renderer<'a> {
                     segments.push(Seg::new(label, style, link));
                     segments.push(Seg::new(" ", Style::default(), None));
                 }
+                Piece::Video { link, .. } => segments.push(Seg::new(
+                    VIDEO_CHIP,
+                    Style::default().fg(CHIP_FG).bg(CHIP_BG),
+                    link,
+                )),
             }
         }
         segments
@@ -899,6 +1013,78 @@ impl<'a> Renderer<'a> {
             spans.extend(image_line.spans);
             self.push(Line::from(spans), Flow::DECOR);
         }
+    }
+
+    /// The block where video `url` plays, of at least 3 empty lines. Its
+    /// middle line has the play button, centered, then a link that opens the
+    /// video in the browser, on the next line when both do not fit.
+    fn video(
+        &mut self,
+        url: String,
+        width: Option<u32>,
+        height: Option<u32>,
+        looped: bool,
+        link: Option<usize>,
+    ) {
+        let room = self.room();
+        let Some((columns, rows)) = self.pictures.video_block(&url, width, height, room) else {
+            return;
+        };
+        let rows = rows.max(3);
+        let pad = if self.centered() {
+            room.saturating_sub(usize::from(columns)) / 2
+        } else {
+            0
+        };
+        let column = self.prefix_width() + pad;
+        let right = column + usize::from(columns);
+        let first = self.out.lines.len();
+        let button_line = first + usize::from(rows) / 2;
+        let button = format!(
+            " ▶ Play video ({}) ",
+            megabytes(self.pictures.video_size(&url).unwrap_or_default())
+        );
+        let button_start = column + usize::from(columns).saturating_sub(button.width()) / 2;
+        let button_end = button_start + button.width();
+        let (link_line, link_start) = if button_end + VIDEO_GAP + OPEN_VIDEO.width() <= right {
+            (button_line, button_end + VIDEO_GAP)
+        } else {
+            let start = column + usize::from(columns).saturating_sub(OPEN_VIDEO.width()) / 2;
+            (button_line + 1, start)
+        };
+        for line in first..first + usize::from(rows) {
+            let mut spans = self.prefix();
+            let mut used = self.prefix_width();
+            if line == button_line {
+                spans.push(Span::raw(" ".repeat(button_start - used)));
+                spans.push(Span::styled(
+                    button.clone(),
+                    Style::default().fg(CHIP_FG).bg(CHIP_BG),
+                ));
+                used = button_end;
+            }
+            if line == link_line {
+                spans.push(Span::raw(" ".repeat(link_start - used)));
+                spans.push(Span::styled(
+                    OPEN_VIDEO,
+                    Style::default()
+                        .fg(ACCENT)
+                        .add_modifier(Modifier::UNDERLINED),
+                ));
+                self.area(line, link_start, link_start + OPEN_VIDEO.width(), link);
+            }
+            self.push(Line::from(spans), Flow::DECOR);
+        }
+        self.out.video_places.push(VideoPlace {
+            url,
+            line: first,
+            column,
+            columns,
+            rows,
+            button_line,
+            button: (button_start, button_end),
+            looped,
+        });
     }
 
     /// Colored code on its own background, one cell of padding around it;
@@ -1033,11 +1219,19 @@ impl<'a> Renderer<'a> {
 
     fn finish(mut self) -> Rendered {
         self.flush();
-        while self.out.lines.last().is_some_and(|line| {
-            line.spans
-                .iter()
-                .all(|span| span.content.trim().is_empty() && span.style.bg.is_none())
-        }) {
+        // The empty lines of a video are its block, which stays whole.
+        let kept = self
+            .out
+            .video_places
+            .last()
+            .map_or(0, |place| place.line + usize::from(place.rows));
+        while self.out.lines.len() > kept
+            && self.out.lines.last().is_some_and(|line| {
+                line.spans
+                    .iter()
+                    .all(|span| span.content.trim().is_empty() && span.style.bg.is_none())
+            })
+        {
             self.out.lines.pop();
             self.out.flows.pop();
         }

@@ -45,6 +45,11 @@ pub fn button_text(label: &str, key: &str) -> String {
     format!(" {label} ({key}) ")
 }
 
+/// A size in megabytes of 10⁶ bytes, to a tenth: "9.8 MB".
+pub fn megabytes(bytes: u64) -> String {
+    format!("{:.1} MB", bytes as f64 / 1e6)
+}
+
 pub fn muted() -> Style {
     Style::default().fg(MUTED)
 }

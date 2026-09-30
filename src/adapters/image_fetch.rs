@@ -1,13 +1,26 @@
 //! Automatic README downloads may reach public HTTPS endpoints only.
+use std::fs::File;
+use std::io::{Read, Write};
 use std::net::IpAddr;
 use std::time::Duration;
 
+use ureq::Body;
+use ureq::http::header::{CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, LOCATION, RANGE};
+use ureq::http::{Response, StatusCode};
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
 use crate::application::ports::{FetchError, Fetcher};
 
 pub struct ImageFetcher(ureq::Agent);
+
+/// What an address serves, told without downloading it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Probe {
+    pub content_type: String,
+    /// Bytes of the whole file, when the server tells.
+    pub size: Option<u64>,
+}
 
 impl Default for ImageFetcher {
     fn default() -> Self {
@@ -35,24 +48,7 @@ impl ImageFetcher {
 
 impl Fetcher for ImageFetcher {
     fn fetch(&self, url: &str, limit: u64) -> Result<Vec<u8>, FetchError> {
-        let failed = |error: ureq::Error| FetchError::Failed(error.to_string());
-        let mut response = self.0.get(url).call().map_err(failed)?;
-        // GitHub serves the files uploaded to a README through one redirect
-        // to its storage. It is the only redirect followed.
-        if response.status().is_redirection() && github_attachment(url) {
-            let location = response
-                .headers()
-                .get(ureq::http::header::LOCATION)
-                .and_then(|location| location.to_str().ok())
-                .unwrap_or_default()
-                .to_string();
-            if !github_storage(&location) {
-                return Err(FetchError::Failed(
-                    "GitHub attachment redirected outside GitHub's storage".into(),
-                ));
-            }
-            response = self.0.get(&location).call().map_err(failed)?;
-        }
+        let mut response = self.get(url, None)?;
         if !response.status().is_success() {
             return Err(FetchError::Failed(format!(
                 "image HTTP status {} (redirects disabled)",
@@ -68,8 +64,113 @@ impl Fetcher for ImageFetcher {
     }
 }
 
+impl ImageFetcher {
+    /// Type and size of the file at `url`, under the rules of `fetch`. Only
+    /// its first byte is asked for, and none is read.
+    pub fn probe(&self, url: &str) -> Result<Probe, FetchError> {
+        let response = self.get(url, Some("bytes=0-0"))?;
+        let header = |name| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+        };
+        let size = match response.status() {
+            StatusCode::PARTIAL_CONTENT => header(CONTENT_RANGE).and_then(total_size),
+            StatusCode::OK => header(CONTENT_LENGTH).and_then(|length| length.trim().parse().ok()),
+            status => {
+                return Err(FetchError::Failed(format!(
+                    "video HTTP status {status} (redirects disabled)"
+                )));
+            }
+        };
+        Ok(Probe {
+            content_type: header(CONTENT_TYPE).unwrap_or_default().to_string(),
+            size,
+        })
+    }
+
+    /// Writes the file at `url` into `file` as it arrives, under the rules of
+    /// `fetch`, telling `progress` the bytes received and the whole size
+    /// when known. Past `limit` bytes, it stops on an error.
+    pub fn download(
+        &self,
+        url: &str,
+        limit: u64,
+        file: &mut File,
+        mut progress: impl FnMut(u64, Option<u64>),
+    ) -> Result<(), FetchError> {
+        let failed = |error: std::io::Error| FetchError::Failed(error.to_string());
+        let mut response = self.get(url, None)?;
+        if !response.status().is_success() {
+            return Err(FetchError::Failed(format!(
+                "video HTTP status {} (redirects disabled)",
+                response.status()
+            )));
+        }
+        let total = response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|length| length.to_str().ok())
+            .and_then(|length| length.trim().parse::<u64>().ok());
+        if total.is_some_and(|total| total > limit) {
+            return Err(FetchError::Failed(format!(
+                "the video exceeds {limit} bytes"
+            )));
+        }
+        let mut body = response.body_mut().with_config().limit(limit).reader();
+        let mut buffer = vec![0; 64 * 1024];
+        let mut received = 0;
+        loop {
+            let read = body.read(&mut buffer).map_err(failed)?;
+            if read == 0 {
+                return Ok(());
+            }
+            file.write_all(&buffer[..read]).map_err(failed)?;
+            received += read as u64;
+            progress(received, total);
+        }
+    }
+
+    /// `GET url`, for `range` of it if given. GitHub serves the files
+    /// uploaded to a README through one redirect to its storage. It is the
+    /// only redirect followed.
+    fn get(&self, url: &str, range: Option<&str>) -> Result<Response<Body>, FetchError> {
+        let call = |url: &str| {
+            let mut request = self.0.get(url);
+            if let Some(range) = range {
+                request = request.header(RANGE, range);
+            }
+            request
+                .call()
+                .map_err(|error| FetchError::Failed(error.to_string()))
+        };
+        let response = call(url)?;
+        if !(response.status().is_redirection() && github_attachment(url)) {
+            return Ok(response);
+        }
+        let location = response
+            .headers()
+            .get(LOCATION)
+            .and_then(|location| location.to_str().ok())
+            .unwrap_or_default();
+        if !github_storage(location) {
+            return Err(FetchError::Failed(
+                "GitHub attachment redirected outside GitHub's storage".into(),
+            ));
+        }
+        call(location)
+    }
+}
+
+/// Size of the whole file in a `Content-Range`, after its `/`:
+/// `bytes 0-0/9841526`. `None` when the server does not know it.
+pub fn total_size(content_range: &str) -> Option<u64> {
+    content_range.rsplit_once('/')?.1.trim().parse().ok()
+}
+
 /// A file uploaded to a README: `https://github.com/user-attachments/assets/…`.
-fn github_attachment(url: &str) -> bool {
+pub(crate) fn github_attachment(url: &str) -> bool {
     url.strip_prefix("https://github.com/user-attachments/assets/")
         .is_some_and(|rest| !rest.is_empty())
 }
@@ -213,6 +314,13 @@ mod tests {
         assert_eq!(fetcher.0.config().max_redirects(), 0);
         assert!(fetcher.0.config().https_only());
         assert!(fetcher.0.config().proxy().is_none());
+    }
+
+    #[test]
+    fn a_file_size_is_read_after_the_slash_of_its_content_range() {
+        assert_eq!(total_size("bytes 0-0/9841526"), Some(9_841_526));
+        assert_eq!(total_size("bytes 0-0/*"), None);
+        assert_eq!(total_size("not a range"), None);
     }
 
     #[test]

@@ -6,10 +6,12 @@ use ratatui::text::Line;
 
 use super::details_view;
 use super::graphics::{Graphics, Pictures};
-use super::markdown::{self, LinkArea, Place};
+use super::markdown::{self, LinkArea, Place, VideoPlace};
 use super::preview::preview_lines;
 use super::selection::{Flow, Selection};
 use super::style::Tone;
+use super::video::VideoEvent;
+use crate::adapters::image_fetch::Probe;
 use crate::adapters::images::Picture;
 use crate::application::load_readme::Readme;
 use crate::application::prepare_install::{InstallPreview, Prepared};
@@ -80,6 +82,27 @@ pub enum Command {
     OpenGitHub,
     /// The link of this area of the README.
     OpenLink(usize),
+    /// Play the video of this block of the README, instead of the one that
+    /// plays.
+    PlayVideo(usize),
+    /// Stop the video that plays.
+    StopVideo,
+}
+
+/// The video of the pane: one at a time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VideoView {
+    pub url: String,
+    pub status: VideoStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VideoStatus {
+    /// Bytes downloaded, of the whole size when known.
+    Downloading(u64, Option<u64>),
+    Playing,
+    /// It stopped for this reason; its button stays, to try again.
+    Failed(String),
 }
 
 /// A button of the action bar, under the header.
@@ -107,6 +130,16 @@ pub enum DetailsIntent {
     Uninstall(Box<RemovalPlan>),
     /// Download and decode these images of the README.
     LoadImages(Vec<String>),
+    /// Ask the type and size of these videos of the README.
+    ProbeVideos(Vec<String>),
+    /// Download this video and play it in frames of `fit` pixels at most,
+    /// instead of the one that plays.
+    PlayVideo {
+        url: String,
+        looped: bool,
+        fit: (u32, u32),
+    },
+    StopVideo,
     /// Open this address in the browser.
     OpenUrl(String),
     /// Put this text on the clipboard.
@@ -131,6 +164,9 @@ pub struct DetailsApp {
     pub anchors: Vec<(String, usize)>,
     /// Where the README draws its images.
     pub places: Vec<Place>,
+    /// Where the videos of the README play.
+    pub video_places: Vec<VideoPlace>,
+    pub video: Option<VideoView>,
     pub pictures: Pictures,
     /// Animated images whose frames Herdr draws over their cells, which stay
     /// empty: their first frame would show through transparent pixels.
@@ -171,6 +207,8 @@ impl DetailsApp {
             links: Vec::new(),
             anchors: Vec::new(),
             places: Vec::new(),
+            video_places: Vec::new(),
+            video: None,
             pictures: Pictures::default(),
             covered: HashSet::new(),
             width: 80,
@@ -283,6 +321,34 @@ impl DetailsApp {
         self.render();
     }
 
+    /// Whether the pane can play videos: FFmpeg, and a pane Herdr knows.
+    pub fn video_player(&mut self, available: bool) {
+        self.pictures.video_player(available);
+        self.render();
+    }
+
+    /// A video of the README was probed: the README is laid out again.
+    pub fn video_probed(&mut self, url: &str, probe: Result<Probe, String>) {
+        self.pictures.video_probed(url, probe);
+        self.render();
+    }
+
+    /// News of the video that plays; once it ends, its button comes back.
+    pub fn video_event(&mut self, event: VideoEvent) {
+        let Some(video) = &mut self.video else {
+            return;
+        };
+        video.status = match event {
+            VideoEvent::Downloading(received, total) => VideoStatus::Downloading(received, total),
+            VideoEvent::Playing => VideoStatus::Playing,
+            VideoEvent::Failed(reason) => VideoStatus::Failed(reason),
+            VideoEvent::Ended => {
+                self.video = None;
+                return;
+            }
+        };
+    }
+
     pub fn install_prepared(&mut self, request: u64, prepared: Prepared) {
         if request != self.install_request || self.install != InstallState::Preparing {
             return;
@@ -334,6 +400,7 @@ impl DetailsApp {
             KeyCode::Char('r') => self.press(Command::Remove),
             KeyCode::Char('s') => self.press(Command::ToggleSha),
             KeyCode::Char('o') => self.press(Command::OpenGitHub),
+            KeyCode::Char('p') => self.toggle_video(),
             KeyCode::Up => self.scroll_by(-1),
             KeyCode::Down => self.scroll_by(1),
             KeyCode::PageUp => self.scroll_by(-(self.page as isize)),
@@ -408,6 +475,65 @@ impl DetailsApp {
                 Some(LinkTarget::Anchor(anchor)) => self.go_to(&anchor),
                 None => {}
             },
+            Command::PlayVideo(index) => self.play_video(index),
+            Command::StopVideo => {
+                if self.video.take().is_some() {
+                    self.intents.push(DetailsIntent::StopVideo);
+                }
+            }
+        }
+    }
+
+    /// The video of block `index` downloads, then plays in frames that fit
+    /// in the pixels of its cells.
+    fn play_video(&mut self, index: usize) {
+        let (
+            Some(place),
+            Some(Graphics::Kitty {
+                cell_width,
+                cell_height,
+            }),
+        ) = (self.video_places.get(index), self.pictures.graphics())
+        else {
+            return;
+        };
+        let fit = (
+            u32::from(place.columns) * u32::from(cell_width),
+            u32::from(place.rows) * u32::from(cell_height),
+        );
+        self.video = Some(VideoView {
+            url: place.url.clone(),
+            status: VideoStatus::Downloading(0, None),
+        });
+        self.intents.push(DetailsIntent::PlayVideo {
+            url: place.url.clone(),
+            looped: place.looped,
+            fit,
+        });
+    }
+
+    /// `p` stops the video that plays; else it plays the first video of
+    /// the README with a line of its block on screen.
+    fn toggle_video(&mut self) {
+        if self
+            .video
+            .as_ref()
+            .is_some_and(|video| !matches!(video.status, VideoStatus::Failed(_)))
+        {
+            self.press(Command::StopVideo);
+            return;
+        }
+        if self.showing_confirmation() {
+            return;
+        }
+        let (prefix, _, _) = details_view::body_lines(self, self.width);
+        let shown = self.scroll..self.scroll + self.page;
+        let visible = self.video_places.iter().position(|place| {
+            let first = prefix.len() + place.line;
+            first < shown.end && shown.start < first + usize::from(place.rows)
+        });
+        if let Some(index) = visible {
+            self.press(Command::PlayVideo(index));
         }
     }
 
@@ -587,6 +713,7 @@ impl DetailsApp {
         self.links = rendered.links;
         self.anchors = rendered.anchors;
         self.places = rendered.places;
+        self.video_places = rendered.video_places;
         let wanted: Vec<String> = rendered
             .images
             .into_iter()
@@ -594,6 +721,14 @@ impl DetailsApp {
             .collect();
         if !wanted.is_empty() {
             self.intents.push(DetailsIntent::LoadImages(wanted));
+        }
+        let probes: Vec<String> = rendered
+            .videos
+            .into_iter()
+            .filter(|url| self.pictures.request_video(url))
+            .collect();
+        if !probes.is_empty() {
+            self.intents.push(DetailsIntent::ProbeVideos(probes));
         }
         self.preview = match &self.install {
             InstallState::Preview(preview) => {

@@ -15,6 +15,7 @@ use image::{Rgba, RgbaImage};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
+use crate::adapters::image_fetch;
 use crate::adapters::images::{Animation, FRAMES_BUDGET, Picture};
 
 /// `kitty`, `blocks` or `off` forces how images are drawn.
@@ -24,6 +25,8 @@ pub const IMAGES_ENV: &str = "HERDR_MARKETPLACE_IMAGES";
 pub const QUERY: &str = "\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[16t\x1b[c";
 /// Images a README may load.
 pub const MAX_PICTURES: usize = 16;
+/// Largest video a README may play.
+pub const VIDEO_LIMIT: u64 = 64 * 1024 * 1024;
 /// Bytes the frames of a README's animations may take together.
 pub const ANIMATIONS_BUDGET: usize = 2 * FRAMES_BUDGET;
 /// Less room than this for frames: the animation stays still.
@@ -372,6 +375,10 @@ pub struct Pictures {
     sent: HashSet<u32>,
     /// Kitty images of the current layout: id, url and size.
     wanted: HashMap<u32, (String, u16, u16)>,
+    /// FFmpeg and a pane Herdr knows: videos may play.
+    video_player: bool,
+    /// What the address of each video serves; `None` while it is probed.
+    videos: HashMap<String, Option<Result<image_fetch::Probe, String>>>,
 }
 
 impl Pictures {
@@ -488,6 +495,66 @@ impl Pictures {
             }) if *made == fit => Some(animation),
             _ => None,
         }
+    }
+
+    /// Whether the pane can play videos: FFmpeg was found when it opened,
+    /// and Herdr knows the pane.
+    pub fn video_player(&mut self, available: bool) {
+        self.video_player = available;
+    }
+
+    /// Marks video `url` as probed; true the first time, when its probe must
+    /// start. Without a player, none is.
+    pub fn request_video(&mut self, url: &str) -> bool {
+        if !self.video_player || self.videos.contains_key(url) {
+            return false;
+        }
+        self.videos.insert(url.to_string(), None);
+        true
+    }
+
+    pub fn video_probed(&mut self, url: &str, probe: Result<image_fetch::Probe, String>) {
+        self.videos.insert(url.to_string(), Some(probe));
+    }
+
+    /// Bytes of video `url`, once its probe told them.
+    pub fn video_size(&self, url: &str) -> Option<u64> {
+        match self.videos.get(url) {
+            Some(Some(Ok(probe))) => probe.size,
+            _ => None,
+        }
+    }
+
+    /// Cells of the block where video `url` plays, within `room` columns:
+    /// `width` × `height` pixels as its HTML asks, else as wide as GitHub's
+    /// README column, in 16:9. `None` unless it can play: kitty images, a
+    /// player, and a probe that found a video of known size within
+    /// `VIDEO_LIMIT`.
+    pub fn video_block(
+        &self,
+        url: &str,
+        width: Option<u32>,
+        height: Option<u32>,
+        room: usize,
+    ) -> Option<(u16, u16)> {
+        let graphics = self.graphics?;
+        if !matches!(graphics, Graphics::Kitty { .. }) || !self.video_player {
+            return None;
+        }
+        let Some(Some(Ok(probe))) = self.videos.get(url) else {
+            return None;
+        };
+        let video = probe
+            .content_type
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("video/");
+        if !video || probe.size.is_none_or(|size| size > VIDEO_LIMIT) {
+            return None;
+        }
+        let shown = width.unwrap_or(COLUMN_PIXELS);
+        let tall = height.unwrap_or(shown * 9 / 16);
+        Some(fit(shown, tall, width, room, graphics))
     }
 
     /// A new layout starts: the images it does not draw again are freed.

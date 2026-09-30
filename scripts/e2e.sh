@@ -59,6 +59,9 @@ fi
 
 echo "== build plugin =="
 sh "$PLUGIN_DIR/scripts/build.sh"
+# README videos play with the private FFmpeg, built once and kept.
+sh "$PLUGIN_DIR/scripts/build-ffmpeg.sh" "$PLUGIN_DIR/target/ffmpeg/ffmpeg"
+export HERDR_MARKETPLACE_FFMPEG="$PLUGIN_DIR/target/ffmpeg/ffmpeg"
 
 mkdir -p "$XDG/herdr" "$TMP/work"
 printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> "$(dirname "$0")/opened.log"\n' > "$HERDR_MARKETPLACE_OPEN"
