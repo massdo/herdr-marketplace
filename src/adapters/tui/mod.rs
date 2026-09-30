@@ -9,6 +9,7 @@ pub mod selection;
 pub mod sidebar;
 pub mod sidebar_view;
 pub mod style;
+pub mod video;
 
 use std::io::{self, Write, stdout};
 use std::process::{Command as Process, Stdio};
@@ -35,6 +36,7 @@ use crate::adapters::herdr_socket::HerdrSocket;
 use crate::adapters::image_fetch::{self, ImageFetcher};
 use crate::adapters::images::{Animation, Picture, frames_within, load_in_background};
 use crate::adapters::operations::{FsOperations, spawn_operation};
+use crate::adapters::pane_graphics::Layer;
 use crate::application::load_listing::{LoadedListing, load_listing, read_registry};
 use crate::application::load_readme::{Readme, load_readme};
 use crate::application::open_details::{Reveal, Shown, close_details, show_details};
@@ -58,6 +60,7 @@ use self::details::{DetailsApp, DetailsIntent, InstalledView};
 use self::focus::FocusClicks;
 use self::graphics::{Graphics, Probe};
 use self::sidebar::{Intent, SidebarApp};
+use self::video::{FIRST_FRAME, Frames, Playback, Video, VideoEvent};
 
 type Screen = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -79,6 +82,8 @@ enum DetailsAnswer {
     /// Frames of an animated image, made for cells of this many pixels.
     Frames(String, (u32, u32), Result<Arc<Animation>, String>),
     VideoProbed(String, Result<image_fetch::Probe, String>),
+    /// News of the playback of this number.
+    Video(u64, VideoEvent),
 }
 
 const POLL: Duration = Duration::from_millis(100);
@@ -237,7 +242,8 @@ fn spawn_load(sender: Sender<SidebarAnswer>) {
 /// Details pane: README of the plugin and commit received at opening.
 pub fn run_details(process: ProcessEnv, target: DetailsTarget) -> Result<(), AppError> {
     let herdr = HerdrSocket::new(process.socket_path.clone());
-    let operations = FsOperations::new(process.state_dir.clone());
+    // The videos a pane that stopped left.
+    video::clean_stale(&process.state_dir.join("videos"));
     let mut app = DetailsApp::new(target);
     let (sender, receiver) = mpsc::channel();
     // Herdr selects text only where the pane leaves it the mouse: the pane
@@ -257,7 +263,7 @@ pub fn run_details(process: ProcessEnv, target: DetailsTarget) -> Result<(), App
         &mut app,
         probe,
         player.as_mut(),
-        &operations,
+        &process,
         &sender,
         &receiver,
     );
@@ -268,15 +274,22 @@ pub fn run_details(process: ProcessEnv, target: DetailsTarget) -> Result<(), App
     result
 }
 
+/// The loop of a details pane. The video that plays stops when it returns,
+/// before the pane closes.
 fn details_loop(
     terminal: &mut Screen,
     app: &mut DetailsApp,
     probe: Probe,
     mut player: Option<&mut Player>,
-    operations: &FsOperations,
+    process: &ProcessEnv,
     sender: &Sender<DetailsAnswer>,
     receiver: &Receiver<DetailsAnswer>,
 ) -> Result<(), AppError> {
+    let operations = &FsOperations::new(process.state_dir.clone());
+    let videos = process.state_dir.join("videos");
+    // The video that plays, and the number of the last one started.
+    let mut playback = None::<Playback>;
+    let mut playbacks = 0;
     let mut focus = FocusClicks::default();
     let image_sender = sender.clone();
     let images = load_in_background(ImageFetcher::default(), move |url, picture| {
@@ -380,6 +393,37 @@ fn details_loop(
                         }
                     });
                 }
+                DetailsIntent::PlayVideo { url, looped, fit } => {
+                    // The video that played stops first.
+                    playback = None;
+                    playbacks += 1;
+                    let number = playbacks;
+                    match (env::ffmpeg_bin(), player.as_deref_mut()) {
+                        (Some(ffmpeg), Some(player)) => {
+                            let socket = player.socket().to_path_buf();
+                            let pane = player.pane().to_string();
+                            playback = Some(Playback::start(Video {
+                                url,
+                                looped,
+                                fit,
+                                folder: videos.clone(),
+                                ffmpeg,
+                                download: Arc::new(ImageFetcher::default()),
+                                open: Box::new(move || {
+                                    Layer::open(&socket, &pane, "video")
+                                        .map(|layer| Box::new(layer) as Box<dyn Frames>)
+                                }),
+                                visible: player.visible(),
+                                first_frame: FIRST_FRAME,
+                                events: Arc::new(move |event| {
+                                    let _ = sender.send(DetailsAnswer::Video(number, event));
+                                }),
+                            }));
+                        }
+                        _ => app.video_event(VideoEvent::Failed("FFmpeg is missing".into())),
+                    }
+                }
+                DetailsIntent::StopVideo => playback = None,
                 DetailsIntent::OpenUrl(url) => open_url(&url),
                 DetailsIntent::Copy(text) => {
                     let backend = terminal.backend_mut();
@@ -404,6 +448,15 @@ fn details_loop(
                     app.pictures.frames_decoded(&url, fit, frames)
                 }
                 DetailsAnswer::VideoProbed(url, probe) => app.video_probed(&url, probe),
+                // Its end or failure stops it: FFmpeg, file and layer are gone.
+                DetailsAnswer::Video(number, event) if number == playbacks => {
+                    if matches!(event, VideoEvent::Ended | VideoEvent::Failed(_)) {
+                        playback = None;
+                    }
+                    app.video_event(event);
+                }
+                // A video that was stopped for another one.
+                DetailsAnswer::Video(..) => {}
             }
         }
         if last_operation_check.is_none_or(|last| last.elapsed() >= OPERATION_CHECK) {
@@ -422,6 +475,9 @@ fn details_loop(
         terminal.draw(|frame| details_view::render(frame, app))?;
         if let Some(player) = player.as_deref_mut() {
             animate(app, player, size.width, size.height, sender);
+        }
+        if let Some(playback) = &mut playback {
+            playback.show(details_view::video_spot(app, size.width, size.height));
         }
         match next_input(POLL)? {
             Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),

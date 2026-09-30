@@ -24,8 +24,8 @@ use crate::adapters::image_fetch::github_attachment;
 use crate::domain::readme::{LinkTarget, ReadmePlace, absolute_image, absolute_link, anchor};
 
 /// Inline code and image chips: light text on grey, readable on any theme.
-const CHIP_FG: Color = Color::Rgb(0xe6, 0xed, 0xf3);
-const CHIP_BG: Color = Color::Rgb(0x3d, 0x44, 0x4d);
+pub(super) const CHIP_FG: Color = Color::Rgb(0xe6, 0xed, 0xf3);
+pub(super) const CHIP_BG: Color = Color::Rgb(0x3d, 0x44, 0x4d);
 /// Text of a quote, GitHub's grey.
 const QUOTE: Color = Color::Rgb(0x9d, 0xa5, 0xb0);
 const LIST_MARKERS: [&str; 3] = ["• ", "◦ ", "▪ "];

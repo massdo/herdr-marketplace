@@ -1,4 +1,6 @@
 //! Automatic README downloads may reach public HTTPS endpoints only.
+use std::fs::File;
+use std::io::{Read, Write};
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -86,6 +88,48 @@ impl ImageFetcher {
             content_type: header(CONTENT_TYPE).unwrap_or_default().to_string(),
             size,
         })
+    }
+
+    /// Writes the file at `url` into `file` as it arrives, under the rules of
+    /// `fetch`, telling `progress` the bytes received and the whole size
+    /// when known. Past `limit` bytes, it stops on an error.
+    pub fn download(
+        &self,
+        url: &str,
+        limit: u64,
+        file: &mut File,
+        mut progress: impl FnMut(u64, Option<u64>),
+    ) -> Result<(), FetchError> {
+        let failed = |error: std::io::Error| FetchError::Failed(error.to_string());
+        let mut response = self.get(url, None)?;
+        if !response.status().is_success() {
+            return Err(FetchError::Failed(format!(
+                "video HTTP status {} (redirects disabled)",
+                response.status()
+            )));
+        }
+        let total = response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|length| length.to_str().ok())
+            .and_then(|length| length.trim().parse::<u64>().ok());
+        if total.is_some_and(|total| total > limit) {
+            return Err(FetchError::Failed(format!(
+                "the video exceeds {limit} bytes"
+            )));
+        }
+        let mut body = response.body_mut().with_config().limit(limit).reader();
+        let mut buffer = vec![0; 64 * 1024];
+        let mut received = 0;
+        loop {
+            let read = body.read(&mut buffer).map_err(failed)?;
+            if read == 0 {
+                return Ok(());
+            }
+            file.write_all(&buffer[..read]).map_err(failed)?;
+            received += read as u64;
+            progress(received, total);
+        }
     }
 
     /// `GET url`, for `range` of it if given. GitHub serves the files
