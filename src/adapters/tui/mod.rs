@@ -10,10 +10,12 @@ pub mod sidebar;
 pub mod sidebar_view;
 pub mod style;
 pub mod video;
+pub mod video_cache;
 
 use std::io::{self, Write, stdout};
 use std::process::{Command as Process, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -29,6 +31,8 @@ use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
 use crate::adapters::catalog_cache::FileCatalogCache;
+use crate::adapters::details_control::{DetailsControl, DetailsUpdate};
+use crate::adapters::download_cancel::Cancellation;
 use crate::adapters::env::{self, ProcessEnv};
 use crate::adapters::fetch::HttpFetcher;
 use crate::adapters::herdr_cli::HerdrCommand;
@@ -37,9 +41,10 @@ use crate::adapters::image_fetch::{self, ImageFetcher};
 use crate::adapters::images::{Animation, Picture, frames_within, load_in_background};
 use crate::adapters::operations::{FsOperations, spawn_operation};
 use crate::adapters::pane_graphics::Layer;
-use crate::application::load_listing::{LoadedListing, load_listing, read_registry};
+use crate::application::load_catalog::CatalogLoad;
+use crate::application::load_listing::{LoadedListing, read_registry};
 use crate::application::load_readme::{Readme, load_readme};
-use crate::application::open_details::{Reveal, Shown, close_details, show_details};
+use crate::application::open_details::{Reveal, Shown, close_details, show_details_cached};
 use crate::application::ports::{HerdrCli, HerdrPort, Operations};
 use crate::application::prepare_install::{Prepared, prepare_install};
 use crate::application::prepare_removal::prepare_removal;
@@ -60,7 +65,8 @@ use self::details::{DetailsApp, DetailsIntent, InstalledView};
 use self::focus::FocusClicks;
 use self::graphics::{Graphics, Probe};
 use self::sidebar::{Intent, SidebarApp};
-use self::video::{FIRST_FRAME, Frames, Playback, Video, VideoEvent};
+use self::video::{Cache, FIRST_FRAME, Frames, Playback, Video, VideoEvent};
+use self::video_cache::CacheProcess;
 
 type Screen = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -96,10 +102,43 @@ const SEARCH_DELAY: Duration = Duration::from_millis(500);
 pub const OPEN_ENV: &str = "HERDR_MARKETPLACE_OPEN";
 const OPERATION_CHECK: Duration = Duration::from_secs(1);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PaneExit {
+    User,
+    External,
+    Changed(Box<DetailsUpdate>),
+}
+
+/// A static sidebar may never write again after Herdr closes its PTY.
+/// Poll hangup explicitly without consuming keyboard input.
+fn terminal_closed(fd: libc::c_int) -> bool {
+    let mut poll = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: one descriptor; poll reads no bytes from it.
+    unsafe {
+        libc::poll(&mut poll, 1, 0) > 0
+            && poll.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
+    }
+}
+
 /// Sidebar pane. The catalogue loads in a background thread so drawing and
 /// the keyboard never wait for the network.
-pub fn run_sidebar(process: ProcessEnv) -> Result<(), AppError> {
-    let herdr = HerdrSocket::new(process.socket_path.clone());
+pub fn run_sidebar(mut process: ProcessEnv) -> Result<(), AppError> {
+    let _control = process
+        .own_pane_id
+        .as_ref()
+        .map(|pane| DetailsControl::open(&process.state_dir, &process.socket_path, pane))
+        .transpose()?;
+    let videos = process.state_dir.join("videos");
+    video::clean_stale(&videos);
+    let cache =
+        CacheProcess::start(&process.state_dir).map_err(|message| AppError::Io { message })?;
+    process.video_cache = Some(cache.folder().to_path_buf());
+    let herdr =
+        HerdrSocket::new(process.socket_path.clone()).with_details_state(process.state_dir.clone());
     let mut app = SidebarApp::new();
     let (sender, receiver) = mpsc::channel();
     let mut terminal = setup(Mouse::Clicks)?;
@@ -111,11 +150,15 @@ pub fn run_sidebar(process: ProcessEnv) -> Result<(), AppError> {
         &sender,
         &receiver,
     );
+    // Finish transfers and delete the session before Herdr closes our PTY.
+    drop(cache);
     let _ = teardown(&mut terminal);
-    if let Some(pane_id) = process.own_pane_id {
+    if result != Ok(PaneExit::External)
+        && let Some(pane_id) = process.own_pane_id
+    {
         let _ = herdr.close_plugin_pane(&pane_id);
     }
-    result
+    result.map(|_| ())
 }
 
 fn sidebar_loop(
@@ -125,7 +168,8 @@ fn sidebar_loop(
     process: &ProcessEnv,
     sender: &Sender<SidebarAnswer>,
     receiver: &Receiver<SidebarAnswer>,
-) -> Result<(), AppError> {
+) -> Result<PaneExit, AppError> {
+    let shutdown = PaneShutdown::new()?;
     let operations = FsOperations::new(process.state_dir.clone());
     let mut seen_finish = operations.latest_finish();
     let mut last_check = Instant::now();
@@ -134,6 +178,14 @@ fn sidebar_loop(
     // The plugin the details will show once the selection rests, and when.
     let mut pending = None::<(DetailsTarget, Reveal, Instant)>;
     loop {
+        if shutdown.stopped.load(Ordering::Acquire)
+            || terminal_closed(libc::STDIN_FILENO)
+            || process.own_pane_id.as_ref().is_some_and(|pane| {
+                DetailsControl::closing(&process.state_dir, &process.socket_path, pane)
+            })
+        {
+            return Ok(PaneExit::External);
+        }
         // An operation that ended since the last look: read the registry again.
         if last_check.elapsed() >= OPERATION_CHECK {
             last_check = Instant::now();
@@ -149,7 +201,7 @@ fn sidebar_loop(
         }
         for intent in std::mem::take(&mut app.intents) {
             match intent {
-                Intent::Load => spawn_load(sender.clone()),
+                Intent::Load => start_load(app, sender.clone()),
                 Intent::Open(row, reveal) => {
                     pending = None;
                     let target = DetailsTarget::from_row(&row);
@@ -188,7 +240,7 @@ fn sidebar_loop(
             due.saturating_duration_since(Instant::now()).min(POLL)
         });
         match next_input(wait)? {
-            Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),
+            Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(PaneExit::User),
             Some((Input::Mouse(mouse), at)) if !focus.swallows(&mouse, at) => {
                 app.handle_mouse(mouse, size.width, size.height)
             }
@@ -212,7 +264,14 @@ fn show(
     reveal: Reveal,
 ) {
     let result = match &process.own_pane_id {
-        Some(sidebar) => show_details(herdr, sidebar, target, reveal, shown.as_ref()),
+        Some(sidebar) => show_details_cached(
+            herdr,
+            sidebar,
+            target,
+            reveal,
+            shown.as_ref(),
+            process.video_cache.as_deref(),
+        ),
         None => Err(AppError::OriginMissing),
     };
     match result {
@@ -225,53 +284,89 @@ fn show(
     }
 }
 
-fn spawn_load(sender: Sender<SidebarAnswer>) {
-    thread::spawn(move || {
-        let loaded = load_listing(
-            &HttpFetcher::new(),
-            &FileCatalogCache::new(env::catalog_dir()),
-            &HerdrCommand::new(env::herdr_bin()),
-            &env::index_url(),
+fn start_load(app: &mut SidebarApp, sender: Sender<SidebarAnswer>) {
+    let cache = FileCatalogCache::new(env::catalog_dir());
+    let herdr = HerdrCommand::new(env::herdr_bin());
+    let load = match CatalogLoad::new(&cache, &herdr, &env::index_url()) {
+        Ok(load) => load,
+        Err(error) => {
+            app.loaded(Err(error.to_string()));
+            return;
+        }
+    };
+    // Local data before the first draw: no Loading flash on a warm open.
+    if let Some(cached) = load.cached() {
+        app.loaded(Ok(LoadedListing::new(
+            cached,
+            read_registry(&herdr),
             Platform::current(),
-        )
-        .map_err(|error| error.to_string());
+        )));
+    }
+    thread::spawn(move || {
+        let loaded = load
+            .refresh(&HttpFetcher::new(), &cache)
+            .map(|loaded| LoadedListing::new(loaded, read_registry(&herdr), Platform::current()))
+            .map_err(|error| error.to_string());
         let _ = sender.send(SidebarAnswer::Loaded(loaded));
     });
 }
 
 /// Details pane: README of the plugin and commit received at opening.
-pub fn run_details(process: ProcessEnv, target: DetailsTarget) -> Result<(), AppError> {
-    let herdr = HerdrSocket::new(process.socket_path.clone());
+pub fn run_details(mut process: ProcessEnv, mut target: DetailsTarget) -> Result<(), AppError> {
+    let herdr =
+        HerdrSocket::new(process.socket_path.clone()).with_details_state(process.state_dir.clone());
     // The videos a pane that stopped left.
     video::clean_stale(&process.state_dir.join("videos"));
-    let mut app = DetailsApp::new(target);
-    let (sender, receiver) = mpsc::channel();
+    let _control = process
+        .own_pane_id
+        .as_ref()
+        .map(|pane| DetailsControl::open(&process.state_dir, &process.socket_path, pane))
+        .transpose()?;
     // Herdr selects text only where the pane leaves it the mouse: the pane
     // gets the drags too, and selects on its own.
     let mut terminal = setup(Mouse::Drags)?;
     // Before the event reader starts: the answers come on the input.
-    let probe = graphics::probe();
-    // Herdr plays the animated images of a pane it knows.
-    let mut player = process
-        .own_pane_id
-        .as_ref()
-        .map(|pane| Player::new(process.socket_path.clone(), pane.as_str().to_string()));
-    // Videos play the same way, their frames made by the private FFmpeg.
-    app.video_player(player.is_some() && env::ffmpeg_bin().is_some());
-    let result = details_loop(
-        &mut terminal,
-        &mut app,
-        probe,
-        player.as_mut(),
-        &process,
-        &sender,
-        &receiver,
-    );
+    let mut probe = graphics::probe();
+    let result = loop {
+        let mut app = DetailsApp::new(target);
+        // Every selection has its own answer channel. Late README, install,
+        // registry, image and video answers cannot modify the next plugin.
+        let (sender, receiver) = mpsc::channel();
+        let mut player = process
+            .own_pane_id
+            .as_ref()
+            .map(|pane| Player::new(process.socket_path.clone(), pane.as_str().to_string()));
+        app.video_player(player.is_some() && env::ffmpeg_bin().is_some());
+        let result = details_loop(
+            &mut terminal,
+            &mut app,
+            probe,
+            player.as_mut(),
+            &process,
+            &sender,
+            &receiver,
+        );
+        match result {
+            Ok(PaneExit::Changed(update)) => {
+                probe = app.pictures.graphics().map(Probe::Known).unwrap_or(probe);
+                app.pictures.begin_layout();
+                terminal
+                    .backend_mut()
+                    .write_all(app.pictures.take_commands().as_bytes())?;
+                terminal.clear()?;
+                target = update.target;
+                process.video_cache = update.video_cache;
+            }
+            other => break other,
+        }
+    };
     let _ = teardown(&mut terminal);
-    if let Some(pane_id) = process.own_pane_id {
+    if result != Ok(PaneExit::External)
+        && let Some(pane_id) = process.own_pane_id
+    {
         let _ = close_details(&herdr, &pane_id);
     }
-    result
+    result.map(|_| ())
 }
 
 /// The loop of a details pane. The video that plays stops when it returns,
@@ -284,15 +379,24 @@ fn details_loop(
     process: &ProcessEnv,
     sender: &Sender<DetailsAnswer>,
     receiver: &Receiver<DetailsAnswer>,
-) -> Result<(), AppError> {
+) -> Result<PaneExit, AppError> {
+    // Herdr may close the PTY with SIGHUP or SIGTERM instead of `q`. Let
+    // the loop unwind so playback and its cache are cleaned in that case too.
+    let shutdown = PaneShutdown::new()?;
     let operations = &FsOperations::new(process.state_dir.clone());
-    let videos = process.state_dir.join("videos");
+    let cache = Arc::new(match &process.video_cache {
+        Some(folder) => Cache::shared(folder.clone()),
+        None => Cache::new(process.state_dir.join("videos")),
+    });
     // The video that plays, and the number of the last one started.
     let mut playback = None::<Playback>;
     let mut playbacks = 0;
     let mut focus = FocusClicks::default();
+    // Dropping this selection also interrupts its image/probe HTTP requests.
+    let image_stop = CancelImages(Cancellation::default());
+    let image_fetcher = ImageFetcher::default().cancellable(&image_stop.0);
     let image_sender = sender.clone();
-    let images = load_in_background(ImageFetcher::default(), move |url, picture| {
+    let images = load_in_background(image_fetcher, move |url, picture| {
         let _ = image_sender.send(DetailsAnswer::Picture(url, picture));
     });
     let mut last_operation_check = None::<Instant>;
@@ -305,6 +409,21 @@ fn details_loop(
         Probe::Waiting { fallback } => Some(fallback),
     };
     loop {
+        if shutdown.stopped.load(Ordering::Acquire)
+            || terminal_closed(libc::STDIN_FILENO)
+            || process.own_pane_id.as_ref().is_some_and(|pane| {
+                DetailsControl::closing(&process.state_dir, &process.socket_path, pane)
+            })
+        {
+            return Ok(PaneExit::External);
+        }
+        if let Some(pane) = &process.own_pane_id
+            && let Some(update) =
+                DetailsControl::take(&process.state_dir, &process.socket_path, pane)?
+            && (update.target != app.target || update.video_cache != process.video_cache)
+        {
+            return Ok(PaneExit::Changed(Box::new(update)));
+        }
         // Herdr gives a new pane its size in pixels with its first layout.
         if let Some(fallback) = waiting {
             let window = crossterm::terminal::window_size()
@@ -385,15 +504,21 @@ fn details_loop(
                     }
                 }
                 DetailsIntent::ProbeVideos(urls) => {
+                    let cancellation = image_stop.0.clone();
                     thread::spawn(move || {
-                        let fetcher = ImageFetcher::default();
+                        let fetcher = ImageFetcher::default().cancellable(&cancellation);
                         for url in urls {
                             let probe = fetcher.probe(&url).map_err(|error| error.to_string());
                             let _ = sender.send(DetailsAnswer::VideoProbed(url, probe));
                         }
                     });
                 }
-                DetailsIntent::PlayVideo { url, looped, fit } => {
+                DetailsIntent::PlayVideo {
+                    url,
+                    looped,
+                    fit,
+                    start,
+                } => {
                     // The video that played stops first.
                     playback = None;
                     playbacks += 1;
@@ -404,9 +529,10 @@ fn details_loop(
                             let pane = player.pane().to_string();
                             playback = Some(Playback::start(Video {
                                 url,
+                                start,
                                 looped,
                                 fit,
-                                folder: videos.clone(),
+                                cache: cache.clone(),
                                 ffmpeg,
                                 download: Arc::new(ImageFetcher::default()),
                                 open: Box::new(move || {
@@ -424,6 +550,16 @@ fn details_loop(
                     }
                 }
                 DetailsIntent::StopVideo => playback = None,
+                DetailsIntent::PauseVideo(paused) => {
+                    if let Some(playback) = &playback {
+                        playback.pause(paused);
+                    }
+                }
+                DetailsIntent::SeekVideo(milliseconds) => {
+                    if let Some(playback) = &playback {
+                        playback.seek(milliseconds);
+                    }
+                }
                 DetailsIntent::OpenUrl(url) => open_url(&url),
                 DetailsIntent::Copy(text) => {
                     let backend = terminal.backend_mut();
@@ -448,9 +584,12 @@ fn details_loop(
                     app.pictures.frames_decoded(&url, fit, frames)
                 }
                 DetailsAnswer::VideoProbed(url, probe) => app.video_probed(&url, probe),
-                // Its end or failure stops it: FFmpeg, file and layer are gone.
+                // Playback stops; a complete file stays cached until closure.
                 DetailsAnswer::Video(number, event) if number == playbacks => {
-                    if matches!(event, VideoEvent::Ended | VideoEvent::Failed(_)) {
+                    if matches!(
+                        event,
+                        VideoEvent::Ended | VideoEvent::Hidden | VideoEvent::Failed(_)
+                    ) {
                         playback = None;
                     }
                     app.video_event(event);
@@ -466,6 +605,11 @@ fn details_loop(
         let size = terminal.size()?;
         let page = details_view::page_rows(app, size.width, size.height);
         app.set_viewport(size.width as usize, page);
+        if !app.video_places.is_empty()
+            && let Some(player) = player.as_deref_mut()
+        {
+            app.autoplay_video(player.visible().load(Ordering::Acquire));
+        }
         // Images the layout draws reach the terminal before their cells.
         let images = app.pictures.take_commands();
         if !images.is_empty() {
@@ -480,13 +624,50 @@ fn details_loop(
             playback.show(details_view::video_spot(app, size.width, size.height));
         }
         match next_input(POLL)? {
-            Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(()),
+            Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(PaneExit::User),
             Some((Input::Mouse(mouse), at)) if focus.swallows(&mouse, at) => {
                 app.focus_click(mouse, size.width, size.height)
             }
             Some((Input::Mouse(mouse), _)) => app.handle_mouse(mouse, size.width, size.height),
             Some((Input::FocusGained, at)) => focus.focus_gained(at),
             _ => {}
+        }
+    }
+}
+
+struct PaneShutdown {
+    stopped: Arc<AtomicBool>,
+    signals: Vec<signal_hook::SigId>,
+}
+
+struct CancelImages(Cancellation);
+
+impl Drop for CancelImages {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+impl PaneShutdown {
+    fn new() -> io::Result<Self> {
+        let mut shutdown = Self {
+            stopped: Arc::new(AtomicBool::new(false)),
+            signals: Vec::new(),
+        };
+        for signal in [signal_hook::consts::SIGHUP, signal_hook::consts::SIGTERM] {
+            shutdown.signals.push(signal_hook::flag::register(
+                signal,
+                shutdown.stopped.clone(),
+            )?);
+        }
+        Ok(shutdown)
+    }
+}
+
+impl Drop for PaneShutdown {
+    fn drop(&mut self) {
+        for signal in self.signals.drain(..) {
+            signal_hook::low_level::unregister(signal);
         }
     }
 }
@@ -712,4 +893,34 @@ fn teardown(terminal: &mut Screen) -> io::Result<()> {
     disable_raw_mode()?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::terminal_closed;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+
+    #[test]
+    fn a_closed_pty_is_detected_even_without_an_input_event_or_a_write() {
+        let (mut master, mut slave) = (-1, -1);
+        // SAFETY: valid pointers for the two new descriptors, default termios.
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master,
+                    &mut slave,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        // SAFETY: openpty returned two owned descriptors.
+        let (master, slave) =
+            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        assert!(!terminal_closed(slave.as_raw_fd()));
+        drop(master);
+        assert!(terminal_closed(slave.as_raw_fd()));
+    }
 }

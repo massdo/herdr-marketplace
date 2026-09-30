@@ -5,7 +5,9 @@ mod support;
 use std::cell::RefCell;
 
 use herdr_marketplace::adapters::catalog_cache::FileCatalogCache;
-use herdr_marketplace::application::load_catalog::{LoadError, LoadedCatalog, load_catalog};
+use herdr_marketplace::application::load_catalog::{
+    CatalogLoad, LoadError, LoadedCatalog, load_catalog,
+};
 use herdr_marketplace::application::ports::{
     CachedIndex, CatalogCache, CatalogFetcher, FetchError, Fetched,
 };
@@ -179,4 +181,117 @@ fn the_file_cache_reads_back_what_it_wrote() {
 
     std::fs::write(dir.path().join("catalog/index"), "unreadable").unwrap();
     assert_eq!(cache.read(), None);
+}
+
+#[test]
+fn a_valid_catalog_is_available_before_any_http_request() {
+    let fetcher = FakeIndex::new(Ok(Fetched::Body {
+        body: one_plugin("new"),
+        etag: Some("new".into()),
+    }));
+    let cache = saved(URL, one_plugin("old"));
+    let load = CatalogLoad::new(&cache, &FakeHerdr::with_registry(vec![]), URL).unwrap();
+    assert_eq!(ids(&load.cached().unwrap()), ["old"]);
+    assert!(fetcher.sent.borrow().is_empty());
+    assert_eq!(ids(&load.refresh(&fetcher, &cache).unwrap()), ["new"]);
+    assert_eq!(*fetcher.sent.borrow(), [Some("\"old\"".into())]);
+}
+
+#[test]
+fn a_missing_invalid_or_other_source_cache_has_no_optimistic_catalog() {
+    for (url, cache) in [
+        (URL, FakeCache(RefCell::new(None))),
+        (URL, saved(URL, b"not json".to_vec())),
+        (URL, saved("https://other.invalid/", one_plugin("old"))),
+        (
+            "file:///index.json",
+            saved("file:///index.json", one_plugin("old")),
+        ),
+    ] {
+        let load = CatalogLoad::new(&cache, &FakeHerdr::with_registry(vec![]), url).unwrap();
+        assert!(load.cached().is_none());
+    }
+}
+
+#[test]
+fn the_cached_sidebar_remains_usable_while_http_is_blocked_then_updates() {
+    use herdr_marketplace::adapters::tui::{sidebar::SidebarApp, sidebar_view};
+    use herdr_marketplace::application::load_listing::LoadedListing;
+    use herdr_marketplace::domain::compat::Platform;
+    use ratatui::{Terminal, backend::TestBackend};
+    use std::sync::{Mutex, mpsc};
+    use std::time::Duration;
+
+    struct BlockedIndex {
+        entered: mpsc::Sender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+        body: Vec<u8>,
+    }
+    impl CatalogFetcher for BlockedIndex {
+        fn fetch_index(&self, _: &str, etag: Option<&str>, _: u64) -> Result<Fetched, FetchError> {
+            assert_eq!(etag, Some("old"));
+            self.entered.send(()).unwrap();
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            Ok(Fetched::Body {
+                body: self.body.clone(),
+                etag: Some("new".into()),
+            })
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let cache = FileCatalogCache::new(Some(dir.path().to_path_buf()));
+    cache.replace(&CachedIndex {
+        url: URL.into(),
+        etag: "old".into(),
+        body: one_plugin("old"),
+    });
+    let load = CatalogLoad::new(&cache, &FakeHerdr::with_registry(vec![]), URL).unwrap();
+    let mut app = SidebarApp::new();
+    app.loaded(Ok(LoadedListing::new(
+        load.cached().unwrap(),
+        Ok(vec![]),
+        Platform::Macos,
+    )));
+    let selected = app.selected.clone();
+    let (entered, waiting) = mpsc::channel();
+    let (release, blocked) = mpsc::channel();
+    let mut plugin = manifest("herdr-plugin.toml", "old");
+    plugin["name"] = serde_json::json!("Updated plugin");
+    let fetcher = BlockedIndex {
+        entered,
+        release: Mutex::new(blocked),
+        body: index(vec![repo("acme", "old", 1, vec![plugin])]),
+    };
+    let worker = std::thread::spawn(move || load.refresh(&fetcher, &cache).unwrap());
+    waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+    app.handle_key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Char('o'),
+        crossterm::event::KeyModifiers::NONE,
+    ));
+    let mut terminal = Terminal::new(TestBackend::new(60, 15)).unwrap();
+    terminal
+        .draw(|frame| sidebar_view::render(frame, &app))
+        .unwrap();
+    let text: String = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect();
+    assert!(text.contains("acme/old"));
+    assert!(!text.contains("Loading catalog"));
+    release.send(()).unwrap();
+    app.loaded(Ok(LoadedListing::new(
+        worker.join().unwrap(),
+        Ok(vec![]),
+        Platform::Macos,
+    )));
+    assert_eq!(app.query, "o");
+    assert_eq!(app.selected, selected);
+    assert_eq!(app.selected_row().unwrap().entry.name, "Updated plugin");
 }

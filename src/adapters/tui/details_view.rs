@@ -242,20 +242,27 @@ fn video_lines(app: &DetailsApp, prefix: usize) -> Vec<(usize, Line<'static>)> {
         spans.push(Span::styled(text.to_string(), style));
         Line::from(spans)
     };
-    match &video.status {
-        VideoStatus::Playing => block
+    let mut drawn = match &video.status {
+        VideoStatus::Playing | VideoStatus::Paused | VideoStatus::Buffering { .. } => block
+            .clone()
             .zip(lines)
             .map(|(at, line)| (prefix + at, empty(line)))
             .collect(),
-        VideoStatus::Downloading(received, total) => {
-            let progress = match total {
-                Some(total) if *total > 0 => {
+        VideoStatus::Ended => Vec::new(),
+        VideoStatus::Starting | VideoStatus::Downloading(..) => {
+            let progress = match &video.status {
+                VideoStatus::Starting => " Starting video… ".into(),
+                VideoStatus::Downloading(received, Some(total)) if *total > 0 => {
                     format!(" Downloading video… {}% ", received * 100 / total)
                 }
-                _ => format!(" Downloading video… {} ", megabytes(*received)),
+                VideoStatus::Downloading(received, _) => {
+                    format!(" Downloading video… {} ", megabytes(*received))
+                }
+                _ => unreachable!(),
             };
             let chip = Style::default().fg(CHIP_FG).bg(CHIP_BG);
             block
+                .clone()
                 .zip(lines)
                 .map(|(at, line)| {
                     let drawn = if at == place.button_line {
@@ -283,6 +290,81 @@ fn video_lines(app: &DetailsApp, prefix: usize) -> Vec<(usize, Line<'static>)> {
             let red = Style::default().fg(ERROR);
             vec![(prefix + at, centered(&app.lines[at], &text, red))]
         }
+    };
+    if !matches!(video.status, VideoStatus::Failed(_)) {
+        let bar = control_bar(video, usize::from(place.columns));
+        let mut spans = app
+            .lines
+            .get(block.end)
+            .map_or_else(Vec::new, |line| cells_before(line, place.column));
+        spans.push(Span::styled(
+            bar.text,
+            Style::default().fg(CHIP_FG).bg(CHIP_BG),
+        ));
+        drawn.push((prefix + block.end, Line::from(spans)));
+    }
+    drawn
+}
+
+struct ControlBar {
+    text: String,
+    buttons: Vec<(std::ops::Range<usize>, Command)>,
+    seek: Option<(std::ops::Range<usize>, u64)>,
+}
+
+fn control_bar(video: &super::details::VideoView, width: usize) -> ControlBar {
+    let (label, command) = match video.status {
+        VideoStatus::Starting | VideoStatus::Downloading(..) => ("Cancel", Command::StopVideo),
+        VideoStatus::Playing | VideoStatus::Buffering { paused: false } => {
+            ("Pause", Command::ToggleVideoPause)
+        }
+        _ => ("Play", Command::ToggleVideoPause),
+    };
+    let mut text = format!("[{label}]");
+    let mut buttons = vec![(0..text.len(), command)];
+    for (label, milliseconds) in [
+        ("-5s", video.position.saturating_sub(5000)),
+        ("+5s", video.position.saturating_add(5000)),
+    ] {
+        text.push(' ');
+        let start = text.len();
+        text.push_str(&format!("[{label}]"));
+        buttons.push((start..text.len(), Command::SeekVideo(milliseconds)));
+    }
+    if matches!(video.status, VideoStatus::Buffering { .. }) {
+        text.push_str(" Buffering…");
+    }
+    let time = |ms: u64| format!("{}:{:02}", ms / 60_000, ms / 1000 % 60);
+    text.push_str(&format!(
+        " {}/{} ",
+        time(video.position),
+        video.duration.map_or_else(|| "…".into(), time)
+    ));
+    let mut seek = None;
+    let room = width.saturating_sub(text.width());
+    if let Some(duration) = video.duration.filter(|duration| *duration > 0)
+        && room >= 5
+    {
+        text.push('[');
+        let start = text.width();
+        let length = room - 2;
+        let position = (video.position.min(duration) * (length - 1) as u64 / duration) as usize;
+        for column in 0..length {
+            text.push(if column == position {
+                '|'
+            } else if column < position {
+                '='
+            } else {
+                '-'
+            });
+        }
+        seek = Some((start..start + length, duration));
+        text.push(']');
+    }
+    ControlBar {
+        text: ellipsize(&text, width),
+        buttons,
+        seek,
     }
 }
 
@@ -359,13 +441,42 @@ fn video_at(
             && (place.column..place.column + usize::from(place.columns)).contains(&column)
     };
     if let Some(video) = &app.video
-        && !matches!(video.status, VideoStatus::Failed(_))
+        && let Some(place) = app.video_places.iter().find(|place| place.url == video.url)
+        && line == place.line + usize::from(place.rows)
+        && (place.column..place.column + usize::from(place.columns)).contains(&column)
+    {
+        let relative = column - place.column;
+        let bar = control_bar(video, usize::from(place.columns));
+        if let Some((range, duration)) = bar.seek
+            && range.contains(&relative)
+        {
+            return Some(Command::SeekVideo(
+                duration * (relative - range.start) as u64 / (range.len() - 1) as u64,
+            ));
+        }
+        return bar
+            .buttons
+            .into_iter()
+            .find(|(range, _)| range.contains(&relative))
+            .map(|(_, command)| command);
+    }
+    if let Some(video) = &app.video
+        && !matches!(video.status, VideoStatus::Failed(_) | VideoStatus::Ended)
         && app
             .video_places
             .iter()
             .any(|place| place.url == video.url && within(place))
     {
-        return Some(Command::StopVideo);
+        return Some(
+            if matches!(
+                video.status,
+                VideoStatus::Playing | VideoStatus::Paused | VideoStatus::Buffering { .. }
+            ) {
+                Command::ToggleVideoPause
+            } else {
+                Command::StopVideo
+            },
+        );
     }
     app.video_places
         .iter()

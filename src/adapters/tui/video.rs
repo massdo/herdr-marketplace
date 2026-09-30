@@ -1,25 +1,25 @@
 //! README videos, played on a layer of the details pane as animations are
-//! (see `animation`). A click downloads the video into the plugin's state
-//! folder, then the private FFmpeg turns it into raw frames the size of its
-//! block, read at their pace through a pipe: FFmpeg waits while the pipe is
-//! full, so one frame at a time is in memory. Every stop kills FFmpeg and
-//! deletes the file.
+//! (see `animation`). FFmpeg reads a growing cached MP4 through a bounded
+//! pipe, then a seekable file once complete. Marketplace owns the transfers.
 
-use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{ErrorKind, Read};
+use std::fs::File;
+use std::io::{ErrorKind, Read, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::animation::Spot;
-use super::graphics::VIDEO_LIMIT;
+pub use super::video_cache::{Cache, clean_stale};
+use super::video_cache::{
+    CachedVideo, StreamHeader, file_metadata, media_range, relocate_header, stream_metadata,
+};
+use crate::adapters::download_cancel::Cancellation;
 use crate::adapters::image_fetch::ImageFetcher;
 use crate::adapters::images::rgb_png;
 use crate::adapters::pane_graphics::{Cells, Layer};
@@ -29,10 +29,8 @@ pub const VIDEO_FPS: u32 = 10;
 /// Longest side of a frame, in pixels: the terminal stretches it to the
 /// cells of its block.
 pub const VIDEO_SIDE: u32 = 800;
-/// How long FFmpeg may take to give the first frame.
+/// First-frame decoding time allowed, excluding waits for missing stream data.
 pub const FIRST_FRAME: Duration = Duration::from_secs(10);
-/// A video file older than this was left by a pane that is gone.
-pub const STALE: Duration = Duration::from_secs(60 * 60);
 /// How long a frame shows.
 const FRAME: Duration = Duration::from_millis(1000 / VIDEO_FPS as u64);
 /// Bytes of FFmpeg's errors kept.
@@ -47,31 +45,69 @@ pub enum VideoEvent {
     Downloading(u64, Option<u64>),
     /// The first frame shows.
     Playing,
-    /// Its end, or the pane no longer shows its block.
+    Paused(bool),
+    /// The requested frame needs bytes still arriving in the session cache.
+    Buffering {
+        milliseconds: u64,
+        paused: bool,
+    },
+    Position {
+        milliseconds: u64,
+        duration: Option<u64>,
+    },
+    /// Its natural end; a non-looped video stays stopped.
     Ended,
+    /// The pane or its video block left the view; it may autoplay on return.
+    Hidden,
     Failed(String),
 }
 
 /// Where a video comes from.
 pub trait Download: Send + Sync {
+    fn streaming_header(
+        &self,
+        _url: &str,
+        _cancellation: &Cancellation,
+    ) -> Result<Option<StreamHeader>, String> {
+        Ok(None)
+    }
     fn download(
         &self,
         url: &str,
         limit: u64,
         file: &mut File,
+        cancellation: &Cancellation,
         progress: &mut dyn FnMut(u64, Option<u64>),
     ) -> Result<(), String>;
 }
 
 impl Download for ImageFetcher {
+    fn streaming_header(
+        &self,
+        url: &str,
+        cancellation: &Cancellation,
+    ) -> Result<Option<StreamHeader>, String> {
+        let front = self
+            .video_range(url, "bytes=0-65535", 65536, cancellation)
+            .map_err(|e| e.to_string())?;
+        let Some((offset, end)) = media_range(&front) else {
+            return Ok(None);
+        };
+        let tail = self
+            .video_range(url, &format!("bytes={end}-"), 1024 * 1024, cancellation)
+            .map_err(|e| e.to_string())?;
+        Ok(relocate_header(&front, &tail, offset, end))
+    }
     fn download(
         &self,
         url: &str,
         limit: u64,
         file: &mut File,
+        cancellation: &Cancellation,
         progress: &mut dyn FnMut(u64, Option<u64>),
     ) -> Result<(), String> {
-        ImageFetcher::download(self, url, limit, file, progress).map_err(|error| error.to_string())
+        ImageFetcher::download(self, url, limit, file, cancellation, progress)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -92,12 +128,12 @@ pub type OpenFrames = Box<dyn FnOnce() -> Result<Box<dyn Frames>, String> + Send
 /// A video to play, and what it plays with.
 pub struct Video {
     pub url: String,
+    pub start: u64,
     /// It starts over at its end.
     pub looped: bool,
     /// Pixels of its block, which its frames fit in.
     pub fit: (u32, u32),
-    /// Folder of its downloaded file.
-    pub folder: PathBuf,
+    pub cache: Arc<Cache>,
     pub ffmpeg: PathBuf,
     pub download: Arc<dyn Download>,
     /// Opens the layer its frames show on, at the first one.
@@ -112,20 +148,28 @@ pub struct Video {
 /// A video playing in a thread of its own, until it ends or goes.
 pub struct Playback {
     spots: Sender<Option<Spot>>,
+    controls: Sender<Control>,
     /// The last spot sent to the thread.
     spot: Option<Option<Spot>>,
-    stop: Arc<AtomicBool>,
+    stop: Cancellation,
     thread: Option<JoinHandle<()>>,
+}
+
+enum Control {
+    Pause(bool),
+    Seek(u64),
 }
 
 impl Playback {
     pub fn start(video: Video) -> Self {
         let (spots, received) = mpsc::channel();
-        let stop = Arc::new(AtomicBool::new(false));
+        let (controls, commands) = mpsc::channel();
+        let stop = Cancellation::default();
         let stopped = stop.clone();
-        let thread = thread::spawn(move || play(video, received, stopped));
+        let thread = thread::spawn(move || play(video, received, commands, stopped));
         Self {
             spots,
+            controls,
             spot: None,
             stop,
             thread: Some(thread),
@@ -140,13 +184,21 @@ impl Playback {
             let _ = self.spots.send(spot);
         }
     }
+
+    pub fn pause(&self, paused: bool) {
+        let _ = self.controls.send(Control::Pause(paused));
+    }
+
+    pub fn seek(&self, milliseconds: u64) {
+        let _ = self.controls.send(Control::Seek(milliseconds));
+    }
 }
 
-/// Once dropped, FFmpeg no longer runs, the file is deleted and the layer
-/// closed.
+/// Once dropped, FFmpeg stops and the layer closes. The cached file and its
+/// transfer remain owned by Marketplace for replay.
 impl Drop for Playback {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.stop.cancel();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -200,78 +252,31 @@ pub fn late(index: u32, elapsed: Duration) -> bool {
     elapsed > FRAME * index + FRAME
 }
 
-/// Deletes the video files a pane left in `folder`: those of a process that
-/// is gone, or older than `STALE`, never a newer one of a living process.
-pub fn clean_stale(folder: &Path) {
-    let Ok(entries) = fs::read_dir(folder) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Some(pid) = entry.file_name().to_str().and_then(owner) else {
-            continue;
-        };
-        // SAFETY: signal 0 only checks that the process exists.
-        let gone = unsafe { libc::kill(pid, 0) } == -1
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-        let old = entry
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok()
-            .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age > STALE);
-        if gone || old {
-            let _ = fs::remove_file(entry.path());
-        }
-    }
-}
-
-/// The process a video file belongs to: `<pid>-<n>.mp4`.
-fn owner(name: &str) -> Option<libc::pid_t> {
-    let (pid, number) = name.strip_suffix(".mp4")?.split_once('-')?;
-    number.parse::<u64>().ok()?;
-    pid.parse().ok().filter(|pid| *pid > 0)
-}
-
-/// A new file in `folder`, readable by its owner only: `<pid>-<n>.mp4`.
-fn new_file(folder: &Path) -> std::io::Result<(PathBuf, File)> {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(folder)?;
-    loop {
-        let number = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path = folder.join(format!("{}-{number}.mp4", std::process::id()));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-        {
-            Ok(file) => return Ok((path, file)),
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
-        }
-    }
-}
-
 /// Why a playback stops.
 enum Halt {
     /// Its owner dropped it: nobody to tell.
     Dropped,
-    /// Its end, or the pane no longer shows its block.
+    /// Its natural end.
     Ended,
+    Hidden,
+    Seek(u64),
     Failed(String),
 }
 
 /// The thread of a playback: downloads the video, plays it, then cleans up
 /// and tells why it stopped.
-fn play(video: Video, spots: Receiver<Option<Spot>>, stop: Arc<AtomicBool>) {
+fn play(
+    video: Video,
+    spots: Receiver<Option<Spot>>,
+    controls: Receiver<Control>,
+    stop: Cancellation,
+) {
     let Video {
         url,
+        start,
         looped,
         fit,
-        folder,
+        cache,
         ffmpeg,
         download,
         open,
@@ -281,6 +286,7 @@ fn play(video: Video, spots: Receiver<Option<Spot>>, stop: Arc<AtomicBool>) {
     } = video;
     let mut session = Session {
         spots,
+        controls,
         stop,
         visible,
         spot: None,
@@ -290,28 +296,39 @@ fn play(video: Video, spots: Receiver<Option<Spot>>, stop: Arc<AtomicBool>) {
         first_frame,
         events: events.clone(),
         playing: false,
+        buffering: false,
+        position: start,
+        paused: false,
+        paused_for: Duration::ZERO,
+        duration: None,
+        file: None,
+        downloaded: None,
     };
-    let halt = match new_file(&folder) {
-        Err(error) => Halt::Failed(format!("cannot create the video file: {error}")),
-        Ok((path, file)) => {
-            let played = session
-                .download(&download, &url, file)
-                .and_then(|()| session.run(&ffmpeg, &path, frame_size(fit), looped));
-            session.layer = None;
-            let _ = fs::remove_file(&path);
-            played.err().unwrap_or(Halt::Ended)
-        }
-    };
+    let prepared = cache.get(&url, download).map_err(Halt::Failed);
+    let halt = prepared.and_then(|file| {
+        session.file = Some(file.clone());
+        session.prepare(&file)?;
+        session.run(&ffmpeg, &file, frame_size(fit), looped, start)
+    });
+    session.layer = None;
+    let halt = halt.err().unwrap_or(Halt::Ended);
     match halt {
-        Halt::Dropped => {}
+        Halt::Dropped | Halt::Seek(_) => {}
         Halt::Ended => events(VideoEvent::Ended),
+        Halt::Hidden => events(VideoEvent::Hidden),
         Halt::Failed(reason) => events(VideoEvent::Failed(reason)),
     }
 }
 
 struct Session {
     spots: Receiver<Option<Spot>>,
-    stop: Arc<AtomicBool>,
+    controls: Receiver<Control>,
+    paused: bool,
+    paused_for: Duration,
+    duration: Option<u64>,
+    file: Option<CachedVideo>,
+    downloaded: Option<(u64, Option<u64>)>,
+    stop: Cancellation,
     visible: Arc<AtomicBool>,
     /// Where the pane shows the block; `None` until it tells.
     spot: Option<Spot>,
@@ -323,6 +340,8 @@ struct Session {
     events: Arc<dyn Fn(VideoEvent) + Send + Sync>,
     /// The first frame showed.
     playing: bool,
+    buffering: bool,
+    position: u64,
 }
 
 impl Session {
@@ -330,69 +349,113 @@ impl Session {
     /// the pane no longer shows its block, or Herdr hid the pane after
     /// showing it.
     fn halted(&mut self) -> Option<Halt> {
-        if self.stop.load(Ordering::Acquire) {
+        if self.stop.cancelled() {
             return Some(Halt::Dropped);
+        }
+        while let Ok(command) = self.controls.try_recv() {
+            match command {
+                Control::Pause(paused) => {
+                    self.paused = paused;
+                    (self.events)(if self.buffering {
+                        VideoEvent::Buffering {
+                            milliseconds: self.position,
+                            paused,
+                        }
+                    } else {
+                        VideoEvent::Paused(paused)
+                    });
+                }
+                Control::Seek(milliseconds) => return Some(Halt::Seek(milliseconds)),
+            }
+        }
+        if let Some(file) = &self.file {
+            match file.progress() {
+                Ok(progress) => {
+                    let downloaded = (progress.received, progress.total);
+                    if !progress.complete
+                        && self.downloaded != Some(downloaded)
+                        && progress.received > 0
+                    {
+                        (self.events)(VideoEvent::Downloading(progress.received, progress.total));
+                        self.downloaded = Some(downloaded);
+                    }
+                }
+                Err(reason) => return Some(Halt::Failed(reason)),
+            }
         }
         while let Ok(spot) = self.spots.try_recv() {
             match spot {
                 Some(spot) => self.spot = Some(spot),
-                None => return Some(Halt::Ended),
+                None => return Some(Halt::Hidden),
             }
         }
         if self.visible.load(Ordering::Acquire) {
             self.seen = true;
         } else if self.seen {
-            return Some(Halt::Ended);
+            return Some(Halt::Hidden);
         }
         None
     }
 
-    /// Downloads the video into `file`, telling its progress, from a thread
-    /// of its own: a stop does not wait for the network, and the file,
-    /// deleted, goes with that thread.
-    fn download(
-        &mut self,
-        download: &Arc<dyn Download>,
-        url: &str,
-        mut file: File,
-    ) -> Result<(), Halt> {
-        let (done, result) = mpsc::channel();
-        let (download, url) = (download.clone(), url.to_string());
-        let (events, stop) = (self.events.clone(), self.stop.clone());
-        thread::spawn(move || {
-            let mut progress = |received, total| {
-                if !stop.load(Ordering::Acquire) {
-                    events(VideoEvent::Downloading(received, total));
+    /// Wait only for front-loaded MP4 metadata, rather than for the whole
+    /// file. A non-streamable MP4 safely falls back to the complete file.
+    fn prepare(&mut self, file: &CachedVideo) -> Result<(), Halt> {
+        loop {
+            if let Some(halt) = self.halted() {
+                // A seek before the metadata arrived can be applied once ready.
+                if !matches!(halt, Halt::Seek(_)) {
+                    return Err(halt);
                 }
-            };
-            let _ = done.send(download.download(&url, VIDEO_LIMIT, &mut file, &mut progress));
-        });
+            }
+            let progress = file.progress().map_err(Halt::Failed)?;
+            if let Some(duration) = stream_metadata(&file.path) {
+                self.duration = duration;
+                return Ok(());
+            }
+            if let Some(header) = file.header() {
+                self.duration = header.duration;
+                return Ok(());
+            }
+            if progress.complete {
+                self.duration = file_metadata(&file.path, true).flatten();
+                return Ok(());
+            }
+            thread::sleep(TICK);
+        }
+    }
+
+    fn active(&mut self) -> Result<(), Halt> {
+        let start = Instant::now();
         loop {
             if let Some(halt) = self.halted() {
                 return Err(halt);
             }
-            match result.recv_timeout(TICK) {
-                Ok(downloaded) => return downloaded.map_err(Halt::Failed),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(Halt::Failed("the download stopped".into()));
-                }
+            if !self.paused {
+                self.paused_for += start.elapsed();
+                return Ok(());
             }
+            thread::sleep(TICK);
         }
     }
 
-    /// Plays the file until its end, over and over when `looped`.
+    /// A seek replaces only the decoder; the shared transfer keeps running.
     fn run(
         &mut self,
         ffmpeg: &Path,
-        path: &Path,
+        file: &CachedVideo,
         size: (u32, u32),
         looped: bool,
+        start: u64,
     ) -> Result<(), Halt> {
+        let mut offset = start;
         loop {
-            let shown = self.pass(ffmpeg, path, size)?;
-            if !looped || shown == 0 {
-                return Ok(());
+            match self.pass(ffmpeg, file, size, offset) {
+                Err(Halt::Seek(to)) => {
+                    offset = to.min(self.duration.map_or(600_000, |ms| ms.saturating_sub(100)));
+                }
+                Err(halt) => return Err(halt),
+                Ok(shown) if looped && shown > 0 => offset = 0,
+                Ok(_) => return Ok(()),
             }
         }
     }
@@ -403,13 +466,48 @@ impl Session {
     fn pass(
         &mut self,
         ffmpeg: &Path,
-        path: &Path,
+        file: &CachedVideo,
         (width, height): (u32, u32),
+        offset: u64,
     ) -> Result<usize, Halt> {
+        self.position = offset;
+        if self.playing || offset > 0 {
+            self.buffering();
+        }
         let mut command = Command::new(ffmpeg);
+        let streaming = !file.progress().map_err(Halt::Failed)?.complete;
+        let mut args = ffmpeg_args(&file.path, width, height);
+        if streaming {
+            let whitelist = args
+                .iter()
+                .position(|arg| arg == "-protocol_whitelist")
+                .unwrap()
+                + 1;
+            args[whitelist] = "pipe".into();
+            let input = args.iter().position(|arg| arg == "-i").unwrap() + 1;
+            args[input] = "pipe:0".into();
+            args.splice(
+                input - 1..input - 1,
+                ["-probesize", "32768", "-analyzeduration", "100000"].map(String::from),
+            );
+        }
+        if offset > 0 {
+            // A pipe seeks by decoding from the cached beginning; a complete
+            // file can seek directly. Both avoid a new HTTP transfer.
+            let at =
+                args.iter().position(|arg| arg == "-i").unwrap() + if streaming { 2 } else { 0 };
+            args.splice(
+                at..at,
+                ["-ss".into(), format!("{:.3}", offset as f64 / 1000.0)],
+            );
+        }
         command
-            .args(ffmpeg_args(path, width, height))
-            .stdin(Stdio::null())
+            .args(args)
+            .stdin(if streaming {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         // SAFETY: setpriority is async-signal-safe and touches nothing else.
@@ -422,18 +520,30 @@ impl Session {
         let mut child = command
             .spawn()
             .map_err(|error| Halt::Failed(format!("cannot run FFmpeg: {error}")))?;
+        let feeding_stop = Arc::new(AtomicBool::new(false));
+        let waiting_for_data = Arc::new(AtomicBool::new(false));
+        let feeding = child.stdin.take().map(|stdin| {
+            let file = file.clone();
+            let stopped = feeding_stop.clone();
+            let waiting = waiting_for_data.clone();
+            thread::spawn(move || feed(file, stdin, stopped, waiting))
+        });
         let errors = child
             .stderr
             .take()
             .map(|stderr| thread::spawn(move || first_errors(stderr)));
         let shown = match child.stdout.take() {
-            Some(stdout) => self.frames(stdout, width, height),
+            Some(stdout) => self.frames(stdout, width, height, offset, &waiting_for_data),
             None => Err(Halt::Failed("FFmpeg has no output".into())),
         };
         if shown.is_err() {
             let _ = child.kill();
         }
         let status = child.wait();
+        feeding_stop.store(true, Ordering::Release);
+        if let Some(feeding) = feeding {
+            let _ = feeding.join();
+        }
         let errors = errors
             .and_then(|errors| errors.join().ok())
             .unwrap_or_default();
@@ -453,19 +563,28 @@ impl Session {
 
     /// Shows the frames FFmpeg writes, each at its time, until their end:
     /// how many showed. A late frame is skipped.
-    fn frames(&mut self, mut stdout: ChildStdout, width: u32, height: u32) -> Result<usize, Halt> {
+    fn frames(
+        &mut self,
+        mut stdout: ChildStdout,
+        width: u32,
+        height: u32,
+        offset: u64,
+        waiting_for_data: &AtomicBool,
+    ) -> Result<usize, Halt> {
         let mut frame = vec![0; width as usize * height as usize * 3];
-        let deadline = Instant::now() + self.first_frame;
         let mut start = None::<Instant>;
         let mut shown = 0;
         let mut index = 0;
+        self.paused_for = Duration::ZERO;
         loop {
-            let first = start.is_none().then_some(deadline);
-            if !self.read(&mut stdout, &mut frame, first)? {
+            if index > 0 {
+                self.active()?;
+            }
+            if !self.read(&mut stdout, &mut frame, start.is_none(), waiting_for_data)? {
                 return Ok(shown);
             }
             match start {
-                Some(start) if late(index, start.elapsed()) => {
+                Some(start) if late(index, start.elapsed().saturating_sub(self.paused_for)) => {
                     index += 1;
                     continue;
                 }
@@ -475,28 +594,67 @@ impl Session {
             self.show(&frame, width, height)?;
             start.get_or_insert_with(Instant::now);
             shown += 1;
+            self.position = offset + u64::from(index) * 100;
+            (self.events)(VideoEvent::Position {
+                milliseconds: self.position,
+                duration: self.duration,
+            });
             index += 1;
-            if !self.playing {
+            if !self.playing || self.buffering {
                 self.playing = true;
-                (self.events)(VideoEvent::Playing);
+                self.buffering = false;
+                (self.events)(if self.paused {
+                    VideoEvent::Paused(true)
+                } else {
+                    VideoEvent::Playing
+                });
             }
         }
     }
 
-    /// Fills `frame` from `stdout`, before `deadline` if any; false at the
-    /// end of the frames, where a part of one is dropped.
+    fn buffering(&mut self) {
+        self.buffering = true;
+        (self.events)(VideoEvent::Buffering {
+            milliseconds: self.position,
+            paused: self.paused,
+        });
+    }
+
+    /// The decoder's first-frame budget excludes waiting for network data.
+    /// Later stalls also suspend presentation so arriving frames stay visible.
     fn read(
         &mut self,
         stdout: &mut ChildStdout,
         frame: &mut [u8],
-        deadline: Option<Instant>,
+        first: bool,
+        waiting_for_data: &AtomicBool,
     ) -> Result<bool, Halt> {
         let mut filled = 0;
+        let mut budget = self.first_frame;
+        let started = Instant::now();
+        let mut checked = started;
         while filled < frame.len() {
             if let Some(halt) = self.halted() {
                 return Err(halt);
             }
-            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            let now = Instant::now();
+            let elapsed = now.duration_since(checked);
+            checked = now;
+            let waiting = waiting_for_data.load(Ordering::Acquire);
+            if waiting {
+                if !first {
+                    self.paused_for += elapsed;
+                }
+                if !self.buffering && started.elapsed() >= Duration::from_millis(250) {
+                    self.buffering();
+                }
+            } else {
+                budget = budget.saturating_sub(elapsed);
+                if !first && self.paused {
+                    self.paused_for += elapsed;
+                }
+            }
+            if first && budget.is_zero() {
                 return Err(Halt::Failed(format!(
                     "no frame after {} s",
                     self.first_frame.as_secs_f32()
@@ -520,7 +678,8 @@ impl Session {
             if let Some(halt) = self.halted() {
                 return Err(halt);
             }
-            let left = due.saturating_duration_since(Instant::now());
+            self.active()?;
+            let left = (due + self.paused_for).saturating_duration_since(Instant::now());
             if left.is_zero() {
                 return Ok(());
             }
@@ -586,4 +745,57 @@ fn first_errors(mut stderr: ChildStderr) -> String {
         kept.extend_from_slice(&buffer[..read.min(room)]);
     }
     String::from_utf8_lossy(&kept).into_owned()
+}
+
+/// Feeds the growing cached file through a bounded OS pipe. Killing the
+/// decoder unblocks a writer even while the user has paused playback.
+fn feed(
+    file: CachedVideo,
+    mut stdin: std::process::ChildStdin,
+    stopped: Arc<AtomicBool>,
+    waiting: Arc<AtomicBool>,
+) {
+    use std::io::{Seek, SeekFrom};
+    let Ok(mut input) = File::open(&file.path) else {
+        return;
+    };
+    let mut left = None;
+    if let Some(header) = file.header() {
+        if stdin.write_all(&header.prefix).is_err()
+            || input.seek(SeekFrom::Start(header.offset)).is_err()
+        {
+            return;
+        }
+        left = Some(header.end.saturating_sub(header.offset));
+    }
+    let mut buffer = [0; 64 * 1024];
+    while !stopped.load(Ordering::Acquire) {
+        let room = left.map_or(buffer.len(), |left| left.min(buffer.len() as u64) as usize);
+        if room == 0 {
+            return;
+        }
+        match input.read(&mut buffer[..room]) {
+            Ok(0) => match file.progress() {
+                Ok(progress) if !progress.complete => {
+                    waiting.store(true, Ordering::Release);
+                    thread::sleep(TICK);
+                }
+                _ => {
+                    waiting.store(false, Ordering::Release);
+                    return;
+                }
+            },
+            Ok(read) => {
+                waiting.store(false, Ordering::Release);
+                if let Some(left) = &mut left {
+                    *left -= read as u64;
+                }
+                if stdin.write_all(&buffer[..read]).is_err() {
+                    return;
+                }
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(_) => return,
+        }
+    }
 }

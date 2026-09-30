@@ -356,16 +356,18 @@ def focused():
 
 
 def open_details(sidebar, query, expected_results):
-    """Search in the sidebar, press Enter on the first result, return its
-    details pane. The search stays: erasing it would move the details."""
+    """Search, press Enter, and wait for the existing Details pane's content."""
     keys(sidebar, *["backspace"] * 30)
     type_text(sidebar, query)
     wait(lambda: expected_results in read(sidebar), f"search {query!r} did not settle")
-    before = {p["pane_id"] for p in panes()}
     keys(sidebar, "enter")
-    details = wait(lambda: next((p for p in panes() if p["pane_id"] not in before
-                               and (p.get("tokens") or {}).get(DETAILS_TOKEN) == "v1"), None),
-                 f"Enter on {query!r} did not open a details pane")["pane_id"]
+    details = wait(lambda: with_token(DETAILS_TOKEN),
+                   f"Enter on {query!r} did not show Details")["pane_id"]
+    source = {"fixture": "massdo/herdr-marketplace-fixture",
+              "terminal browser": "zenbu-labs/terminal-browser/herdr-plugin",
+              "herdr-sidebar": "alexarthurs/herdr-sidebar/plugins/herdr-sidebar",
+              "marketplace": "massdo/herdr-marketplace"}[query]
+    wait(lambda: source in read(details), f"Details did not show {query!r}")
     return details
 
 
@@ -419,8 +421,7 @@ def prove_details():
 
     wait(lambda: " All 2 " in read(sidebar), "search fixture did not stay")
     keys(sidebar, "down", "enter")
-    alt = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != details), None),
-               "Enter on the alt source did not open its details pane")
+    alt = details
     shown = wait(lambda: "No README in alt/" in (text := read(alt)) and text,
                  "the root README fallback was not signalled")
     assert "massdo/herdr-marketplace-fixture/alt" in shown, shown
@@ -494,8 +495,7 @@ def prove_preview():
     print("preview_beside_sidebar_ok", flush=True)
 
     keys(sidebar, "up")
-    root = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != alt), None),
-                "up did not preview the plugin above")
+    root = alt
     wait(lambda: "[image: fixture logo]" in read(root), "the preview did not follow the selection")
     assert [p["pane_id"] for p in details_panes(tab)] == [root], "the old preview stayed open"
     assert focused() == sidebar, "the new preview took the focus"
@@ -506,12 +506,10 @@ def prove_preview():
     # A search moves the open preview to its first result.
     type_text(sidebar, " (alt)")
     wait(lambda: " All 1 " in read(sidebar), "search fixture (alt) did not settle")
-    alt = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != root), None),
-               "the preview did not follow the search")
+    alt = root
     wait(lambda: "No README in alt/" in read(alt), "the preview is not the first result")
     keys(sidebar, *["backspace"] * len(" (alt)"))
-    root = wait(lambda: next((p["pane_id"] for p in details_panes(tab) if p["pane_id"] != alt), None),
-                "the preview did not follow the erased search")
+    root = alt
     wait(lambda: "[image: fixture logo]" in read(root), "the preview is not the first result")
     assert [p["pane_id"] for p in details_panes(tab)] == [root], "the old preview stayed open"
     assert focused() == sidebar, "the search moved the focus"
@@ -528,6 +526,78 @@ def prove_preview():
     wait(lambda: focused() == sidebar, "focus did not return to the sidebar")
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+
+
+
+
+def prove_fast_sidebar_close():
+    write_catalog(SHA_A)
+    for mode in ("toggle", "esc"):
+        sidebar = open_sidebar()
+        wait(lambda: listed(read(sidebar)), "catalogue did not load")
+        started = time.monotonic()
+        if mode == "toggle":
+            toggle()
+        else:
+            keys(sidebar, "esc")
+        while with_token(SIDEBAR_TOKEN) is not None:
+            assert time.monotonic() - started < 0.5, "closing stalled for half a second"
+            time.sleep(0.01)
+        elapsed = round((time.monotonic() - started) * 1000)
+        assert elapsed < 500, elapsed
+        print(f"sidebar_fast_close_ok mode={mode} milliseconds={elapsed}", flush=True)
+
+
+def prove_single_details():
+    """Observe every transition, rather than only the final pane count."""
+    write_catalog(SHA_A)
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    details = open_details(sidebar, "fixture", " All 2 ")
+    wait(lambda: "[image: fixture logo]" in read(details), "fixture README did not load")
+    tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
+    layout = rects(sidebar)
+    stop = threading.Event()
+    samples, failures = [], []
+
+    def observe():
+        try:
+            while not stop.is_set():
+                current = [p["pane_id"] for p in details_panes(tab)]
+                samples.append(current)
+                if current != [details]:
+                    failures.append(current)
+                time.sleep(0.005)
+        except Exception as error:
+            failures.append(str(error))
+
+    watcher = threading.Thread(target=observe, daemon=True)
+    watcher.start()
+    try:
+        herdr("pane", "focus", "--pane", details, "--direction", "left")
+        wait(lambda: focused() == sidebar, "sidebar did not regain focus")
+        time.sleep(0.3)
+        for _ in range(3):
+            click_text(sidebar, "fixture/alt")
+            wait(lambda: "No README in alt/" in read(details), "click did not select B")
+            keys(sidebar, "up")
+            wait(lambda: "[image: fixture logo]" in read(details), "up did not select A")
+            assert rects(sidebar) == layout, "switching plugins changed pane geometry"
+        # Rapid browsing must still converge to the final selection.
+        keys(sidebar, "down", "up", "down", "up")
+        time.sleep(0.5)
+        assert "[image: fixture logo]" in read(details), read(details)
+    finally:
+        stop.set()
+        watcher.join(timeout=5)
+    assert not watcher.is_alive(), "Details monitor did not stop"
+    assert len(samples) >= 10, len(samples)
+    assert not failures, failures
+    print(f"single_details_pane_ok samples={len(samples)}", flush=True)
+    keys(details, "q")
+    wait(lambda: not details_panes(tab), "q did not close Details")
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "toggle did not close Marketplace")
 
 
 def registry():
@@ -827,7 +897,7 @@ def ffmpeg_pids():
 
 def video_files():
     """Videos the plugin downloaded into its state folder."""
-    return list(Path(os.environ["XDG_STATE_HOME"]).rglob("videos/*"))
+    return list(Path(os.environ["XDG_STATE_HOME"]).rglob("videos/**/*.mp4"))
 
 
 def resident_kb(pid):
@@ -835,14 +905,15 @@ def resident_kb(pid):
     return int(found.stdout.strip())
 
 
-def play_video(details, since):
-    """Clicks the play button until Herdr draws frames after byte `since` of
-    the client log. Some addresses of GitHub's storage are at times very
-    slow: the download then fails after 30 s and the button stays, to try
-    again, as a user would."""
-    for _ in range(5):
-        click_text(details, "Play video (9.8 MB)")
-        wait(lambda: "Downloading" in read(details), "the click did not download the video")
+def play_video(details, since, automatic=False):
+    """Waits for autoplay, or clicks once for replay. A failed transfer can
+    be retried manually; a cached replay needs no Downloading screen."""
+    for attempt in range(5):
+        if not automatic or attempt:
+            if "[Play]" in read(details):
+                keys(details, "p")
+            else:
+                click_text(details, "Play video (9.8 MB)")
         outcome = wait(lambda: ("played" if layer_frames(since) else
                                 "failed" if "Could not play the video" in read(details) else None),
                        "the video neither played nor failed", 60)
@@ -852,28 +923,28 @@ def play_video(details, since):
 
 
 def prove_video():
-    """terminal-browser's README shows its video with a play button. A click
-    downloads it, then Herdr draws its frames on a layer of the pane, 10 a
-    second at most, each at most 800 pixels wide and within its cells, while
-    the memory of the pane stays bounded. p stops it; closing the pane stops
-    it too, even after the sidebar closed. No stop leaves FFmpeg or a file."""
+    """Autoplay, progressive delivery, bounded frames, controls, A-B-A
+    reuse, and cleanup owned by Marketplace rather than Details."""
     write_catalog(SHA_A)
     sidebar = open_sidebar()
     wait(lambda: listed(read(sidebar)), "the catalogue did not load")
     tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
-    details = open_details(sidebar, "terminal browser", " All 1 ")
-    wait(lambda: "Play video (9.8 MB)" in read(details), "the video has no play button", 60)
     since = CLIENT_LOG.stat().st_size
-    play_video(details, since)
+    opened = time.monotonic()
+    details = open_details(sidebar, "terminal browser", " All 1 ")
+    play_video(details, since, automatic=True)
+    first_ms = round((time.monotonic() - opened) * 1000)
+    assert len(video_files()) == 1, video_files()
+    cached = video_files()[0]
+    complete_at_start = json.loads(cached.with_suffix(".json").read_text())["complete"]
+    print(f"video_first_frame_ms={first_ms} complete_at_start={complete_at_start}", flush=True)
     started = time.monotonic()
     frames = wait(lambda: len(found := layer_frames(since)) >= 10 and found,
                   "the video did not play", 60)
-    # The cells of the last frame may not have reached the log yet.
     placed = [(w, h, cells) for w, h, cells in frames if cells]
     assert placed and all(w <= 800 and w <= columns * 8 and h <= rows * 17
                           for w, h, (columns, rows) in placed), frames
     [ffmpeg] = ffmpeg_pids()
-    assert len(video_files()) == 1, video_files()
     pane = int(subprocess.run(["ps", "-o", "ppid=", "-p", str(ffmpeg)],
                               capture_output=True, text=True).stdout.strip())
     time.sleep(max(0, started + 3 - time.monotonic()))
@@ -884,31 +955,86 @@ def prove_video():
     time.sleep(max(0, started + 15 - time.monotonic()))
     late = resident_kb(pane)
     assert late - early < 30 * 1024, (early, late)
+    def complete():
+        state = json.loads(cached.with_suffix(".json").read_text())
+        assert state["error"] is None, state
+        return state["complete"]
+
+    wait(complete, "the background transfer did not finish", 280)
+    cached_stat = cached.stat()
     print("video_plays_ok", flush=True)
 
     keys(details, "p")
-    wait(lambda: not ffmpeg_pids() and not video_files()
-         and "Play video (9.8 MB)" in read(details), "p did not stop the video", 5)
-    print("video_stops_ok", flush=True)
-
-    play_video(details, CLIENT_LOG.stat().st_size)
-    toggle()
-    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+    wait(lambda: "[Play]" in read(details), "p did not pause the video", 5)
+    time.sleep(0.3)
     since = CLIENT_LOG.stat().st_size
-    wait(lambda: len(layer_frames(since)) >= 5, "the video stopped with the sidebar", 20)
+    time.sleep(1)
+    assert not layer_frames(since), "paused video kept presenting frames"
+    assert ffmpeg_pids(), "pause restarted or killed the decoder"
+    print("video_pauses_ok", flush=True)
+
+    def position():
+        found = re.search(r"(\d+):(\d{2})/\d+:\d{2}", read(details))
+        return int(found[1]) * 60 + int(found[2]) if found else None
+
+    before = position()
+    assert before is not None, read(details)
+    keys(details, "right")
+    wait(lambda: position() is not None and position() >= before + 4,
+         "seeking did not move the position", 10)
+    assert "[Play]" in read(details), "seeking lost the paused state"
+    keys(details, "p")
+    since = CLIENT_LOG.stat().st_size
+    wait(lambda: len(layer_frames(since)) >= 3, "resume did not present frames", 10)
+    print("video_seeks_resumes_ok", flush=True)
+
+    replacement = open_details(sidebar, "fixture", " All 2 ")
+    assert replacement == details, "changing plugins replaced the Details pane"
+    wait(lambda: not ffmpeg_pids(), "switching plugins left the previous decoder", 5)
+    assert video_files() == [cached], "switching plugins evicted the cached video"
+    since = CLIENT_LOG.stat().st_size
+    details = open_details(sidebar, "terminal browser", " All 1 ")
+    play_video(details, since, automatic=True)
+    assert video_files() == [cached], "returning to A created a new video file"
+    assert cached.stat().st_ino == cached_stat.st_ino
+    assert cached.stat().st_mtime_ns == cached_stat.st_mtime_ns, "returning to A downloaded again"
+    print("video_plugin_return_reuses_cache_ok", flush=True)
+
     keys(details, "q")
-    wait(lambda: not details_panes(tab), "q did not close the details pane")
+    wait(lambda: not details_panes(tab) and not ffmpeg_pids(), "q left a details pane or decoder", 5)
+    assert video_files() == [cached], "Details closure deleted Marketplace's cache"
+    print("video_details_close_keeps_cache_ok", flush=True)
+    since = CLIENT_LOG.stat().st_size
+    details = open_details(sidebar, "terminal browser", " All 1 ")
+    play_video(details, since, automatic=True)
+    herdr("pane", "close", details)
+    wait(lambda: not ffmpeg_pids(), "external Details closure left FFmpeg", 5)
+    assert video_files() == [cached]
+    print("video_external_details_close_keeps_cache_ok", flush=True)
+
+    since = CLIENT_LOG.stat().st_size
+    details = open_details(sidebar, "terminal browser", " All 1 ")
+    play_video(details, since, automatic=True)
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close Marketplace")
     wait(lambda: not ffmpeg_pids() and not video_files(),
-         "closing the pane left FFmpeg or the video", 5)
-    print("video_closes_ok", flush=True)
+         "closing Marketplace left FFmpeg or cached videos", 5)
+    assert details_panes(tab), "closing Marketplace unexpectedly closed Details"
+    print("video_marketplace_close_cleans_cache_ok", flush=True)
     close_all(tab)
 
 
 def main():
     check_isolation()
+    if os.environ.get("HERDR_MARKETPLACE_E2E_ONLY") == "video":
+        prove_video()
+        print("video_journey_ok", flush=True)
+        return
     prove_sidebar()
     prove_details()
     prove_preview()
+    prove_single_details()
+    prove_fast_sidebar_close()
     prove_readme()
     prove_animation()
     prove_video()
@@ -924,6 +1050,13 @@ def main():
 
 def diagnostics():
     print("== diagnostics ==", flush=True)
+    print("video_files", video_files(), "ffmpeg_pids", ffmpeg_pids(), flush=True)
+    for file in video_files():
+        print("video_state", file, file.with_suffix(".json").read_text(), flush=True)
+        owner = file.parent.name
+        if owner.isdigit():
+            info = subprocess.run(["ps", "-o", "pid=,ppid=,stat=,command=", "-p", owner], capture_output=True, text=True)
+            print("video_owner", info.stdout, flush=True)
     try:
         print(herdr("plugin", "log", "list", "--plugin", "herdr-marketplace", "--limit", "5"))
         for pane in panes():

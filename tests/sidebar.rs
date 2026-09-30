@@ -82,6 +82,42 @@ fn the_catalogue_is_requested_once_when_the_sidebar_opens() {
 }
 
 #[test]
+fn an_unchanged_refresh_or_offline_notice_does_not_move_a_scrolled_list() {
+    let mut app = loaded_app();
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 19);
+    app.handle_mouse(mouse(MouseEventKind::ScrollDown, 5, 7), 40, 19);
+    let offset = app.offset;
+    assert!(offset > 0);
+    let LoadState::Ready(mut loaded) = app.state.clone() else {
+        panic!()
+    };
+    app.loaded(Ok(loaded.clone()));
+    assert_eq!(app.offset, offset);
+    loaded.loaded.not_refreshed = true;
+    app.loaded(Ok(loaded));
+    assert_eq!(app.offset, offset);
+    assert_eq!(selected_repo(&app), "plugin-00");
+}
+
+#[test]
+fn a_changed_catalog_preserves_search_filter_and_selection_identity() {
+    let mut app = loaded_app();
+    type_text(&mut app, "plugin");
+    app.handle_key(key(KeyCode::Down));
+    let selected = app.selected.clone();
+    let LoadState::Ready(mut loaded) = app.state.clone() else {
+        panic!()
+    };
+    loaded.loaded.catalog.entries[0].stars = 0;
+    let refreshed = LoadedListing::new(loaded.loaded, Ok(vec![]), Platform::Macos);
+    app.loaded(Ok(refreshed));
+    assert_eq!(app.query, "plugin");
+    assert_eq!(app.filter, Filter::All);
+    assert_eq!(app.selected, selected);
+    assert!(!app.intents.contains(&Intent::Load));
+}
+
+#[test]
 fn typing_never_reloads_the_catalogue() {
     let mut app = loaded_app();
     type_text(&mut app, "plugin-1");

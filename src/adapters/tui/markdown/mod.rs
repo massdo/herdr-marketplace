@@ -859,6 +859,11 @@ impl<'a> Renderer<'a> {
     /// a README is a video on GitHub when the file is one. It becomes a
     /// video when it can play here; its text stays otherwise.
     fn lone_video(&mut self) {
+        // Ordinary paragraphs need no temporary copy to recognize a video.
+        if !matches!(self.pieces.first(), Some(Piece::Text { text, .. }) if text.trim_start().starts_with("https://github.com/"))
+        {
+            return;
+        }
         let mut address = String::new();
         for piece in &self.pieces {
             match piece {
@@ -1075,6 +1080,9 @@ impl<'a> Renderer<'a> {
             }
             self.push(Line::from(spans), Flow::DECOR);
         }
+        // A separate line leaves the controls outside the graphics layer.
+        let controls = Line::from(self.prefix());
+        self.push(controls, Flow::DECOR);
         self.out.video_places.push(VideoPlace {
             url,
             line: first,
