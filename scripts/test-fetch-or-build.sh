@@ -100,8 +100,9 @@ chmod +x "$WORK"/fakes/*
 cases=0
 failures=0
 
-# A clean checkout whose commit is published in a complete release, on
-# Darwin/arm64 with curl, git, the SHA-256 tool and cargo on PATH.
+# A clean checkout whose commit is published in a complete release, binaries
+# and FFmpeg, on Darwin/arm64 with curl, git, the SHA-256 tool and cargo on
+# PATH.
 setup() {
   NAME=$1
   cases=$((cases + 1))
@@ -126,8 +127,9 @@ EOF
   echo "$HEAD_SHA" > "$R/SOURCE_COMMIT"
   for triple in $TRIPLES; do
     printf '#!/bin/sh\necho %s > "%s/executed"\n' "$triple" "$L" > "$R/herdr-marketplace-$triple"
+    printf '#!/bin/sh\necho ffmpeg %s > "%s/executed"\n' "$triple" "$L" > "$R/ffmpeg-$triple"
   done
-  (cd "$R" && hash_files herdr-marketplace-*) > "$R/SHA256SUMS"
+  (cd "$R" && hash_files herdr-marketplace-* ffmpeg-*) > "$R/SHA256SUMS"
   for tool in "$WORK"/base/* "$WORK"/real/*; do
     ln -s "$tool" "$B/"
   done
@@ -184,6 +186,20 @@ expect_prebuilt() {
   [ ! -s "$L/stderr" ] || fail "unexpected stderr"
   [ ! -e "$L/cargo.args" ] || fail "cargo ran although the binary was verified"
   done_case
+}
+
+expect_ffmpeg() {
+  cmp -s "$R/ffmpeg-$1" "$P/target/release/ffmpeg" || fail "ffmpeg-$1 is not installed"
+  [ -x "$P/target/release/ffmpeg" ] || fail "the installed FFmpeg is not executable"
+  grep -qF "installed verified FFmpeg for README videos." "$L/stdout" || fail "no FFmpeg message"
+  grep -qF "installed verified FFmpeg for README videos." "$L/build.log" || fail "no FFmpeg message in HERDR_MARKETPLACE_BUILD_LOG"
+}
+
+# $1: why FFmpeg is not installed; the binary is.
+expect_no_ffmpeg() {
+  [ ! -e "$P/target/release/ffmpeg" ] || fail "an FFmpeg is installed"
+  grep -qF "README videos will open in the browser: $1." "$L/stdout" || fail "stdout lacks: $1"
+  grep -qF "README videos will open in the browser: $1." "$L/build.log" || fail "HERDR_MARKETPLACE_BUILD_LOG lacks: $1"
 }
 
 # $1: reason on stderr; $2: expected exit status. A source build happens in
@@ -367,6 +383,38 @@ grep -qF "cargo not found" "$L/build.log" || fail "no message about the missing 
 [ "$(cat "$P/target/release/herdr-marketplace")" = old ] || fail "the old binary was replaced"
 if grep -q 'installed verified prebuilt' "$L/stdout"; then fail "announced a prebuilt binary"; fi
 done_case
+
+setup "prebuilt binary and FFmpeg"
+run
+expect_ffmpeg aarch64-apple-darwin
+expect_prebuilt aarch64-apple-darwin
+
+# As every release published before FFmpeg.
+setup "release without FFmpeg"
+rm "$R"/ffmpeg-*
+(cd "$R" && hash_files herdr-marketplace-*) > "$R/SHA256SUMS"
+run
+expect_no_ffmpeg "SHA256SUMS of release v$VERSION has no entry for ffmpeg-aarch64-apple-darwin"
+expect_prebuilt aarch64-apple-darwin
+
+setup "wrong FFmpeg checksum"
+echo tampered >> "$R/ffmpeg-aarch64-apple-darwin"
+run
+expect_no_ffmpeg "SHA-256 mismatch for ffmpeg-aarch64-apple-darwin of release v$VERSION"
+expect_prebuilt aarch64-apple-darwin
+
+setup "partial transfer of FFmpeg"
+FAIL="ffmpeg-aarch64-apple-darwin:partial"
+run
+expect_no_ffmpeg "cannot download ffmpeg-aarch64-apple-darwin of release v$VERSION"
+expect_prebuilt aarch64-apple-darwin
+
+setup "no FFmpeg for a source build"
+echo 0123456789abcdef0123456789abcdef01234567 > "$R/SOURCE_COMMIT"
+run
+[ ! -e "$P/target/release/ffmpeg" ] || fail "a source build installed FFmpeg"
+if grep -q ffmpeg "$L/downloads"; then fail "a source build downloaded FFmpeg"; fi
+expect_source_build "release v$VERSION was built from 0123456789abcdef0123456789abcdef01234567, not from this checkout ($HEAD_SHA)"
 
 echo "fetch-or-build: $cases cases, $failures failures"
 [ "$failures" -eq 0 ]
