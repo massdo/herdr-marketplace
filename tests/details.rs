@@ -7,9 +7,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use herdr_marketplace::adapters::image_fetch::Probe;
 use herdr_marketplace::adapters::tui::details::{
-    DetailsApp, DetailsIntent, InstalledView, ReadmeState,
+    DetailsApp, DetailsIntent, InstalledView, ReadmeState, VideoStatus,
 };
+use herdr_marketplace::adapters::tui::graphics::Graphics;
+use herdr_marketplace::adapters::tui::video::VideoEvent;
 use herdr_marketplace::adapters::tui::{details_view, markdown};
 use herdr_marketplace::application::load_readme::{Readme, load_readme};
 use herdr_marketplace::application::open_details::{Reveal, Shown, close_details, show_details};
@@ -829,4 +832,208 @@ fn usual_readme_names_are_tried_in_the_plugin_folder_before_root() {
         );
         assert!(!raw.asked.borrow().contains(&root));
     }
+}
+
+const VIDEO: &str =
+    "https://github.com/user-attachments/assets/abe2f43e-fc50-4866-b753-33388967945d";
+
+/// An 80 × 40 details pane whose README plays a video of 9.8 MB in a block
+/// of 60 × 16 cells of 8 × 17 pixels, between "Intro" and "Outro", then
+/// 60 lines of text.
+fn with_video() -> DetailsApp {
+    let mut app = DetailsApp::new(target(""));
+    app.set_graphics(Graphics::Kitty {
+        cell_width: 8,
+        cell_height: 17,
+    });
+    app.video_player(true);
+    app.set_viewport(80, details_view::page_rows(&app, 80, 40));
+    let filler: String = (1..=30).map(|n| format!("line {n}\n\n")).collect();
+    app.readme_loaded(
+        1,
+        Ok(Readme::Found {
+            text: format!(
+                "Intro\n\n<video src=\"{VIDEO}\" width=\"480\" height=\"270\"></video>\n\nOutro\n\n{filler}"
+            ),
+            fallback: false,
+        }),
+    );
+    app.video_probed(
+        VIDEO,
+        Ok(Probe {
+            content_type: "video/mp4".into(),
+            size: Some(9_841_526),
+        }),
+    );
+    app.set_viewport(80, details_view::page_rows(&app, 80, 40));
+    app.intents.clear();
+    let place = &app.video_places[0];
+    assert_eq!((place.columns, place.rows), (60, 16));
+    app
+}
+
+/// The 80 × 40 pane as drawn, row by row, with the color of each cell.
+fn drawn(app: &DetailsApp) -> Vec<(String, Vec<Color>)> {
+    let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+    terminal
+        .draw(|frame| details_view::render(frame, app))
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .chunks(80)
+        .map(|row| {
+            (
+                row.iter().map(|cell| cell.symbol()).collect(),
+                row.iter().map(|cell| cell.fg).collect(),
+            )
+        })
+        .collect()
+}
+
+/// Row and column where the pane shows `text`.
+fn find(app: &DetailsApp, text: &str) -> (u16, u16) {
+    let rows = drawn(app);
+    let row = rows
+        .iter()
+        .position(|(row, _)| row.contains(text))
+        .unwrap_or_else(|| panic!("no {text:?} in {rows:#?}"));
+    let column = rows[row].0[..rows[row].0.find(text).unwrap()]
+        .chars()
+        .count();
+    (row as u16, column as u16)
+}
+
+fn play_intent() -> DetailsIntent {
+    DetailsIntent::PlayVideo {
+        url: VIDEO.into(),
+        looped: false,
+        fit: (60 * 8, 16 * 17),
+    }
+}
+
+#[test]
+fn a_click_on_the_play_button_plays_the_video_in_frames_that_fit_its_cells() {
+    let mut app = with_video();
+    let (row, column) = find(&app, "▶ Play video (9.8 MB)");
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), column + 3, row),
+        80,
+        40,
+    );
+    assert_eq!(app.intents, [play_intent()]);
+    assert_eq!(
+        app.video.as_ref().map(|video| &video.status),
+        Some(&VideoStatus::Downloading(0, None))
+    );
+
+    // A click in the block of the video that plays stops it.
+    app.intents.clear();
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), column, row + 2),
+        80,
+        40,
+    );
+    assert_eq!(app.intents, [DetailsIntent::StopVideo]);
+    assert!(app.video.is_none());
+}
+
+#[test]
+fn p_plays_the_video_on_screen_and_stops_the_one_that_plays() {
+    let mut app = with_video();
+    app.handle_key(key(KeyCode::Char('p')));
+    assert_eq!(app.intents, [play_intent()]);
+    app.intents.clear();
+    app.video_event(VideoEvent::Playing);
+    app.handle_key(key(KeyCode::Char('p')));
+    assert_eq!(app.intents, [DetailsIntent::StopVideo]);
+    assert!(app.video.is_none());
+
+    // Scrolled past its block, p finds no video to play.
+    app.intents.clear();
+    app.handle_key(key(KeyCode::End));
+    assert!(
+        drawn(&app)
+            .iter()
+            .all(|(row, _)| !row.starts_with("Intro") && !row.contains("Play video"))
+    );
+    app.handle_key(key(KeyCode::Char('p')));
+    assert!(app.intents.is_empty(), "{:?}", app.intents);
+}
+
+#[test]
+fn the_block_tells_the_download_then_leaves_its_cells_to_the_frames() {
+    let mut app = with_video();
+    app.handle_key(key(KeyCode::Char('p')));
+    app.video_event(VideoEvent::Downloading(4_920_763, Some(9_841_526)));
+    let rows = drawn(&app);
+    assert!(
+        rows.iter()
+            .any(|(row, _)| row.contains(" Downloading video… 50% ")),
+        "{rows:#?}"
+    );
+    assert!(!rows.iter().any(|(row, _)| row.contains("Play video")));
+    app.video_event(VideoEvent::Downloading(3_200_000, None));
+    assert!(
+        drawn(&app)
+            .iter()
+            .any(|(row, _)| row.contains(" Downloading video… 3.2 MB "))
+    );
+
+    app.video_event(VideoEvent::Playing);
+    let rows = drawn(&app);
+    let intro = rows
+        .iter()
+        .position(|(row, _)| row.starts_with("Intro"))
+        .unwrap();
+    let outro = rows
+        .iter()
+        .position(|(row, _)| row.starts_with("Outro"))
+        .unwrap();
+    assert!(
+        rows[intro + 1..outro]
+            .iter()
+            .all(|(row, _)| row.trim().is_empty()),
+        "{rows:#?}"
+    );
+
+    app.video_event(VideoEvent::Ended);
+    assert!(app.video.is_none());
+    assert!(
+        drawn(&app)
+            .iter()
+            .any(|(row, _)| row.contains("▶ Play video (9.8 MB)"))
+    );
+}
+
+#[test]
+fn a_failed_video_keeps_its_button_and_tells_why_in_red_under_it() {
+    let mut app = with_video();
+    app.handle_key(key(KeyCode::Char('p')));
+    app.video_event(VideoEvent::Failed("no frame\u{1b}[31m after 10 s".into()));
+    let rows = drawn(&app);
+    let button = rows
+        .iter()
+        .position(|(row, _)| row.contains("▶ Play video (9.8 MB)"))
+        .expect("the button stays");
+    assert!(rows[button].0.contains("Open in browser"));
+    let (row, colors) = &rows[button + 1];
+    let start = row
+        .find("Could not play the video: no frame")
+        .unwrap_or_else(|| {
+            panic!("no reason under the button: {rows:#?}");
+        });
+    assert!(!row.contains('\u{1b}'));
+    assert_eq!(colors[row[..start].chars().count()], Color::Red);
+
+    // The button tries again.
+    app.intents.clear();
+    let (row, column) = find(&app, "▶ Play video (9.8 MB)");
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), column + 3, row),
+        80,
+        40,
+    );
+    assert_eq!(app.intents, [play_intent()]);
 }

@@ -6,16 +6,18 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::animation::Spot;
 use super::details::{
     Button, Command, DetailsApp, InstallState, InstalledView, ReadmeState, RemovalState,
+    VideoStatus,
 };
 use super::graphics::without_image;
+use super::markdown::{CHIP_BG, CHIP_FG, VideoPlace};
 use super::selection::{self, Flow, Selection};
 use super::style::{
-    ERROR, MUTED, OK, WARN, bold, button_text, ellipsize, ellipsize_middle, muted, wrap,
+    ERROR, MUTED, OK, WARN, bold, button_text, ellipsize, ellipsize_middle, megabytes, muted, wrap,
 };
 use crate::adapters::pane_graphics::Cells;
 use crate::domain::operation::{OperationKind, Status};
@@ -84,6 +86,11 @@ fn rows(app: &DetailsApp, width: u16, height: u16) -> (Vec<Line<'static>>, Vec<F
     } else {
         Vec::new()
     };
+    let video = if showing_readme(app) {
+        video_lines(app, prefix.len())
+    } else {
+        Vec::new()
+    };
     let body_flows = iter::repeat_n(Flow::default(), prefix.len())
         .chain(content_flows.iter().copied())
         .chain(iter::repeat(Flow::default()));
@@ -96,7 +103,9 @@ fn rows(app: &DetailsApp, width: u16, height: u16) -> (Vec<Line<'static>>, Vec<F
         .take(body_height);
     let first = lines.len();
     for (index, (line, flow)) in body {
-        if covered.iter().any(|rows| rows.contains(&index)) {
+        if let Some((_, drawn)) = video.iter().find(|(at, _)| *at == index) {
+            lines.push(drawn.clone());
+        } else if covered.iter().any(|rows| rows.contains(&index)) {
             lines.push(without_image(line));
         } else {
             lines.push(line);
@@ -141,24 +150,163 @@ pub fn spots(app: &DetailsApp, width: u16, height: u16) -> Vec<(String, Spot)> {
             continue;
         }
         let first = prefix.len() + place.line;
-        let from = app.scroll.max(first);
-        let to = (app.scroll + page).min(first + usize::from(place.rows));
-        if from >= to {
-            continue;
+        if let Some(spot) = spot(
+            app,
+            top,
+            page,
+            first,
+            place.column,
+            place.columns,
+            place.rows,
+        ) {
+            spots.push((place.url.clone(), spot));
         }
-        let spot = Spot {
-            cells: Cells {
-                column: place.column as u16,
-                row: (top + from - app.scroll) as u16,
-                columns: place.columns,
-                rows: (to - from) as u16,
-            },
-            first: (from - first) as u16,
-            rows: place.rows,
-        };
-        spots.push((place.url.clone(), spot));
     }
     spots
+}
+
+/// Where the block of the video that plays shows, as `spots` finds the
+/// animations; `None` when the body does not show it.
+pub fn video_spot(app: &DetailsApp, width: u16, height: u16) -> Option<Spot> {
+    let video = app.video.as_ref()?;
+    if !showing_readme(app) {
+        return None;
+    }
+    let place = app
+        .video_places
+        .iter()
+        .find(|place| place.url == video.url)?;
+    let top = header(app, width as usize)
+        .len()
+        .min(height.saturating_sub(2) as usize);
+    let page = page_rows(app, width, height);
+    let (prefix, _, _) = body_lines(app, width as usize);
+    let first = prefix.len() + place.line;
+    spot(
+        app,
+        top,
+        page,
+        first,
+        place.column,
+        place.columns,
+        place.rows,
+    )
+}
+
+/// The cells of the rows the body shows of a block: body lines
+/// `first..first + rows`, `columns` wide from `column`, under `top` rows
+/// of header and within `page` rows of body.
+fn spot(
+    app: &DetailsApp,
+    top: usize,
+    page: usize,
+    first: usize,
+    column: usize,
+    columns: u16,
+    rows: u16,
+) -> Option<Spot> {
+    let from = app.scroll.max(first);
+    let to = (app.scroll + page).min(first + usize::from(rows));
+    (from < to).then(|| Spot {
+        cells: Cells {
+            column: column as u16,
+            row: (top + from - app.scroll) as u16,
+            columns,
+            rows: (to - from) as u16,
+        },
+        first: (from - first) as u16,
+        rows,
+    })
+}
+
+/// Body lines of the video of the pane, by index, drawn otherwise than in
+/// the README: its block left empty while it plays, its button showing the
+/// download, or the reason it failed under its button.
+fn video_lines(app: &DetailsApp, prefix: usize) -> Vec<(usize, Line<'static>)> {
+    let Some(video) = &app.video else {
+        return Vec::new();
+    };
+    let Some(place) = app.video_places.iter().find(|place| place.url == video.url) else {
+        return Vec::new();
+    };
+    let block = place.line..place.line + usize::from(place.rows);
+    let Some(lines) = app.lines.get(block.clone()) else {
+        return Vec::new();
+    };
+    let empty = |line: &Line<'static>| Line::from(cells_before(line, place.column));
+    // The line without the block, `text` centered in it instead.
+    let centered = |line: &Line<'static>, text: &str, style: Style| {
+        let mut spans = cells_before(line, place.column);
+        let pad = usize::from(place.columns).saturating_sub(text.width()) / 2;
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(text.to_string(), style));
+        Line::from(spans)
+    };
+    match &video.status {
+        VideoStatus::Playing => block
+            .zip(lines)
+            .map(|(at, line)| (prefix + at, empty(line)))
+            .collect(),
+        VideoStatus::Downloading(received, total) => {
+            let progress = match total {
+                Some(total) if *total > 0 => {
+                    format!(" Downloading video… {}% ", received * 100 / total)
+                }
+                _ => format!(" Downloading video… {} ", megabytes(*received)),
+            };
+            let chip = Style::default().fg(CHIP_FG).bg(CHIP_BG);
+            block
+                .zip(lines)
+                .map(|(at, line)| {
+                    let drawn = if at == place.button_line {
+                        centered(line, &progress, chip)
+                    } else {
+                        empty(line)
+                    };
+                    (prefix + at, drawn)
+                })
+                .collect()
+        }
+        VideoStatus::Failed(reason) => {
+            // Under the button, on the first line of the block without its
+            // link.
+            let free = (place.button_line + 1..block.end)
+                .chain(block.start..place.button_line)
+                .find(|at| !app.links.iter().any(|area| area.line == *at));
+            let Some(at) = free else {
+                return Vec::new();
+            };
+            let text = ellipsize(
+                &format!("Could not play the video: {}", clean(reason)),
+                usize::from(place.columns),
+            );
+            let red = Style::default().fg(ERROR);
+            vec![(prefix + at, centered(&app.lines[at], &text, red))]
+        }
+    }
+}
+
+/// The cells of `line` left of `column`.
+fn cells_before(line: &Line<'static>, column: usize) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut used = 0;
+    'spans: for span in &line.spans {
+        let mut text = String::new();
+        for ch in span.content.chars() {
+            let width = ch.width().unwrap_or(0);
+            let past = used + width > column;
+            if !past {
+                text.push(ch);
+                used += width;
+            }
+            if past || used == column {
+                spans.push(Span::styled(text, span.style));
+                break 'spans;
+            }
+        }
+        spans.push(Span::styled(text, span.style));
+    }
+    spans
 }
 
 /// The body shows the README, which no confirmation replaces.
@@ -168,14 +316,15 @@ fn showing_readme(app: &DetailsApp) -> bool {
 
 /// What a click at `column`, `row` of a `width` × `height` pane runs, laid
 /// out as `render` draws it: a button of the action bar, or the commit,
-/// which shows the full SHA.
+/// which shows the full SHA; in the README, a video or a link.
 pub fn hit(app: &DetailsApp, width: u16, height: u16, column: u16, row: u16) -> Option<Command> {
     let shown = header(app, width as usize)
         .len()
         .min(height.saturating_sub(2) as usize);
     let (column, row) = (column as usize, row as usize);
     if row >= shown {
-        return link_at(app, width, height, column, row - shown);
+        return video_at(app, width, height, column, row - shown)
+            .or_else(|| link_at(app, width, height, column, row - shown));
     }
     if row == COMMIT_LINE {
         return Some(Command::ToggleSha);
@@ -189,6 +338,41 @@ pub fn hit(app: &DetailsApp, width: u16, height: u16, column: u16, row: u16) -> 
         .zip(bar_layout(&buttons, width as usize))
         .find(|(_, (start, end))| (*start..*end).contains(&column))
         .map(|(button, _)| button.command)
+}
+
+/// What a click on body line `row` does to a video: in the block of the one
+/// that plays or downloads, stops it; on a play button, plays its video.
+fn video_at(
+    app: &DetailsApp,
+    width: u16,
+    height: u16,
+    column: usize,
+    row: usize,
+) -> Option<Command> {
+    if !showing_readme(app) || row >= page_rows(app, width, height) {
+        return None;
+    }
+    let (prefix, _, _) = body_lines(app, width as usize);
+    let line = (app.scroll + row).checked_sub(prefix.len())?;
+    let within = |place: &VideoPlace| {
+        (place.line..place.line + usize::from(place.rows)).contains(&line)
+            && (place.column..place.column + usize::from(place.columns)).contains(&column)
+    };
+    if let Some(video) = &app.video
+        && !matches!(video.status, VideoStatus::Failed(_))
+        && app
+            .video_places
+            .iter()
+            .any(|place| place.url == video.url && within(place))
+    {
+        return Some(Command::StopVideo);
+    }
+    app.video_places
+        .iter()
+        .position(|place| {
+            place.button_line == line && (place.button.0..place.button.1).contains(&column)
+        })
+        .map(Command::PlayVideo)
 }
 
 /// The README link under a click on body line `row`.

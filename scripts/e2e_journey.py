@@ -818,6 +818,92 @@ def prove_animation():
     close_all(tab)
 
 
+def ffmpeg_pids():
+    """Processes of the private FFmpeg that e2e.sh built."""
+    found = subprocess.run(["pgrep", "-f", os.environ["HERDR_MARKETPLACE_FFMPEG"]],
+                           capture_output=True, text=True)
+    return [int(pid) for pid in found.stdout.split()]
+
+
+def video_files():
+    """Videos the plugin downloaded into its state folder."""
+    return list(Path(os.environ["XDG_STATE_HOME"]).rglob("videos/*"))
+
+
+def resident_kb(pid):
+    found = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True)
+    return int(found.stdout.strip())
+
+
+def play_video(details, since):
+    """Clicks the play button until Herdr draws frames after byte `since` of
+    the client log. Some addresses of GitHub's storage are at times very
+    slow: the download then fails after 30 s and the button stays, to try
+    again, as a user would."""
+    for _ in range(5):
+        click_text(details, "Play video (9.8 MB)")
+        wait(lambda: "Downloading" in read(details), "the click did not download the video")
+        outcome = wait(lambda: ("played" if layer_frames(since) else
+                                "failed" if "Could not play the video" in read(details) else None),
+                       "the video neither played nor failed", 60)
+        if outcome == "played":
+            return
+    raise AssertionError("the video failed to play five times")
+
+
+def prove_video():
+    """terminal-browser's README shows its video with a play button. A click
+    downloads it, then Herdr draws its frames on a layer of the pane, 10 a
+    second at most, each at most 800 pixels wide and within its cells, while
+    the memory of the pane stays bounded. p stops it; closing the pane stops
+    it too, even after the sidebar closed. No stop leaves FFmpeg or a file."""
+    write_catalog(SHA_A)
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
+    details = open_details(sidebar, "terminal browser", " All 1 ")
+    wait(lambda: "Play video (9.8 MB)" in read(details), "the video has no play button", 60)
+    since = CLIENT_LOG.stat().st_size
+    play_video(details, since)
+    started = time.monotonic()
+    frames = wait(lambda: len(found := layer_frames(since)) >= 10 and found,
+                  "the video did not play", 60)
+    # The cells of the last frame may not have reached the log yet.
+    placed = [(w, h, cells) for w, h, cells in frames if cells]
+    assert placed and all(w <= 800 and w <= columns * 8 and h <= rows * 17
+                          for w, h, (columns, rows) in placed), frames
+    [ffmpeg] = ffmpeg_pids()
+    assert len(video_files()) == 1, video_files()
+    pane = int(subprocess.run(["ps", "-o", "ppid=", "-p", str(ffmpeg)],
+                              capture_output=True, text=True).stdout.strip())
+    time.sleep(max(0, started + 3 - time.monotonic()))
+    early = resident_kb(pane)
+    since = CLIENT_LOG.stat().st_size
+    time.sleep(5)
+    assert len(layer_frames(since)) <= 55, len(layer_frames(since))
+    time.sleep(max(0, started + 15 - time.monotonic()))
+    late = resident_kb(pane)
+    assert late - early < 30 * 1024, (early, late)
+    print("video_plays_ok", flush=True)
+
+    keys(details, "p")
+    wait(lambda: not ffmpeg_pids() and not video_files()
+         and "Play video (9.8 MB)" in read(details), "p did not stop the video", 5)
+    print("video_stops_ok", flush=True)
+
+    play_video(details, CLIENT_LOG.stat().st_size)
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+    since = CLIENT_LOG.stat().st_size
+    wait(lambda: len(layer_frames(since)) >= 5, "the video stopped with the sidebar", 20)
+    keys(details, "q")
+    wait(lambda: not details_panes(tab), "q did not close the details pane")
+    wait(lambda: not ffmpeg_pids() and not video_files(),
+         "closing the pane left FFmpeg or the video", 5)
+    print("video_closes_ok", flush=True)
+    close_all(tab)
+
+
 def main():
     check_isolation()
     prove_sidebar()
@@ -825,6 +911,7 @@ def main():
     prove_preview()
     prove_readme()
     prove_animation()
+    prove_video()
     prove_install_preview()
     prove_install()
     prove_switch()

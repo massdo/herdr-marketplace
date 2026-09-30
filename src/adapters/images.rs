@@ -359,6 +359,16 @@ fn frame_png(rgba: &RgbaImage) -> Result<(Vec<u8>, bool), String> {
     Ok((png, transparent))
 }
 
+/// `width` × `height` pixels of raw RGB as a PNG, fast to write, like the
+/// frames of an animation.
+pub fn rgb_png(width: u32, height: u32, rgb: &[u8]) -> Result<Vec<u8>, String> {
+    let mut png = Vec::new();
+    PngEncoder::new_with_quality(&mut png, CompressionType::Fast, PngFilter::Adaptive)
+        .write_image(rgb, width, height, ExtendedColorType::Rgb8)
+        .map_err(|error| error.to_string())?;
+    Ok(png)
+}
+
 /// Of a PNG frame cut into `bands` equal horizontal bands, bands
 /// `first..last`, as a PNG, with its width and height: the part of an image
 /// the visible rows of its cells show.
