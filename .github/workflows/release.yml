@@ -1,7 +1,8 @@
 # Publishes the prebuilt binaries that scripts/fetch-or-build.sh installs.
 # Adapted from herdr-npm v0.1.0, itself adapted from herdr-sidebar 0.13.0
 # .github/workflows/release.yml (MIT, see NOTICE). A pull request that touches
-# the release path builds the three binaries without publishing anything.
+# the release path builds the three binaries and their FFmpeg without
+# publishing anything.
 name: release
 
 on:
@@ -12,6 +13,9 @@ on:
       - .github/workflows/release.yml
       - scripts/build.sh
       - scripts/fetch-or-build.sh
+      - scripts/build-ffmpeg.sh
+      - scripts/check-ffmpeg.sh
+      - tests/fixtures/tiny.mp4
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
@@ -121,6 +125,30 @@ jobs:
         run: |
           mkdir dist
           cp "$BIN" "dist/herdr-marketplace-${{ matrix.triple }}"
+      # The private FFmpeg of README videos travels in the same artifact.
+      - name: nasm
+        if: matrix.triple == 'x86_64-apple-darwin'
+        run: brew install nasm
+      - name: FFmpeg
+        if: runner.os == 'macOS'
+        run: sh scripts/build-ffmpeg.sh "dist/ffmpeg-${{ matrix.triple }}"
+      - name: FFmpeg, static in Alpine
+        if: matrix.triple == 'x86_64-unknown-linux-musl'
+        run: docker run --rm -v "$PWD:/w" -w /w alpine:3.20 sh -c 'apk add --no-cache build-base nasm xz curl >/dev/null && sh scripts/build-ffmpeg.sh dist/ffmpeg-x86_64-unknown-linux-musl'
+      - name: check FFmpeg
+        run: sh scripts/check-ffmpeg.sh "dist/ffmpeg-${{ matrix.triple }}"
+      - name: FFmpeg static link
+        if: matrix.triple == 'x86_64-unknown-linux-musl'
+        env:
+          FFMPEG: dist/ffmpeg-x86_64-unknown-linux-musl
+        run: |
+          file "$FFMPEG"
+          readelf -lW "$FFMPEG" > "$RUNNER_TEMP/ffmpeg-program-headers"
+          readelf -dW "$FFMPEG" > "$RUNNER_TEMP/ffmpeg-dynamic-section"
+          if grep -q 'program interpreter' "$RUNNER_TEMP/ffmpeg-program-headers" || grep -q '(NEEDED)' "$RUNNER_TEMP/ffmpeg-dynamic-section"; then
+            echo "::error::$FFMPEG is not statically linked"
+            exit 1
+          fi
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: herdr-marketplace-${{ matrix.triple }}
@@ -142,20 +170,24 @@ jobs:
         env:
           COMMIT: ${{ needs.versions.outputs.commit }}
         run: |
-          assets="herdr-marketplace-aarch64-apple-darwin herdr-marketplace-x86_64-apple-darwin herdr-marketplace-x86_64-unknown-linux-musl"
+          assets="herdr-marketplace-aarch64-apple-darwin herdr-marketplace-x86_64-apple-darwin herdr-marketplace-x86_64-unknown-linux-musl ffmpeg-aarch64-apple-darwin ffmpeg-x86_64-apple-darwin ffmpeg-x86_64-unknown-linux-musl"
           test "$(find artifacts -mindepth 1 -maxdepth 1 | wc -l)" -eq 3
           mkdir release
+          # The artifact of a target holds its binary and its FFmpeg.
           for asset in $assets; do
-            test "$(ls "artifacts/$asset")" = "$asset"
-            cp "artifacts/$asset/$asset" release/
+            triple=${asset#herdr-marketplace-}
+            triple=${triple#ffmpeg-}
+            artifact="artifacts/herdr-marketplace-$triple"
+            test "$(ls "$artifact")" = "$(printf 'ffmpeg-%s\nherdr-marketplace-%s' "$triple" "$triple")"
+            cp "$artifact/$asset" release/
           done
           printf '%s\n' "$COMMIT" > release/SOURCE_COMMIT
           cd release
           for asset in $assets; do
             sha256sum "$asset"
           done > SHA256SUMS
-          test "$(find . -type f | wc -l)" -eq 5
-          test "$(wc -l < SHA256SUMS)" -eq 3
+          test "$(find . -type f | wc -l)" -eq 8
+          test "$(wc -l < SHA256SUMS)" -eq 6
           for asset in $assets; do
             test "$(grep -cE "^[0-9a-f]{64}  $asset\$" SHA256SUMS)" -eq 1
           done
