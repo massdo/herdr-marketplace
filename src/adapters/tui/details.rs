@@ -87,6 +87,8 @@ pub enum Command {
     PlayVideo(usize),
     /// Stop the video that plays.
     StopVideo,
+    ToggleVideoPause,
+    SeekVideo(u64),
 }
 
 /// The video of the pane: one at a time.
@@ -94,13 +96,21 @@ pub enum Command {
 pub struct VideoView {
     pub url: String,
     pub status: VideoStatus,
+    pub position: u64,
+    pub duration: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VideoStatus {
+    Starting,
     /// Bytes downloaded, of the whole size when known.
     Downloading(u64, Option<u64>),
     Playing,
+    Paused,
+    Buffering {
+        paused: bool,
+    },
+    Ended,
     /// It stopped for this reason; its button stays, to try again.
     Failed(String),
 }
@@ -138,8 +148,11 @@ pub enum DetailsIntent {
         url: String,
         looped: bool,
         fit: (u32, u32),
+        start: u64,
     },
     StopVideo,
+    PauseVideo(bool),
+    SeekVideo(u64),
     /// Open this address in the browser.
     OpenUrl(String),
     /// Put this text on the clipboard.
@@ -167,6 +180,8 @@ pub struct DetailsApp {
     /// Where the videos of the README play.
     pub video_places: Vec<VideoPlace>,
     pub video: Option<VideoView>,
+    /// Manual stops and completed videos do not autoplay again.
+    autoplay_stopped: HashSet<String>,
     pub pictures: Pictures,
     /// Animated images whose frames Herdr draws over their cells, which stay
     /// empty: their first frame would show through transparent pixels.
@@ -209,6 +224,7 @@ impl DetailsApp {
             places: Vec::new(),
             video_places: Vec::new(),
             video: None,
+            autoplay_stopped: HashSet::new(),
             pictures: Pictures::default(),
             covered: HashSet::new(),
             width: 80,
@@ -339,10 +355,42 @@ impl DetailsApp {
             return;
         };
         video.status = match event {
-            VideoEvent::Downloading(received, total) => VideoStatus::Downloading(received, total),
+            VideoEvent::Downloading(received, total) => {
+                if matches!(
+                    video.status,
+                    VideoStatus::Playing | VideoStatus::Paused | VideoStatus::Buffering { .. }
+                ) {
+                    return;
+                }
+                VideoStatus::Downloading(received, total)
+            }
             VideoEvent::Playing => VideoStatus::Playing,
+            VideoEvent::Paused(true) => VideoStatus::Paused,
+            VideoEvent::Paused(false) => VideoStatus::Playing,
+            VideoEvent::Buffering {
+                milliseconds,
+                paused,
+            } => {
+                video.position = milliseconds;
+                VideoStatus::Buffering { paused }
+            }
+            VideoEvent::Position {
+                milliseconds,
+                duration,
+            } => {
+                video.position = milliseconds;
+                video.duration = duration;
+                return;
+            }
             VideoEvent::Failed(reason) => VideoStatus::Failed(reason),
             VideoEvent::Ended => {
+                self.autoplay_stopped.insert(video.url.clone());
+                if let Some(duration) = video.duration {
+                    video.position = duration;
+                }
+                VideoStatus::Ended
+            }
+            VideoEvent::Hidden => {
                 self.video = None;
                 return;
             }
@@ -401,6 +449,9 @@ impl DetailsApp {
             KeyCode::Char('s') => self.press(Command::ToggleSha),
             KeyCode::Char('o') => self.press(Command::OpenGitHub),
             KeyCode::Char('p') => self.toggle_video(),
+            KeyCode::Char(' ') if self.video.is_some() => self.toggle_video(),
+            KeyCode::Left if self.video.is_some() => self.seek_video_by(-5000),
+            KeyCode::Right if self.video.is_some() => self.seek_video_by(5000),
             KeyCode::Up => self.scroll_by(-1),
             KeyCode::Down => self.scroll_by(1),
             KeyCode::PageUp => self.scroll_by(-(self.page as isize)),
@@ -476,8 +527,11 @@ impl DetailsApp {
                 None => {}
             },
             Command::PlayVideo(index) => self.play_video(index),
+            Command::ToggleVideoPause => self.toggle_video(),
+            Command::SeekVideo(milliseconds) => self.seek_video(milliseconds),
             Command::StopVideo => {
-                if self.video.take().is_some() {
+                if let Some(video) = self.video.take() {
+                    self.autoplay_stopped.insert(video.url);
                     self.intents.push(DetailsIntent::StopVideo);
                 }
             }
@@ -487,6 +541,10 @@ impl DetailsApp {
     /// The video of block `index` downloads, then plays in frames that fit
     /// in the pixels of its cells.
     fn play_video(&mut self, index: usize) {
+        self.play_video_from(index, 0);
+    }
+
+    fn play_video_from(&mut self, index: usize, start: u64) {
         let (
             Some(place),
             Some(Graphics::Kitty {
@@ -501,40 +559,112 @@ impl DetailsApp {
             u32::from(place.columns) * u32::from(cell_width),
             u32::from(place.rows) * u32::from(cell_height),
         );
+        self.autoplay_stopped.remove(&place.url);
         self.video = Some(VideoView {
             url: place.url.clone(),
-            status: VideoStatus::Downloading(0, None),
+            status: VideoStatus::Starting,
+            position: start,
+            duration: None,
         });
         self.intents.push(DetailsIntent::PlayVideo {
             url: place.url.clone(),
             looped: place.looped,
             fit,
+            start,
         });
     }
 
     /// `p` stops the video that plays; else it plays the first video of
     /// the README with a line of its block on screen.
     fn toggle_video(&mut self) {
-        if self
-            .video
-            .as_ref()
-            .is_some_and(|video| !matches!(video.status, VideoStatus::Failed(_)))
-        {
-            self.press(Command::StopVideo);
+        if let Some(video) = &mut self.video {
+            match video.status {
+                VideoStatus::Playing | VideoStatus::Paused => {
+                    let paused = video.status != VideoStatus::Paused;
+                    video.status = if paused {
+                        VideoStatus::Paused
+                    } else {
+                        VideoStatus::Playing
+                    };
+                    self.intents.push(DetailsIntent::PauseVideo(paused));
+                    return;
+                }
+                VideoStatus::Buffering { paused } => {
+                    video.status = VideoStatus::Buffering { paused: !paused };
+                    self.intents.push(DetailsIntent::PauseVideo(!paused));
+                    return;
+                }
+                VideoStatus::Starting | VideoStatus::Downloading(..) => {
+                    self.press(Command::StopVideo);
+                    return;
+                }
+                VideoStatus::Failed(_) | VideoStatus::Ended => {}
+            }
+        }
+        if let Some(index) = self.visible_video() {
+            self.press(Command::PlayVideo(index));
+        }
+    }
+
+    fn seek_video_by(&mut self, delta: i64) {
+        if let Some(video) = &self.video {
+            self.seek_video(video.position.saturating_add_signed(delta));
+        }
+    }
+
+    fn seek_video(&mut self, milliseconds: u64) {
+        let Some(video) = &mut self.video else { return };
+        if matches!(
+            video.status,
+            VideoStatus::Starting | VideoStatus::Downloading(..)
+        ) {
             return;
         }
-        if self.showing_confirmation() {
+        let to = milliseconds.min(video.duration.map_or(600_000, |ms| ms.saturating_sub(100)));
+        if matches!(video.status, VideoStatus::Ended | VideoStatus::Failed(_)) {
+            if let Some(index) = self
+                .video_places
+                .iter()
+                .position(|place| place.url == video.url)
+            {
+                self.play_video_from(index, to);
+            }
+        } else {
+            let paused = matches!(
+                video.status,
+                VideoStatus::Paused | VideoStatus::Buffering { paused: true }
+            );
+            video.position = to;
+            video.status = VideoStatus::Buffering { paused };
+            self.intents.push(DetailsIntent::SeekVideo(to));
+        }
+    }
+
+    /// One visible video starts automatically, once, until it is hidden.
+    /// Manual stops and natural ends stay stopped; failures require a retry.
+    pub fn autoplay_video(&mut self, pane_visible: bool) {
+        if !pane_visible || self.video.is_some() {
             return;
+        }
+        if let Some(index) = self.visible_video()
+            && !self
+                .autoplay_stopped
+                .contains(&self.video_places[index].url)
+        {
+            self.play_video(index);
+        }
+    }
+
+    fn visible_video(&self) -> Option<usize> {
+        if self.video_places.is_empty() || self.showing_confirmation() {
+            return None;
         }
         let (prefix, _, _) = details_view::body_lines(self, self.width);
         let shown = self.scroll..self.scroll + self.page;
-        let visible = self.video_places.iter().position(|place| {
+        self.video_places.iter().position(|place| {
             let first = prefix.len() + place.line;
             first < shown.end && shown.start < first + usize::from(place.rows)
-        });
-        if let Some(index) = visible {
-            self.press(Command::PlayVideo(index));
-        }
+        })
     }
 
     /// Scrolls to the heading of `anchor`, as a link to `#anchor` does.

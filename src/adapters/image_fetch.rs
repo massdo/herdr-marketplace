@@ -1,7 +1,9 @@
 //! Automatic README downloads may reach public HTTPS endpoints only.
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::net::IpAddr;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ureq::Body;
@@ -10,9 +12,10 @@ use ureq::http::{Response, StatusCode};
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::{DefaultConnector, NextTimeout};
 
+use super::download_cancel::Cancellation;
 use crate::application::ports::{FetchError, Fetcher};
 
-pub struct ImageFetcher(ureq::Agent);
+pub struct ImageFetcher(ureq::Agent, Arc<Mutex<HashMap<String, String>>>);
 
 /// What an address serves, told without downloading it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,19 +33,15 @@ impl Default for ImageFetcher {
 
 impl ImageFetcher {
     fn with_resolver(resolver: impl Resolver) -> Self {
-        let config = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(30)))
-            .https_only(true)
-            .max_redirects(0)
-            // A proxy would resolve the destination itself, bypassing our check.
-            .proxy(None)
-            .user_agent(concat!("herdr-marketplace/", env!("CARGO_PKG_VERSION")))
-            .build();
-        Self(ureq::Agent::with_parts(
-            config,
-            DefaultConnector::default(),
-            PublicResolver(resolver),
-        ))
+        let config = image_config(Duration::from_secs(30));
+        Self(
+            ureq::Agent::with_parts(
+                config,
+                DefaultConnector::default(),
+                PublicResolver(resolver),
+            ),
+            Arc::default(),
+        )
     }
 }
 
@@ -65,6 +64,17 @@ impl Fetcher for ImageFetcher {
 }
 
 impl ImageFetcher {
+    /// The requests of one Details selection stop when that selection goes.
+    pub fn cancellable(self, cancellation: &Cancellation) -> Self {
+        Self(
+            cancellation.agent(
+                self.0.config().clone(),
+                PublicResolver(DefaultResolver::default()),
+            ),
+            self.1,
+        )
+    }
+
     /// Type and size of the file at `url`, under the rules of `fetch`. Only
     /// its first byte is asked for, and none is read.
     pub fn probe(&self, url: &str) -> Result<Probe, FetchError> {
@@ -98,10 +108,21 @@ impl ImageFetcher {
         url: &str,
         limit: u64,
         file: &mut File,
+        cancellation: &Cancellation,
         mut progress: impl FnMut(u64, Option<u64>),
     ) -> Result<(), FetchError> {
         let failed = |error: std::io::Error| FetchError::Failed(error.to_string());
-        let mut response = self.get(url, None)?;
+        let fetcher = Self(
+            cancellation.agent(
+                // A progressive video can be playing while a slow transfer
+                // continues. Keep images/metadata on the short timeout, but
+                // allow this bounded, cancellable file transfer five minutes.
+                image_config(Duration::from_secs(300)),
+                PublicResolver(DefaultResolver::default()),
+            ),
+            self.1.clone(),
+        );
+        let mut response = fetcher.get(url, None)?;
         if !response.status().is_success() {
             return Err(FetchError::Failed(format!(
                 "video HTTP status {} (redirects disabled)",
@@ -118,17 +139,77 @@ impl ImageFetcher {
                 "the video exceeds {limit} bytes"
             )));
         }
-        let mut body = response.body_mut().with_config().limit(limit).reader();
+        let mut body = response
+            .body_mut()
+            .with_config()
+            .limit(limit.saturating_add(1))
+            .reader();
         let mut buffer = vec![0; 64 * 1024];
         let mut received = 0;
         loop {
+            cancellation
+                .check()
+                .map_err(|error| FetchError::Failed(error.to_string()))?;
             let read = body.read(&mut buffer).map_err(failed)?;
+            cancellation
+                .check()
+                .map_err(|error| FetchError::Failed(error.to_string()))?;
             if read == 0 {
                 return Ok(());
+            }
+            if received + read as u64 > limit {
+                return Err(FetchError::Failed(format!(
+                    "the video exceeds {limit} bytes"
+                )));
             }
             file.write_all(&buffer[..read]).map_err(failed)?;
             received += read as u64;
             progress(received, total);
+        }
+    }
+
+    /// A bounded range for MP4 metadata, with the same endpoint and
+    /// cancellation rules as the main transfer. Never accepts a full 200
+    /// body when a server ignores Range.
+    pub fn video_range(
+        &self,
+        url: &str,
+        range: &str,
+        limit: u64,
+        cancellation: &Cancellation,
+    ) -> Result<Vec<u8>, FetchError> {
+        let fetcher = Self(
+            cancellation.agent(
+                self.0.config().clone(),
+                PublicResolver(DefaultResolver::default()),
+            ),
+            self.1.clone(),
+        );
+        let mut response = fetcher.get(url, Some(range))?;
+        if response.status() != StatusCode::PARTIAL_CONTENT {
+            return Err(FetchError::Failed("video server ignored Range".into()));
+        }
+        let mut body = response
+            .body_mut()
+            .with_config()
+            .limit(limit.saturating_add(1))
+            .reader();
+        let mut bytes = Vec::new();
+        let mut buffer = [0; 8192];
+        loop {
+            cancellation
+                .check()
+                .map_err(|e| FetchError::Failed(e.to_string()))?;
+            let read = body
+                .read(&mut buffer)
+                .map_err(|e| FetchError::Failed(e.to_string()))?;
+            if read == 0 {
+                return Ok(bytes);
+            }
+            bytes.extend_from_slice(&buffer[..read]);
+            if bytes.len() as u64 > limit {
+                return Err(FetchError::Failed("video range exceeds its limit".into()));
+            }
         }
     }
 
@@ -145,6 +226,14 @@ impl ImageFetcher {
                 .call()
                 .map_err(|error| FetchError::Failed(error.to_string()))
         };
+        let cached = self.1.lock().unwrap().get(url).cloned();
+        if let Some(location) = cached {
+            let response = call(&location)?;
+            if response.status().is_success() {
+                return Ok(response);
+            }
+            self.1.lock().unwrap().remove(url);
+        }
         let response = call(url)?;
         if !(response.status().is_redirection() && github_attachment(url)) {
             return Ok(response);
@@ -159,8 +248,23 @@ impl ImageFetcher {
                 "GitHub attachment redirected outside GitHub's storage".into(),
             ));
         }
+        self.1
+            .lock()
+            .unwrap()
+            .insert(url.to_string(), location.to_string());
         call(location)
     }
+}
+
+fn image_config(timeout: Duration) -> ureq::config::Config {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .https_only(true)
+        .max_redirects(0)
+        // A proxy would resolve the destination itself, bypassing our check.
+        .proxy(None)
+        .user_agent(concat!("herdr-marketplace/", env!("CARGO_PKG_VERSION")))
+        .build()
 }
 
 /// Size of the whole file in a `Content-Range`, after its `/`:

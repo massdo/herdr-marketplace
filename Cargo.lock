@@ -703,6 +703,7 @@ dependencies = [
  "resvg",
  "serde",
  "serde_json",
+ "signal-hook",
  "syntect",
  "tempfile",
  "toml",

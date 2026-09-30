@@ -114,11 +114,19 @@ impl SidebarApp {
     }
 
     pub fn loaded(&mut self, result: Result<LoadedListing, String>) {
+        // A 304, or an offline notice alone, leaves a wheel-scrolled list
+        // exactly where it was. Changed rows keep the selection's identity.
+        let rows_changed = match (&self.state, &result) {
+            (LoadState::Ready(before), Ok(after)) => before.listing != after.listing,
+            _ => true,
+        };
         self.state = match result {
             Ok(loaded) => LoadState::Ready(loaded),
             Err(error) => LoadState::Failed(error),
         };
-        self.refilter();
+        if rows_changed {
+            self.refilter();
+        }
     }
 
     /// The registry was read again after an operation: rows are rebuilt from

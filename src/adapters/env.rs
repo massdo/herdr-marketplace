@@ -15,6 +15,7 @@ pub struct ProcessEnv {
     pub socket_path: PathBuf,
     pub own_pane_id: Option<PaneId>,
     pub state_dir: PathBuf,
+    pub video_cache: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +30,7 @@ pub fn load() -> Result<ProcessEnv, AppError> {
         socket_path: socket_path()?,
         own_pane_id: env_string("HERDR_PANE_ID").map(PaneId),
         state_dir: state_dir(),
+        video_cache: env::var_os("HERDR_MARKETPLACE_VIDEO_CACHE").map(PathBuf::from),
     })
 }
 

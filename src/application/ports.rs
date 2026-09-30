@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 
+use crate::domain::details::DetailsTarget;
 use crate::domain::error::AppError;
 use crate::domain::ids::PaneId;
 use crate::domain::operation::OperationRecord;
@@ -107,6 +109,17 @@ pub trait HerdrPort {
     /// Session token that recognises a marketplace pane: `token_key = "v1"`.
     fn report_identity(&self, pane_id: &PaneId, token_key: &str) -> Result<(), AppError>;
     fn close_plugin_pane(&self, pane_id: &PaneId) -> Result<(), AppError>;
+    /// Change a Details pane's content without opening another pane.
+    fn update_details(
+        &self,
+        _pane_id: &PaneId,
+        _target: &DetailsTarget,
+        _video_cache: Option<&Path>,
+    ) -> Result<(), AppError> {
+        Err(AppError::Io {
+            message: "Details updates are unavailable".into(),
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
