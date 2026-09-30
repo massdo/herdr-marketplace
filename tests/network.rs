@@ -38,3 +38,21 @@ fn an_image_uploaded_to_a_readme_loads_through_its_github_redirect() {
     let picture = decode(&bytes).expect("decode the uploaded image");
     assert!(picture.width > 0 && picture.height > 0);
 }
+
+#[test]
+#[ignore = "asks GitHub about a video uploaded to a README"]
+fn a_video_uploaded_to_a_readme_is_probed_without_downloading_it() {
+    use herdr_marketplace::adapters::image_fetch::{ImageFetcher, Probe};
+    // The video of zenbu-labs/terminal-browser's README, 9.8 MB.
+    let url = "https://github.com/user-attachments/assets/abe2f43e-fc50-4866-b753-33388967945d";
+    let probe = ImageFetcher::default()
+        .probe(url)
+        .expect("follow GitHub's redirect to its storage");
+    assert_eq!(
+        probe,
+        Probe {
+            content_type: "video/mp4".into(),
+            size: Some(9_841_526),
+        }
+    );
+}

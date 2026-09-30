@@ -10,6 +10,7 @@ use super::markdown::{self, LinkArea, Place};
 use super::preview::preview_lines;
 use super::selection::{Flow, Selection};
 use super::style::Tone;
+use crate::adapters::image_fetch::Probe;
 use crate::adapters::images::Picture;
 use crate::application::load_readme::Readme;
 use crate::application::prepare_install::{InstallPreview, Prepared};
@@ -107,6 +108,8 @@ pub enum DetailsIntent {
     Uninstall(Box<RemovalPlan>),
     /// Download and decode these images of the README.
     LoadImages(Vec<String>),
+    /// Ask the type and size of these videos of the README.
+    ProbeVideos(Vec<String>),
     /// Open this address in the browser.
     OpenUrl(String),
     /// Put this text on the clipboard.
@@ -280,6 +283,18 @@ impl DetailsApp {
     /// An image of the README arrived: the README is laid out again.
     pub fn picture_loaded(&mut self, url: &str, picture: Result<Arc<Picture>, String>) {
         self.pictures.loaded(url, picture);
+        self.render();
+    }
+
+    /// Whether the pane can play videos: FFmpeg, and a pane Herdr knows.
+    pub fn video_player(&mut self, available: bool) {
+        self.pictures.video_player(available);
+        self.render();
+    }
+
+    /// A video of the README was probed: the README is laid out again.
+    pub fn video_probed(&mut self, url: &str, probe: Result<Probe, String>) {
+        self.pictures.video_probed(url, probe);
         self.render();
     }
 
@@ -594,6 +609,14 @@ impl DetailsApp {
             .collect();
         if !wanted.is_empty() {
             self.intents.push(DetailsIntent::LoadImages(wanted));
+        }
+        let probes: Vec<String> = rendered
+            .videos
+            .into_iter()
+            .filter(|url| self.pictures.request_video(url))
+            .collect();
+        if !probes.is_empty() {
+            self.intents.push(DetailsIntent::ProbeVideos(probes));
         }
         self.preview = match &self.install {
             InstallState::Preview(preview) => {
