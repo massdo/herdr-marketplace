@@ -3,8 +3,10 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use herdr_marketplace::application::ports::{CommandOutput, HerdrCli, HerdrPort, OpenPluginPane};
+use herdr_marketplace::domain::details::DetailsTarget;
 use herdr_marketplace::domain::error::AppError;
 use herdr_marketplace::domain::ids::PaneId;
 use herdr_marketplace::domain::index::{Catalog, parse_index};
@@ -155,6 +157,7 @@ pub struct FakePanes {
     pub panes: RefCell<Vec<PaneInfo>>,
     pub calls: RefCell<Vec<String>>,
     pub opened: RefCell<Vec<OpenPluginPane>>,
+    pub updated: RefCell<Vec<DetailsTarget>>,
 }
 
 impl FakePanes {
@@ -163,6 +166,7 @@ impl FakePanes {
             panes: RefCell::new(panes),
             calls: RefCell::new(Vec::new()),
             opened: RefCell::new(Vec::new()),
+            updated: RefCell::new(Vec::new()),
         }
     }
 
@@ -249,6 +253,17 @@ impl HerdrPort for FakePanes {
         self.panes
             .borrow_mut()
             .retain(|pane| pane.pane_id != pane_id.0);
+        Ok(())
+    }
+
+    fn update_details(
+        &self,
+        pane_id: &PaneId,
+        target: &DetailsTarget,
+        _: Option<&Path>,
+    ) -> Result<(), AppError> {
+        self.record(format!("update {pane_id}"));
+        self.updated.borrow_mut().push(target.clone());
         Ok(())
     }
 }

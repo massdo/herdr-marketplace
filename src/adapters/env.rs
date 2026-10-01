@@ -1,5 +1,5 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -15,6 +15,7 @@ pub struct ProcessEnv {
     pub socket_path: PathBuf,
     pub own_pane_id: Option<PaneId>,
     pub state_dir: PathBuf,
+    pub video_cache: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +30,7 @@ pub fn load() -> Result<ProcessEnv, AppError> {
         socket_path: socket_path()?,
         own_pane_id: env_string("HERDR_PANE_ID").map(PaneId),
         state_dir: state_dir(),
+        video_cache: env::var_os("HERDR_MARKETPLACE_VIDEO_CACHE").map(PathBuf::from),
     })
 }
 
@@ -112,6 +114,29 @@ pub fn herdr_bin() -> PathBuf {
     env_string("HERDR_BIN_PATH")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("herdr"))
+}
+
+/// The private FFmpeg that plays README videos; `None` without one.
+pub fn ffmpeg_bin() -> Option<PathBuf> {
+    let exe = env::current_exe().ok();
+    ffmpeg_from(
+        env::var("HERDR_MARKETPLACE_FFMPEG").ok().as_deref(),
+        exe.as_deref(),
+    )
+}
+
+/// `HERDR_MARKETPLACE_FFMPEG` when it names a file, for tests and
+/// development; else `ffmpeg` next to the executable `exe`, where a verified
+/// install puts it.
+pub fn ffmpeg_from(variable: Option<&str>, exe: Option<&Path>) -> Option<PathBuf> {
+    if let Some(path) = variable.filter(|path| !path.is_empty()).map(PathBuf::from)
+        && path.is_file()
+    {
+        return Some(path);
+    }
+    exe?.parent()
+        .map(|folder| folder.join("ffmpeg"))
+        .filter(|path| path.is_file())
 }
 
 fn plugin_context() -> Option<PluginContextJson> {

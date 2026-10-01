@@ -7,9 +7,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use herdr_marketplace::adapters::image_fetch::Probe;
 use herdr_marketplace::adapters::tui::details::{
-    DetailsApp, DetailsIntent, InstalledView, ReadmeState,
+    Command, DetailsApp, DetailsIntent, InstalledView, ReadmeState, VideoStatus,
 };
+use herdr_marketplace::adapters::tui::graphics::Graphics;
+use herdr_marketplace::adapters::tui::video::VideoEvent;
 use herdr_marketplace::adapters::tui::{details_view, markdown};
 use herdr_marketplace::application::load_readme::{Readme, load_readme};
 use herdr_marketplace::application::open_details::{Reveal, Shown, close_details, show_details};
@@ -20,7 +23,7 @@ use herdr_marketplace::domain::ids::PaneId;
 use herdr_marketplace::domain::listing::build_listing;
 use herdr_marketplace::domain::registry::parse_registry;
 use herdr_marketplace::domain::source::PluginSource;
-use herdr_marketplace::domain::{DETAILS_ENV, DETAILS_TOKEN_KEY, SIDEBAR_TOKEN_KEY};
+use herdr_marketplace::domain::{DETAILS_TOKEN_KEY, SIDEBAR_TOKEN_KEY};
 use ratatui::backend::{CrosstermBackend, TestBackend};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
@@ -556,7 +559,7 @@ fn enter_opens_right_of_the_sidebar_with_the_focus() {
 }
 
 #[test]
-fn opening_b_while_a_is_shown_replaces_a_in_place() {
+fn opening_b_while_a_is_shown_updates_the_same_pane_without_opening_or_closing() {
     let herdr = FakePanes::new(vec![
         pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
         pane("w1:work", "w1:t1", None),
@@ -580,19 +583,20 @@ fn opening_b_while_a_is_shown_replaces_a_in_place() {
 
     assert_eq!(
         *herdr.calls.borrow(),
-        [
-            "open details next to w1:details-a",
-            "identity w1:new herdr_marketplace_details",
-            "close w1:details-a",
-            "resize w1:new left",
-            "resize w1:new right",
-        ],
+        ["update w1:details-a"],
         "the working pane keeps its width"
     );
-    let opened = herdr.opened.borrow();
-    assert!(!opened[0].focus);
-    let handed: DetailsTarget = serde_json::from_str(&opened[0].env[DETAILS_ENV]).unwrap();
-    assert_eq!(handed, b, "B's pane only ever knows B");
+    assert!(herdr.opened.borrow().is_empty());
+    assert_eq!(*herdr.updated.borrow(), [b]);
+    assert_eq!(
+        herdr
+            .panes
+            .borrow()
+            .iter()
+            .filter(|p| p.tab_id == "w1:t1" && p.is_marketplace_details())
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -633,6 +637,32 @@ fn the_plugin_already_shown_keeps_its_pane_and_enter_focuses_it() {
 }
 
 #[test]
+fn duplicate_cleanup_keeps_the_pane_already_shown() {
+    let herdr = FakePanes::new(vec![
+        pane("w1:side", "w1:t1", Some(SIDEBAR_TOKEN_KEY)),
+        pane("w1:duplicate", "w1:t1", Some(DETAILS_TOKEN_KEY)),
+        pane("w1:shown", "w1:t1", Some(DETAILS_TOKEN_KEY)),
+    ]);
+    let shown = Shown {
+        pane_id: PaneId("w1:shown".into()),
+        target: target(""),
+    };
+    assert_eq!(
+        show_details(
+            &herdr,
+            &PaneId("w1:side".into()),
+            &target(""),
+            Reveal::Preview,
+            Some(&shown)
+        )
+        .unwrap(),
+        Some(shown)
+    );
+    assert_eq!(*herdr.calls.borrow(), ["close w1:duplicate"]);
+    assert!(herdr.opened.borrow().is_empty());
+}
+
+#[test]
 fn a_search_moves_open_details_and_opens_none() {
     let sidebar = PaneId("w1:side".into());
     let herdr = FakePanes::new(vec![
@@ -663,16 +693,10 @@ fn a_search_moves_open_details_and_opens_none() {
         .unwrap()
         .unwrap();
     assert_eq!(followed.target, target("alt"));
-    assert_eq!(
-        herdr.calls.borrow()[..3],
-        [
-            "open details next to w1:details-a",
-            "identity w1:new herdr_marketplace_details",
-            "close w1:details-a",
-        ]
-    );
+    assert_eq!(*herdr.calls.borrow(), ["update w1:details-a"]);
+    assert_eq!(followed.pane_id, a.pane_id);
     assert!(
-        !herdr.opened.borrow()[0].focus,
+        herdr.opened.borrow().is_empty(),
         "the sidebar keeps the focus"
     );
 }
@@ -829,4 +853,361 @@ fn usual_readme_names_are_tried_in_the_plugin_folder_before_root() {
         );
         assert!(!raw.asked.borrow().contains(&root));
     }
+}
+
+const VIDEO: &str =
+    "https://github.com/user-attachments/assets/abe2f43e-fc50-4866-b753-33388967945d";
+
+/// An 80 × 40 details pane whose README plays a video of 9.8 MB in a block
+/// of 60 × 16 cells of 8 × 17 pixels, between "Intro" and "Outro", then
+/// 60 lines of text.
+fn with_video() -> DetailsApp {
+    let mut app = DetailsApp::new(target(""));
+    app.set_graphics(Graphics::Kitty {
+        cell_width: 8,
+        cell_height: 17,
+    });
+    app.video_player(true);
+    app.set_viewport(80, details_view::page_rows(&app, 80, 40));
+    let filler: String = (1..=30).map(|n| format!("line {n}\n\n")).collect();
+    app.readme_loaded(
+        1,
+        Ok(Readme::Found {
+            text: format!(
+                "Intro\n\n<video src=\"{VIDEO}\" width=\"480\" height=\"270\"></video>\n\nOutro\n\n{filler}"
+            ),
+            fallback: false,
+        }),
+    );
+    app.video_probed(
+        VIDEO,
+        Ok(Probe {
+            content_type: "video/mp4".into(),
+            size: Some(9_841_526),
+        }),
+    );
+    app.set_viewport(80, details_view::page_rows(&app, 80, 40));
+    app.intents.clear();
+    let place = &app.video_places[0];
+    assert_eq!((place.columns, place.rows), (60, 16));
+    app
+}
+
+/// The 80 × 40 pane as drawn, row by row, with the color of each cell.
+fn drawn(app: &DetailsApp) -> Vec<(String, Vec<Color>)> {
+    let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
+    terminal
+        .draw(|frame| details_view::render(frame, app))
+        .unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content()
+        .chunks(80)
+        .map(|row| {
+            (
+                row.iter().map(|cell| cell.symbol()).collect(),
+                row.iter().map(|cell| cell.fg).collect(),
+            )
+        })
+        .collect()
+}
+
+/// Row and column where the pane shows `text`.
+fn find(app: &DetailsApp, text: &str) -> (u16, u16) {
+    let rows = drawn(app);
+    let row = rows
+        .iter()
+        .position(|(row, _)| row.contains(text))
+        .unwrap_or_else(|| panic!("no {text:?} in {rows:#?}"));
+    let column = rows[row].0[..rows[row].0.find(text).unwrap()]
+        .chars()
+        .count();
+    (row as u16, column as u16)
+}
+
+fn play_intent() -> DetailsIntent {
+    DetailsIntent::PlayVideo {
+        start: 0,
+        url: VIDEO.into(),
+        looped: false,
+        fit: (60 * 8, 16 * 17),
+    }
+}
+
+#[test]
+fn a_click_on_the_play_button_plays_the_video_in_frames_that_fit_its_cells() {
+    let mut app = with_video();
+    let (row, column) = find(&app, "▶ Play video (9.8 MB)");
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), column + 3, row),
+        80,
+        40,
+    );
+    assert_eq!(app.intents, [play_intent()]);
+    assert_eq!(
+        app.video.as_ref().map(|video| &video.status),
+        Some(&VideoStatus::Starting)
+    );
+
+    // A click in the block of the video that plays stops it.
+    app.intents.clear();
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), column, row + 2),
+        80,
+        40,
+    );
+    assert_eq!(app.intents, [DetailsIntent::StopVideo]);
+    assert!(app.video.is_none());
+}
+
+#[test]
+fn p_plays_the_video_then_pauses_and_resumes_without_restarting() {
+    let mut app = with_video();
+    app.handle_key(key(KeyCode::Char('p')));
+    assert_eq!(app.intents, [play_intent()]);
+    app.intents.clear();
+    app.video_event(VideoEvent::Playing);
+    app.handle_key(key(KeyCode::Char('p')));
+    assert_eq!(app.intents, [DetailsIntent::PauseVideo(true)]);
+    assert_eq!(app.video.as_ref().unwrap().status, VideoStatus::Paused);
+    app.intents.clear();
+    app.handle_key(key(KeyCode::Char('p')));
+    assert_eq!(app.intents, [DetailsIntent::PauseVideo(false)]);
+    app.press(Command::StopVideo);
+
+    // Scrolled past its block, p finds no video to play.
+    app.intents.clear();
+    app.handle_key(key(KeyCode::End));
+    assert!(
+        drawn(&app)
+            .iter()
+            .all(|(row, _)| !row.starts_with("Intro") && !row.contains("Play video"))
+    );
+    app.handle_key(key(KeyCode::Char('p')));
+    assert!(app.intents.is_empty(), "{:?}", app.intents);
+}
+
+#[test]
+fn the_player_controls_seek_pause_and_ignore_background_download_progress() {
+    let mut app = with_video();
+    app.handle_key(key(KeyCode::Char('p')));
+    app.video_event(VideoEvent::Playing);
+    app.video_event(VideoEvent::Position {
+        milliseconds: 10_000,
+        duration: Some(30_000),
+    });
+    app.video_event(VideoEvent::Downloading(5_000_000, Some(9_000_000)));
+    assert_eq!(app.video.as_ref().unwrap().status, VideoStatus::Playing);
+    app.intents.clear();
+    let (row, column) = find(&app, "[Pause]");
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), column + 2, row),
+        80,
+        40,
+    );
+    assert_eq!(app.intents, [DetailsIntent::PauseVideo(true)]);
+    assert_eq!(app.video.as_ref().unwrap().position, 10_000);
+    app.intents.clear();
+    app.handle_key(key(KeyCode::Right));
+    assert_eq!(app.intents, [DetailsIntent::SeekVideo(15_000)]);
+    assert_eq!(app.video.as_ref().unwrap().position, 15_000);
+    assert_eq!(
+        app.video.as_ref().unwrap().status,
+        VideoStatus::Buffering { paused: true }
+    );
+    app.intents.clear();
+    let (row, column) = find(&app, "[+5s]");
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), column + 2, row),
+        80,
+        40,
+    );
+    assert_eq!(app.intents, [DetailsIntent::SeekVideo(20_000)]);
+    app.video_event(VideoEvent::Downloading(6_000_000, Some(9_000_000)));
+    assert_eq!(app.video.as_ref().unwrap().position, 20_000);
+    assert_eq!(
+        app.video.as_ref().unwrap().status,
+        VideoStatus::Buffering { paused: true }
+    );
+    app.intents.clear();
+    let (pause_row, pause_column) = find(&app, "[Play]");
+    app.handle_mouse(
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            pause_column + 2,
+            pause_row,
+        ),
+        80,
+        40,
+    );
+    assert_eq!(app.intents, [DetailsIntent::PauseVideo(false)]);
+    assert_eq!(
+        app.video.as_ref().unwrap().status,
+        VideoStatus::Buffering { paused: false }
+    );
+    find(&app, "Buffering…");
+    let (row, column) = find(&app, "[====");
+    app.intents.clear();
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), column + 4, row),
+        80,
+        40,
+    );
+    assert!(
+        matches!(app.intents.as_slice(), [DetailsIntent::SeekVideo(to)] if *to > 0 && *to < 30_000)
+    );
+    app.video_event(VideoEvent::Ended);
+    app.intents.clear();
+    app.press(Command::SeekVideo(5000));
+    assert!(matches!(
+        app.intents.as_slice(),
+        [DetailsIntent::PlayVideo { start: 5000, .. }]
+    ));
+}
+
+#[test]
+fn autoplay_waits_for_a_visible_pane_and_respects_a_manual_stop() {
+    let mut app = with_video();
+    app.autoplay_video(false);
+    assert!(app.video.is_none());
+    assert!(app.intents.is_empty());
+    app.autoplay_video(true);
+    assert_eq!(app.intents, [play_intent()]);
+    app.intents.clear();
+    app.autoplay_video(true);
+    assert!(app.intents.is_empty(), "only one playback starts");
+    app.handle_key(key(KeyCode::Char('p')));
+    assert_eq!(app.intents, [DetailsIntent::StopVideo]);
+    app.intents.clear();
+    app.handle_key(key(KeyCode::End));
+    app.handle_key(key(KeyCode::Home));
+    app.autoplay_video(false);
+    app.autoplay_video(true);
+    assert!(app.intents.is_empty(), "a stopped video must stay stopped");
+    app.handle_key(key(KeyCode::Char('p')));
+    assert_eq!(app.intents, [play_intent()], "manual replay still works");
+}
+
+#[test]
+fn autoplay_resumes_a_hidden_video_but_does_not_repeat_an_end_or_failure() {
+    let mut app = with_video();
+    app.autoplay_video(true);
+    app.intents.clear();
+    app.video_event(VideoEvent::Hidden);
+    app.autoplay_video(false);
+    assert!(app.intents.is_empty());
+    app.autoplay_video(true);
+    assert_eq!(app.intents, [play_intent()]);
+    app.intents.clear();
+    app.video_event(VideoEvent::Ended);
+    app.autoplay_video(true);
+    assert!(app.intents.is_empty(), "a non-looped video must not repeat");
+    app.handle_key(key(KeyCode::Char('p')));
+    app.intents.clear();
+    app.video_event(VideoEvent::Failed("network down".into()));
+    app.autoplay_video(true);
+    assert!(
+        app.intents.is_empty(),
+        "a failure must not retry on every tick"
+    );
+}
+
+#[test]
+fn autoplay_does_not_download_a_video_outside_the_view() {
+    let mut app = with_video();
+    app.handle_key(key(KeyCode::End));
+    app.autoplay_video(true);
+    assert!(app.intents.is_empty());
+    app.handle_key(key(KeyCode::Home));
+    app.autoplay_video(true);
+    assert_eq!(app.intents, [play_intent()]);
+}
+
+#[test]
+fn the_block_tells_the_download_then_leaves_its_cells_to_the_frames() {
+    let mut app = with_video();
+    app.handle_key(key(KeyCode::Char('p')));
+    app.video_event(VideoEvent::Downloading(4_920_763, Some(9_841_526)));
+    let rows = drawn(&app);
+    assert!(
+        rows.iter()
+            .any(|(row, _)| row.contains(" Downloading video… 50% ")),
+        "{rows:#?}"
+    );
+    assert!(!rows.iter().any(|(row, _)| row.contains("Play video")));
+    app.video_event(VideoEvent::Downloading(3_200_000, None));
+    assert!(
+        drawn(&app)
+            .iter()
+            .any(|(row, _)| row.contains(" Downloading video… 3.2 MB "))
+    );
+
+    app.video_event(VideoEvent::Playing);
+    let rows = drawn(&app);
+    let intro = rows
+        .iter()
+        .position(|(row, _)| row.starts_with("Intro"))
+        .unwrap();
+    let outro = rows
+        .iter()
+        .position(|(row, _)| row.starts_with("Outro"))
+        .unwrap();
+    assert!(
+        rows[intro + 1..outro]
+            .iter()
+            .all(|(row, _)| row.trim().is_empty() || row.contains("[Pause]")),
+        "{rows:#?}"
+    );
+
+    app.video_event(VideoEvent::Ended);
+    assert_eq!(app.video.as_ref().unwrap().status, VideoStatus::Ended);
+    assert!(
+        drawn(&app)
+            .iter()
+            .any(|(row, _)| row.contains("▶ Play video (9.8 MB)"))
+    );
+    app.intents.clear();
+    let (row, column) = find(&app, "▶ Play video (9.8 MB)");
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), column + 2, row),
+        80,
+        40,
+    );
+    assert_eq!(
+        app.intents,
+        [play_intent()],
+        "a finished video replays with one click"
+    );
+}
+
+#[test]
+fn a_failed_video_keeps_its_button_and_tells_why_in_red_under_it() {
+    let mut app = with_video();
+    app.handle_key(key(KeyCode::Char('p')));
+    app.video_event(VideoEvent::Failed("no frame\u{1b}[31m after 10 s".into()));
+    let rows = drawn(&app);
+    let button = rows
+        .iter()
+        .position(|(row, _)| row.contains("▶ Play video (9.8 MB)"))
+        .expect("the button stays");
+    assert!(rows[button].0.contains("Open in browser"));
+    let (row, colors) = &rows[button + 1];
+    let start = row
+        .find("Could not play the video: no frame")
+        .unwrap_or_else(|| {
+            panic!("no reason under the button: {rows:#?}");
+        });
+    assert!(!row.contains('\u{1b}'));
+    assert_eq!(colors[row[..start].chars().count()], Color::Red);
+
+    // The button tries again.
+    app.intents.clear();
+    let (row, column) = find(&app, "▶ Play video (9.8 MB)");
+    app.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), column + 3, row),
+        80,
+        40,
+    );
+    assert_eq!(app.intents, [play_intent()]);
 }

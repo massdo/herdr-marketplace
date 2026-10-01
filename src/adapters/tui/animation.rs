@@ -5,7 +5,7 @@
 //! the rows of the picture the pane shows.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -108,28 +108,51 @@ impl Player {
             .is_some_and(|track| track.live.load(Ordering::Acquire))
     }
 
-    fn start(&mut self, animation: Arc<Animation>) -> Track {
-        if self.watching.is_none() {
-            let watching = Arc::new(AtomicBool::new(true));
-            let (socket, pane) = (self.socket.clone(), self.pane.clone());
-            let (visible, going) = (self.visible.clone(), watching.clone());
-            thread::spawn(move || {
-                let mut known = false;
-                while going.load(Ordering::Acquire) {
-                    match pane_visible(&socket, &pane) {
-                        Ok(shown) => {
-                            visible.store(shown, Ordering::Release);
-                            known = true;
-                        }
-                        // Herdr may not tell: then the animations play.
-                        Err(_) if !known => visible.store(true, Ordering::Release),
-                        Err(_) => {}
-                    }
-                    thread::sleep(VISIBILITY_CHECK);
-                }
-            });
-            self.watching = Some(watching);
+    /// The Herdr socket and the pane, for another layer of it.
+    pub fn socket(&self) -> &Path {
+        &self.socket
+    }
+
+    pub fn pane(&self) -> &str {
+        &self.pane
+    }
+
+    /// Whether Herdr shows the pane, asked from now on: false until it
+    /// tells.
+    pub fn visible(&mut self) -> Arc<AtomicBool> {
+        self.watch();
+        self.visible.clone()
+    }
+
+    /// Asks Herdr every second whether it shows the pane, from the first
+    /// call on.
+    fn watch(&mut self) {
+        if self.watching.is_some() {
+            return;
         }
+        let watching = Arc::new(AtomicBool::new(true));
+        let (socket, pane) = (self.socket.clone(), self.pane.clone());
+        let (visible, going) = (self.visible.clone(), watching.clone());
+        thread::spawn(move || {
+            let mut known = false;
+            while going.load(Ordering::Acquire) {
+                match pane_visible(&socket, &pane) {
+                    Ok(shown) => {
+                        visible.store(shown, Ordering::Release);
+                        known = true;
+                    }
+                    // Herdr may not tell: then the animations play.
+                    Err(_) if !known => visible.store(true, Ordering::Release),
+                    Err(_) => {}
+                }
+                thread::sleep(VISIBILITY_CHECK);
+            }
+        });
+        self.watching = Some(watching);
+    }
+
+    fn start(&mut self, animation: Arc<Animation>) -> Track {
+        self.watch();
         let (spots, received) = mpsc::channel();
         let live = Arc::new(AtomicBool::new(false));
         self.layers += 1;

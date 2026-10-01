@@ -1,4 +1,6 @@
 pub mod catalog_cache;
+pub mod details_control;
+pub mod download_cancel;
 pub mod env;
 pub mod fetch;
 pub mod herdr_cli;

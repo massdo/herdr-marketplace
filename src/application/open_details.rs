@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use crate::application::pane_size::settle_size;
 use crate::application::ports::{HerdrPort, OpenPluginPane};
@@ -29,10 +30,9 @@ pub enum Reveal {
 }
 
 /// One details pane per tab, right of the sidebar. The pane that already
-/// shows `target` stays. Otherwise a new pane takes the place of the current
-/// one, which closes with its process and any answer it was waiting for, so
-/// the working pane keeps its width; without one, it takes the left half of
-/// the working pane. `None`: a search found no pane to follow.
+/// shows `target` stays. Selecting another plugin updates the same pane, so
+/// its size never changes and two Details panes never overlap. Without one,
+/// it takes the left half of the working pane. `None`: no pane to follow.
 pub fn show_details<H: HerdrPort>(
     herdr: &H,
     sidebar: &PaneId,
@@ -40,13 +40,24 @@ pub fn show_details<H: HerdrPort>(
     reveal: Reveal,
     shown: Option<&Shown>,
 ) -> Result<Option<Shown>, AppError> {
+    show_details_cached(herdr, sidebar, target, reveal, shown, None)
+}
+
+pub fn show_details_cached<H: HerdrPort>(
+    herdr: &H,
+    sidebar: &PaneId,
+    target: &DetailsTarget,
+    reveal: Reveal,
+    shown: Option<&Shown>,
+    video_cache: Option<&Path>,
+) -> Result<Option<Shown>, AppError> {
     let panes = herdr.list_panes(None)?;
     let origin = panes
         .iter()
         .find(|pane| pane.pane_id == sidebar.0)
         .cloned()
         .ok_or(AppError::OriginChanged)?;
-    let current: Vec<PaneId> = panes
+    let mut current: Vec<PaneId> = panes
         .iter()
         .filter(|pane| pane.tab_id == origin.tab_id && pane.is_marketplace_details())
         .map(PaneInfo::id)
@@ -55,6 +66,15 @@ pub fn show_details<H: HerdrPort>(
         return Ok(None);
     }
     let focus = reveal == Reveal::Focus;
+    if let Some(index) =
+        shown.and_then(|shown| current.iter().position(|pane| *pane == shown.pane_id))
+    {
+        current.swap(0, index);
+    }
+    // Repair any duplicates left by a previous version before changing content.
+    for extra in current.iter().skip(1) {
+        herdr.close_plugin_pane(extra)?;
+    }
     if let Some(shown) =
         shown.filter(|shown| shown.target == *target && current.contains(&shown.pane_id))
     {
@@ -64,35 +84,37 @@ pub fn show_details<H: HerdrPort>(
         return Ok(Some(shown.clone()));
     }
 
-    let pane_id = match current.first() {
-        Some(place) => open_pane(herdr, place, target, focus)?,
-        None => {
-            let panes = herdr.list_panes(Some(&origin.workspace_id))?;
-            let layout = herdr.pane_layout(sidebar)?;
-            let working = pick_working_target(&panes, &layout, &origin.tab())?.id();
-            let pane_id = open_pane(herdr, &working, target, focus)?;
-            // The swap focuses the pane it moves.
-            let placed = herdr.swap_panes(&pane_id, &working).and_then(|()| {
-                if focus {
-                    Ok(())
-                } else {
-                    herdr.focus_pane(sidebar)
-                }
-            });
-            if let Err(error) = placed {
-                let _ = herdr.close_plugin_pane(&pane_id);
-                return Err(error);
-            }
-            pane_id
+    if let Some(pane_id) = current.first() {
+        herdr.update_details(pane_id, target, video_cache)?;
+        if focus {
+            herdr.focus_pane(pane_id)?;
         }
+        return Ok(Some(Shown {
+            pane_id: pane_id.clone(),
+            target: target.clone(),
+        }));
+    }
+    let pane_id = {
+        let panes = herdr.list_panes(Some(&origin.workspace_id))?;
+        let layout = herdr.pane_layout(sidebar)?;
+        let working = pick_working_target(&panes, &layout, &origin.tab())?.id();
+        let pane_id = open_pane(herdr, &working, target, focus, video_cache)?;
+        // The swap focuses the pane it moves.
+        let placed = herdr.swap_panes(&pane_id, &working).and_then(|()| {
+            if focus {
+                Ok(())
+            } else {
+                herdr.focus_pane(sidebar)
+            }
+        });
+        if let Err(error) = placed {
+            let _ = herdr.close_plugin_pane(&pane_id);
+            return Err(error);
+        }
+        pane_id
     };
     if let Err(error) = herdr
         .report_identity(&pane_id, DETAILS_TOKEN_KEY)
-        .and_then(|()| {
-            current
-                .iter()
-                .try_for_each(|old| herdr.close_plugin_pane(old))
-        })
         .and_then(|()| settle_size(herdr, &pane_id))
     {
         let _ = herdr.close_plugin_pane(&pane_id);
@@ -110,16 +132,24 @@ fn open_pane<H: HerdrPort>(
     beside: &PaneId,
     target: &DetailsTarget,
     focus: bool,
+    video_cache: Option<&Path>,
 ) -> Result<PaneId, AppError> {
     let target_json = serde_json::to_string(target).map_err(|error| AppError::Io {
         message: error.to_string(),
     })?;
+    let mut env = BTreeMap::from([(DETAILS_ENV.to_string(), target_json)]);
+    if let Some(folder) = video_cache {
+        env.insert(
+            "HERDR_MARKETPLACE_VIDEO_CACHE".into(),
+            folder.to_string_lossy().into_owned(),
+        );
+    }
     let opened = herdr.open_plugin_pane(OpenPluginPane {
         plugin_id: PLUGIN_ID.to_string(),
         entrypoint: DETAILS_ENTRYPOINT.to_string(),
         target_pane_id: beside.clone(),
         focus,
-        env: BTreeMap::from([(DETAILS_ENV.to_string(), target_json)]),
+        env,
     })?;
     Ok(opened.pane_id)
 }

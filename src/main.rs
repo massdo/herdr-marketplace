@@ -21,6 +21,22 @@ fn run() -> Result<(), AppError> {
     match args.first().map(String::as_str) {
         Some("--toggle") => toggle(),
         Some("--details") => tui::run_details(env::load()?, env::details_target()?),
+        Some("--video-cache") => {
+            let owner = args
+                .get(1)
+                .and_then(|pid| pid.parse::<libc::pid_t>().ok())
+                .ok_or_else(|| AppError::Io {
+                    message: "invalid video cache owner".into(),
+                })?;
+            tui::video_cache::run_cache_process(
+                &env::load()?.state_dir,
+                owner,
+                std::sync::Arc::new(
+                    herdr_marketplace::adapters::image_fetch::ImageFetcher::default(),
+                ),
+            )
+            .map_err(|message| AppError::Io { message })
+        }
         Some("--run-operation") => operation(args.get(1), args.get(2)),
         Some("--help" | "-h") => {
             println!("herdr-marketplace [--toggle | --details | --run-operation <request>]");
@@ -37,7 +53,10 @@ fn toggle() -> Result<(), AppError> {
     let process = env::load()?;
     let origin = env::origin_from_env()?;
     let _lock = launcher_lock::acquire(&process.state_dir)?;
-    toggle_sidebar(&HerdrSocket::new(process.socket_path), &origin)?;
+    toggle_sidebar(
+        &HerdrSocket::new(process.socket_path).with_details_state(process.state_dir),
+        &origin,
+    )?;
     Ok(())
 }
 

@@ -91,6 +91,37 @@ pub fn attribute(attributes: &str, name: &str) -> Option<String> {
     None
 }
 
+/// Whether attribute `name`, with or without a value, is among raw
+/// attributes: `loop` in `src="demo.mp4" loop`. Quoted values are skipped.
+pub fn flag(attributes: &str, name: &str) -> bool {
+    let mut rest = attributes;
+    loop {
+        rest = rest.trim_start_matches(|ch: char| ch.is_whitespace() || ch == '/');
+        if rest.is_empty() {
+            return false;
+        }
+        let end = rest
+            .find(|ch: char| ch.is_whitespace() || ch == '=' || ch == '/')
+            .unwrap_or(rest.len());
+        let found = &rest[..end];
+        rest = rest[end..].trim_start();
+        if let Some(value) = rest.strip_prefix('=') {
+            let value = value.trim_start();
+            rest = match value.chars().next() {
+                Some(quote @ ('"' | '\'')) => {
+                    value[1..].split_once(quote).map_or("", |(_, after)| after)
+                }
+                _ => value
+                    .split_once(char::is_whitespace)
+                    .map_or("", |(_, after)| after),
+            };
+        }
+        if found.eq_ignore_ascii_case(name) {
+            return true;
+        }
+    }
+}
+
 /// Named entities a README uses, and numeric ones.
 pub fn decode_entities(text: &str) -> String {
     if !text.contains('&') {

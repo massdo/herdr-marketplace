@@ -10,7 +10,9 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::details_control::{DetailsControl, DetailsUpdate};
 use crate::application::ports::{HerdrPort, OpenPluginPane};
+use crate::domain::details::DetailsTarget;
 use crate::domain::error::AppError;
 use crate::domain::ids::PaneId;
 use crate::domain::pane::{LayoutSnapshot, OpenedPane, PaneInfo};
@@ -21,11 +23,20 @@ const MAX_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
 
 pub struct HerdrSocket {
     path: PathBuf,
+    details_state: Option<PathBuf>,
 }
 
 impl HerdrSocket {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            details_state: None,
+        }
+    }
+
+    pub fn with_details_state(mut self, state: PathBuf) -> Self {
+        self.details_state = Some(state);
+        self
     }
 
     pub fn call(&self, method: &str, params: Value) -> Result<Value, AppError> {
@@ -164,8 +175,33 @@ impl HerdrPort for HerdrSocket {
     }
 
     fn close_plugin_pane(&self, pane_id: &PaneId) -> Result<(), AppError> {
+        if let Some(state) = &self.details_state
+            && DetailsControl::request_close(state, &self.path, pane_id)?
+        {
+            return Ok(());
+        }
         self.call("plugin.pane.close", json!({ "pane_id": pane_id.as_str() }))?;
         Ok(())
+    }
+
+    fn update_details(
+        &self,
+        pane_id: &PaneId,
+        target: &DetailsTarget,
+        video_cache: Option<&Path>,
+    ) -> Result<(), AppError> {
+        let state = self.details_state.as_deref().ok_or_else(|| AppError::Io {
+            message: "Details state directory is missing".into(),
+        })?;
+        DetailsControl::send(
+            state,
+            &self.path,
+            pane_id,
+            DetailsUpdate {
+                target: target.clone(),
+                video_cache: video_cache.map(Path::to_path_buf),
+            },
+        )
     }
 }
 

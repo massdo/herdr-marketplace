@@ -8,14 +8,16 @@ use std::io::Cursor;
 use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use herdr_marketplace::adapters::image_fetch;
 use herdr_marketplace::adapters::images::{Picture, decode};
 use herdr_marketplace::adapters::tui::details::{DetailsApp, DetailsIntent};
 use herdr_marketplace::adapters::tui::details_view;
 use herdr_marketplace::adapters::tui::graphics::{
-    Graphics, LAYOUT_WAIT, PictureState, Pictures, Probe, block_lines, fit, from_replies, image_id,
-    kitty_row, kitty_transmit, settle,
+    Graphics, LAYOUT_WAIT, PictureState, Pictures, Probe, VIDEO_LIMIT, block_lines, fit,
+    from_replies, image_id, kitty_row, kitty_transmit, settle,
 };
-use herdr_marketplace::adapters::tui::markdown::{Rendered, render_readme};
+use herdr_marketplace::adapters::tui::markdown::{Rendered, VideoPlace, render_readme};
+use herdr_marketplace::adapters::tui::style::megabytes;
 use herdr_marketplace::application::load_readme::Readme;
 use herdr_marketplace::domain::details::DetailsTarget;
 use herdr_marketplace::domain::readme::{
@@ -877,4 +879,275 @@ fn readme_format_characters_are_removed_in_markdown_and_html() {
             .any(herdr_marketplace::domain::text::is_format)
     );
     assert!(shown.contains("abc"));
+}
+
+const VIDEO: &str =
+    "https://github.com/user-attachments/assets/abe2f43e-fc50-4866-b753-33388967945d";
+const KITTY: Graphics = Graphics::Kitty {
+    cell_width: 8,
+    cell_height: 17,
+};
+const CHIP: &str = "\u{a0}▶\u{a0}video\u{a0}";
+
+fn video_probe(content_type: &str, size: Option<u64>) -> Result<image_fetch::Probe, String> {
+    Ok(image_fetch::Probe {
+        content_type: content_type.into(),
+        size,
+    })
+}
+
+/// Pictures of a pane that plays videos, `VIDEO` probed as `probe`.
+fn with_player(graphics: Graphics, probe: Result<image_fetch::Probe, String>) -> Pictures {
+    let mut pictures = Pictures::new(graphics);
+    pictures.video_player(true);
+    assert!(pictures.request_video(VIDEO));
+    pictures.video_probed(VIDEO, probe);
+    pictures
+}
+
+/// Columns `start..end` of a line.
+fn cells(line: &str, (start, end): (usize, usize)) -> String {
+    line.chars().skip(start).take(end - start).collect()
+}
+
+/// The one video block of `rendered`, checked: empty lines but the middle
+/// one, with the play button and the link that opens the video.
+fn video_block(rendered: &Rendered, size: &str) -> VideoPlace {
+    let [place] = rendered.video_places.as_slice() else {
+        panic!("one video block: {:?}", rendered.video_places);
+    };
+    let text = texts(&rendered.lines);
+    let middle = place.line + usize::from(place.rows) / 2;
+    assert_eq!(place.button_line, middle);
+    assert_eq!(
+        cells(&text[middle], place.button),
+        format!(" ▶ Play video ({size}) ")
+    );
+    let open = rendered
+        .links
+        .iter()
+        .find(|area| area.target == LinkTarget::Web(VIDEO.into()))
+        .expect("a link to the video");
+    assert_eq!(open.line, middle);
+    assert_eq!(
+        cells(&text[middle], (open.start, open.end)),
+        "Open in browser"
+    );
+    let block = &text[place.line..place.line + usize::from(place.rows)];
+    for (row, line) in block.iter().enumerate() {
+        if place.line + row != middle {
+            assert!(line.trim().is_empty(), "row {row}: {line:?}");
+        }
+    }
+    place.clone()
+}
+
+#[test]
+fn a_video_that_can_play_takes_a_block_with_a_play_button() {
+    let mut pictures = with_player(KITTY, video_probe("video/mp4", Some(9_841_526)));
+    let rendered = render(
+        &format!(
+            "Intro\n\n<video src=\"{VIDEO}\" width=\"640\" height=\"360\" loop controls></video>\n\nOutro"
+        ),
+        80,
+        &mut pictures,
+    );
+    assert_eq!(rendered.videos, [VIDEO]);
+    let place = video_block(&rendered, "9.8 MB");
+    assert_eq!(
+        (place.columns, place.rows),
+        fit(640, 360, Some(640), 80, KITTY)
+    );
+    assert_eq!((place.line, place.column), (2, 0));
+    assert!(place.looped);
+    let text = texts(&rendered.lines);
+    assert_eq!(text[0], "Intro");
+    assert_eq!(text.last().unwrap(), "Outro");
+    assert!(!text.iter().any(|line| line.contains(CHIP)), "{text:#?}");
+}
+
+#[test]
+fn a_video_without_a_size_takes_a_block_as_wide_as_github_shows_it_in_16_9() {
+    let mut pictures = with_player(KITTY, video_probe("video/quicktime", Some(9_841_526)));
+    let rendered = render(
+        &format!("<video src=\"{VIDEO}\" controls></video>"),
+        80,
+        &mut pictures,
+    );
+    let place = video_block(&rendered, "9.8 MB");
+    assert_eq!((place.columns, place.rows), fit(830, 466, None, 80, KITTY));
+    assert!(!place.looped);
+}
+
+#[test]
+fn an_uploaded_file_alone_in_its_paragraph_is_a_video_when_it_is_one() {
+    let markdown = format!("Demo:\n\n{VIDEO}\n\nOutro");
+    let mut pictures = with_player(KITTY, video_probe("video/mp4", Some(445_439)));
+    let rendered = render(&markdown, 80, &mut pictures);
+    assert_eq!(rendered.videos, [VIDEO]);
+    video_block(&rendered, "0.4 MB");
+    assert!(!texts(&rendered.lines).contains(&VIDEO.to_string()));
+
+    let mut pictures = with_player(KITTY, video_probe("image/png", Some(445_439)));
+    let rendered = render(&markdown, 80, &mut pictures);
+    assert_eq!(rendered.videos, [VIDEO]);
+    assert!(rendered.video_places.is_empty());
+    assert!(texts(&rendered.lines).contains(&VIDEO.to_string()));
+}
+
+#[test]
+fn a_video_that_cannot_play_stays_a_chip_that_opens_it() {
+    let tag = format!("<video src=\"{VIDEO}\" controls></video>");
+    let mut no_player = Pictures::new(KITTY);
+    no_player.video_probed(VIDEO, video_probe("video/mp4", Some(9_841_526)));
+    for (case, mut pictures) in [
+        (
+            "probe failed",
+            with_player(KITTY, Err("http status: 404".into())),
+        ),
+        (
+            "not a video",
+            with_player(KITTY, video_probe("text/html", Some(9_841_526))),
+        ),
+        (
+            "too large",
+            with_player(KITTY, video_probe("video/mp4", Some(VIDEO_LIMIT + 1))),
+        ),
+        (
+            "size unknown",
+            with_player(KITTY, video_probe("video/mp4", None)),
+        ),
+        ("no player", no_player),
+        (
+            "half blocks",
+            with_player(Graphics::Blocks, video_probe("video/mp4", Some(9_841_526))),
+        ),
+    ] {
+        let rendered = render(&tag, 80, &mut pictures);
+        assert_eq!(rendered.videos, [VIDEO], "{case}");
+        assert!(rendered.video_places.is_empty(), "{case}");
+        assert!(
+            texts(&rendered.lines).contains(&CHIP.to_string()),
+            "{case}: {:#?}",
+            texts(&rendered.lines)
+        );
+        assert!(
+            rendered
+                .links
+                .iter()
+                .any(|area| area.target == LinkTarget::Web(VIDEO.into())),
+            "{case}"
+        );
+    }
+}
+
+#[test]
+fn before_its_probe_a_video_shows_as_before_and_is_listed_once() {
+    let mut pictures = Pictures::new(KITTY);
+    pictures.video_player(true);
+    let rendered = render(
+        &format!(
+            "<video src=\"{VIDEO}\"></video>\n\n{VIDEO}\n\n<video src=\"{VIDEO}\" loop></video>"
+        ),
+        80,
+        &mut pictures,
+    );
+    assert_eq!(rendered.videos, [VIDEO]);
+    assert!(rendered.video_places.is_empty());
+    let text = texts(&rendered.lines);
+    assert_eq!(
+        text.iter().filter(|line| *line == CHIP).count(),
+        2,
+        "{text:#?}"
+    );
+    assert!(text.contains(&VIDEO.to_string()));
+}
+
+#[test]
+fn a_narrow_video_block_puts_its_link_under_its_button() {
+    let mut pictures = with_player(KITTY, video_probe("video/mp4", Some(9_841_526)));
+    let rendered = render(
+        &format!("<video src=\"{VIDEO}\" width=\"300\" height=\"200\"></video>"),
+        80,
+        &mut pictures,
+    );
+    let [place] = rendered.video_places.as_slice() else {
+        panic!("one video block: {:?}", rendered.video_places);
+    };
+    assert_eq!(place.columns, 38, "300 pixels of 8-pixel cells");
+    let text = texts(&rendered.lines);
+    assert_eq!(
+        cells(&text[place.button_line], place.button),
+        " ▶ Play video (9.8 MB) "
+    );
+    let open = rendered
+        .links
+        .iter()
+        .find(|area| area.target == LinkTarget::Web(VIDEO.into()))
+        .unwrap();
+    assert_eq!(open.line, place.button_line + 1);
+    assert_eq!(
+        cells(&text[open.line], (open.start, open.end)),
+        "Open in browser"
+    );
+    assert!(open.end <= place.column + usize::from(place.columns));
+}
+
+#[test]
+fn sizes_are_shown_in_megabytes_to_a_tenth() {
+    assert_eq!(megabytes(9_841_526), "9.8 MB");
+    assert_eq!(megabytes(445_439), "0.4 MB");
+}
+
+#[test]
+fn the_details_pane_probes_each_video_once_and_lays_out_its_block_on_the_answer() {
+    let mut app = DetailsApp::new(target());
+    app.set_graphics(KITTY);
+    app.video_player(true);
+    app.set_viewport(80, details_view::page_rows(&app, 80, 40));
+    app.intents.clear();
+    app.readme_loaded(
+        1,
+        Ok(Readme::Found {
+            text: format!("<video src=\"{VIDEO}\"></video>\n\n{VIDEO}"),
+            fallback: false,
+        }),
+    );
+    assert_eq!(
+        app.intents,
+        [DetailsIntent::ProbeVideos(vec![VIDEO.into()])]
+    );
+    app.intents.clear();
+    app.set_graphics(KITTY);
+    assert!(app.intents.is_empty(), "no second probe");
+    assert!(texts(&app.lines).contains(&CHIP.to_string()));
+
+    app.video_probed(VIDEO, video_probe("video/mp4", Some(9_841_526)));
+    assert!(app.intents.is_empty(), "no second probe");
+    let text = texts(&app.lines);
+    assert_eq!(
+        text.iter()
+            .filter(|line| line.contains("▶ Play video (9.8 MB)"))
+            .count(),
+        2,
+        "{text:#?}"
+    );
+    assert!(!text.contains(&CHIP.to_string()));
+}
+
+#[test]
+fn without_a_player_the_details_pane_probes_no_video() {
+    let mut app = DetailsApp::new(target());
+    app.set_graphics(KITTY);
+    app.set_viewport(80, details_view::page_rows(&app, 80, 40));
+    app.intents.clear();
+    app.readme_loaded(
+        1,
+        Ok(Readme::Found {
+            text: format!("<video src=\"{VIDEO}\"></video>"),
+            fallback: false,
+        }),
+    );
+    assert!(app.intents.is_empty(), "{:?}", app.intents);
+    assert!(texts(&app.lines).contains(&CHIP.to_string()));
 }

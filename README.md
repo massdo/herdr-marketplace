@@ -51,7 +51,12 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
   topic, author or description. Typos are forgiven: `anotate` finds Annotate.
 - **Read before you install.** Every README is drawn like on GitHub, with
   headings, code, tables, alerts, images and links, at the exact commit you
-  would install. Animated GIF, WebP and PNG images play.
+  would install. Selecting another plugin updates the same Details pane,
+  keeping its size and focus. Animated GIF, WebP and PNG images play. Visible videos
+  start automatically without sound while they download. Click or `Space`/`p`
+  pauses and resumes; the controls and `←`/`→` seek. Videos stay cached when
+  you switch plugins or close Details, until Marketplace closes and clears
+  all of that session's videos.
 - **Install with one key.** `i` previews the source, the commit and the
   commands the plugin declares; `Enter` confirms, `Esc` cancels. The same key
   moves an installed plugin to the catalog's commit, and `r` removes it.
@@ -77,6 +82,8 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 | `r` | Details | Remove |
 | `o` | Details | Open on GitHub |
 | `s` | Details | Show the full commit SHA |
+| `Space`, `p` | Details | Pause, resume or replay the video in view |
+| `←`, `→` | Details | Seek backward or forward by 5 seconds |
 | `Enter` / `Esc` | Install or removal | Confirm / cancel |
 | `Esc` | Sidebar | Clear the search, show All, then close |
 | `q` | Details | Close the pane |
@@ -96,10 +103,14 @@ It works like the extensions view of VS Code, in a sidebar next to your panes.
 - Rust 1.89 or later, only when the plugin builds from source. If Homebrew's
   Cargo comes before rustup's on your `PATH`, run
   `export PATH="$HOME/.cargo/bin:$PATH"` first.
+- Videos in READMEs play with a private copy of FFmpeg that the prebuilt
+  install brings; a build from source opens them in the browser.
 
 Good to know: the marketplace downloads the catalog index once, about 270 KB
-compressed, then again only when it changes. We're happy with that for now,
-and V2 will bring a small server so you can skip that download.
+compressed. Reopening shows the saved catalog immediately while an ETag check
+runs in the background; changes update the list without resetting your search
+or selection. If the check fails, the saved catalog stays available. V2 will
+bring a small server so you can skip that download.
 
 To update, run the install command again, then close and reopen the
 marketplace. A marketplace installed from GitHub also announces its own
