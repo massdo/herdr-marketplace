@@ -210,7 +210,6 @@ impl Cache {
                         Ok(()) => state.complete = true,
                         Err(error) => state.error = Some(error),
                     }
-                    let _ = saved.save(&state);
                     // A completed original no longer needs range requests.
                     cancelled.cancel();
                     let _ = header.join();
@@ -218,6 +217,9 @@ impl Cache {
                         let _ = fs::remove_file(&saved.path);
                         let _ = fs::remove_file(saved.path.with_extension("stream"));
                     }
+                    // Publish the terminal state after auxiliary requests and
+                    // failed-file cleanup, so readers cannot observe it early.
+                    let _ = saved.save(&state);
                 });
                 local.jobs.lock().unwrap().push(Job {
                     file: file.clone(),

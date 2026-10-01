@@ -8,7 +8,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Barrier, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use herdr_marketplace::adapters::download_cancel::Cancellation;
@@ -606,6 +606,89 @@ fn herdr_hiding_the_pane_ends_the_video() {
         .parse()
         .unwrap();
     assert!(!alive(pid));
+}
+
+struct FailureWithPendingHeader {
+    started: Arc<Barrier>,
+    cancelled: mpsc::Sender<()>,
+    release: Mutex<Receiver<()>>,
+}
+
+impl Download for FailureWithPendingHeader {
+    fn download(
+        &self,
+        _: &str,
+        _: u64,
+        file: &mut File,
+        _: &Cancellation,
+        _: &mut dyn FnMut(u64, Option<u64>),
+    ) -> Result<(), String> {
+        self.started.wait();
+        file.write_all(b"partial")
+            .map_err(|error| error.to_string())?;
+        Err("network down".into())
+    }
+
+    fn streaming_header(
+        &self,
+        _: &str,
+        stop: &Cancellation,
+    ) -> Result<Option<StreamHeader>, String> {
+        self.started.wait();
+        while !stop.cancelled() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let _ = self.cancelled.send(());
+        if self.release.lock().unwrap().recv().is_err() {
+            return Ok(None);
+        }
+        // A metadata answer already in flight may finish during cancellation.
+        Ok(Some(StreamHeader {
+            prefix: vec![0; 8],
+            offset: 0,
+            end: 7,
+            duration: None,
+        }))
+    }
+}
+
+#[test]
+fn a_download_error_is_visible_only_after_partial_video_and_late_metadata_cleanup() {
+    let folder = tempfile::tempdir().unwrap();
+    let cache = Cache::new(folder.path().to_path_buf());
+    // Dropping this sender on panic also releases the header before Cache joins it.
+    let (release, receive) = mpsc::channel();
+    let (cancelled, stopped) = mpsc::channel();
+    let file = cache
+        .get(
+            "https://github.com/user-attachments/assets/failure",
+            Arc::new(FailureWithPendingHeader {
+                started: Arc::new(Barrier::new(2)),
+                cancelled,
+                release: Mutex::new(receive),
+            }),
+        )
+        .unwrap();
+    stopped.recv_timeout(Duration::from_secs(20)).unwrap();
+    let premature_error = file.progress().is_err();
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while file.progress().is_ok() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        !premature_error,
+        "error published while header cleanup was pending"
+    );
+    assert_eq!(file.progress().unwrap_err(), "network down");
+    assert!(
+        !file.path.exists(),
+        "partial video remained after the error"
+    );
+    assert!(
+        !file.path.with_extension("stream").exists(),
+        "late metadata remained after the error"
+    );
 }
 
 #[test]
