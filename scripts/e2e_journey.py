@@ -1132,6 +1132,13 @@ def prove_video():
     cached_stat = cached.stat()
     print("video_plays_ok", flush=True)
 
+    # A slow transfer can outlast the clip. Exercise controls on a fresh
+    # cached replay rather than assuming the original decoder is still alive.
+    wait(lambda: not ffmpeg_pids() and "[Play]" in read(details),
+         "the video did not finish", 30)
+    since = CLIENT_LOG.stat().st_size
+    play_video(details, since)
+
     keys(details, "p")
     wait(lambda: "[Play]" in read(details), "p did not pause the video", 5)
     time.sleep(0.3)
