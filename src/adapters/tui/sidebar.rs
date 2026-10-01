@@ -1,10 +1,16 @@
+use std::collections::HashSet;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::style::Color;
 
 use super::sidebar_view::{self, Hit};
+use super::style::{ERROR, OK, WARN};
 use crate::application::load_listing::LoadedListing;
 use crate::application::open_details::Reveal;
+use crate::domain::PLUGIN_ID;
 use crate::domain::compat::Platform;
 use crate::domain::listing::Row;
+use crate::domain::operation::{Confirmation, OperationRecord, Status};
 use crate::domain::registry::InstalledPlugin;
 use crate::domain::search::search;
 use crate::domain::source::PluginSource;
@@ -20,6 +26,15 @@ pub enum Intent {
     Preview(Box<Row>),
     /// A search selected this row: details already open show it.
     Follow(Box<Row>),
+    /// Check the update of this row, then run it without a preview.
+    Update(Box<Row>),
+}
+
+/// A message above the list, in its color.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Notice {
+    pub text: String,
+    pub color: Color,
 }
 
 /// Which plugins the list shows, as the filters of VS Code's extensions view.
@@ -28,25 +43,41 @@ pub enum Filter {
     #[default]
     All,
     Installed,
+    /// Installed plugins the catalogue has a newer version of.
+    Updates,
 }
 
 impl Filter {
-    fn other(self) -> Self {
+    /// Tab: All, Installed, then Updates while its tab shows.
+    fn next(self, updates_tab: bool) -> Self {
         match self {
             Self::All => Self::Installed,
+            Self::Installed if updates_tab => Self::Updates,
+            Self::Installed | Self::Updates => Self::All,
+        }
+    }
+
+    /// Shift+Tab: the other way round.
+    fn previous(self, updates_tab: bool) -> Self {
+        match self {
+            Self::All if updates_tab => Self::Updates,
+            Self::All | Self::Updates => Self::Installed,
             Self::Installed => Self::All,
         }
     }
 }
 
-/// Typed in the search, as in VS Code, it shows the installed plugins.
+/// Typed in the search, as in VS Code, they pick the Installed and the
+/// Updates filters.
 pub const INSTALLED_TOKEN: &str = "@installed";
+pub const OUTDATED_TOKEN: &str = "@outdated";
 
 /// Plugins matching the query, under each filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Counts {
     pub all: usize,
     pub installed: usize,
+    pub updates: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,8 +109,16 @@ pub struct SidebarApp {
     /// Rows the list area can show.
     pub page: usize,
     pub intents: Vec<Intent>,
-    /// Why the last details pane did not open.
-    pub notice: Option<String>,
+    /// Why the last details pane did not open, or how an update went.
+    pub notice: Option<Notice>,
+    /// The update launched from this sidebar, from the click until the
+    /// registry is read again after it ends.
+    pub updating: Option<PluginSource>,
+    /// Updates running according to their kept results, including those
+    /// launched from a details pane.
+    pub running_updates: HashSet<PluginSource>,
+    /// The update launched from here ended: the next registry read frees it.
+    update_ended: bool,
 }
 
 impl Default for SidebarApp {
@@ -103,6 +142,9 @@ impl SidebarApp {
             page: 1,
             intents: vec![Intent::Load],
             notice: None,
+            updating: None,
+            running_updates: HashSet::new(),
+            update_ended: false,
         }
     }
 
@@ -130,12 +172,17 @@ impl SidebarApp {
     }
 
     /// The registry was read again after an operation: rows are rebuilt from
-    /// the same catalogue and the selection keeps its identity.
+    /// the same catalogue and the selection keeps its identity. An update
+    /// launched from here that ended no longer runs.
     pub fn registry_refreshed(
         &mut self,
         registry: Result<Vec<InstalledPlugin>, String>,
         host: Platform,
     ) {
+        if self.update_ended {
+            self.update_ended = false;
+            self.updating = None;
+        }
         if let LoadState::Ready(loaded) = &mut self.state {
             loaded.use_registry(registry, host);
             self.refilter();
@@ -158,7 +205,8 @@ impl SidebarApp {
             }
             KeyCode::Esc if self.filter != Filter::All => self.set_filter(Filter::All),
             KeyCode::Esc => return true,
-            KeyCode::Tab | KeyCode::BackTab => self.set_filter(self.filter.other()),
+            KeyCode::Tab => self.set_filter(self.filter.next(self.updates_tab())),
+            KeyCode::BackTab => self.set_filter(self.filter.previous(self.updates_tab())),
             KeyCode::Char(ch) => {
                 self.query.push(ch);
                 self.take_filter_token();
@@ -192,6 +240,7 @@ impl SidebarApp {
                         self.move_to(position);
                         self.open(Reveal::Preview);
                     }
+                    Some(Hit::Update(position)) => self.update_at(position),
                     Some(Hit::Retry) => self.enter(),
                     Some(Hit::Filter(filter)) => self.set_filter(filter),
                     Some(Hit::Clear) => {
@@ -209,6 +258,111 @@ impl SidebarApp {
 
     pub fn focus(&mut self, focused: bool) {
         self.focused = focused;
+    }
+
+    /// An update of this source runs, launched from here or from a details
+    /// pane: its card shows it instead of the button.
+    pub fn is_updating(&self, source: &PluginSource) -> bool {
+        self.updating.as_ref() == Some(source) || self.running_updates.contains(source)
+    }
+
+    pub fn set_running_updates(&mut self, sources: HashSet<PluginSource>) {
+        self.running_updates = sources;
+    }
+
+    /// The checks refused the update: nothing ran.
+    pub fn update_refused(&mut self, reason: &str) {
+        if let Some(source) = self.updating.take() {
+            let name = self.name_of(&source);
+            self.notice = Some(Notice {
+                text: format!("Update of {name} refused: {reason}"),
+                color: ERROR,
+            });
+        }
+    }
+
+    /// The worker could not start: nothing ran.
+    pub fn update_not_started(&mut self, text: String) {
+        self.updating = None;
+        self.notice = Some(Notice { text, color: ERROR });
+    }
+
+    /// The result of the update launched from here. Its card waits for the
+    /// registry read that follows to show the new state.
+    pub fn update_finished(&mut self, record: &OperationRecord) {
+        self.update_ended = true;
+        let request = &record.request;
+        let name = self.name_of(&request.source);
+        let manifest = match &request.confirmation {
+            Some(Confirmation::Install { manifest, .. }) => Some(manifest),
+            _ => None,
+        };
+        let version = manifest.map_or_else(
+            || request.commit.chars().take(7).collect(),
+            |manifest| manifest.version.clone(),
+        );
+        let code = record
+            .exit_code
+            .map_or("no exit code".to_string(), |code| format!("code {code}"));
+        let (text, color) = match record.status {
+            Status::Succeeded if manifest.is_some_and(|manifest| manifest.id == PLUGIN_ID) => (
+                format!("Marketplace updated to {version}. Close and reopen it to use it."),
+                OK,
+            ),
+            Status::Succeeded => (
+                format!("{name} updated to {version}. Reopen its panes to use it."),
+                OK,
+            ),
+            Status::Failed => (
+                format!("Update of {name} failed ({code}). Open it to see Herdr's output."),
+                ERROR,
+            ),
+            Status::Unconfirmed => (
+                format!("Update of {name}: result not confirmed. Open it to check."),
+                WARN,
+            ),
+            Status::Refused => {
+                let reason = record
+                    .output
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or_default();
+                (format!("Update of {name} refused: {reason}"), ERROR)
+            }
+            Status::Running => return,
+        };
+        self.notice = Some(Notice { text, color });
+    }
+
+    /// The catalogue name of the row of `source`, else the source itself.
+    fn name_of(&self, source: &PluginSource) -> String {
+        self.rows()
+            .iter()
+            .find(|row| row.entry.source.same_source(source))
+            .map_or_else(|| source.to_string(), |row| row.entry.name.clone())
+    }
+
+    /// The Update button of a card: no preview, no details, the selection
+    /// stays. One update at a time.
+    fn update_at(&mut self, position: usize) {
+        if self.updating.is_some() {
+            self.notice = Some(Notice {
+                text: "Another marketplace operation is running: update refused".into(),
+                color: ERROR,
+            });
+            return;
+        }
+        let row = self.rows()[self.visible[position]].clone();
+        self.updating = Some(row.entry.source.clone());
+        self.update_ended = false;
+        self.notice = None;
+        self.intents.push(Intent::Update(Box::new(row)));
+    }
+
+    /// The Updates tab shows while a listed plugin has an update, whatever
+    /// the search, and while it is the filter.
+    pub fn updates_tab(&self) -> bool {
+        self.filter == Filter::Updates || self.rows().iter().any(|row| row.update().is_some())
     }
 
     /// Another filter starts from its first plugin, as a new search does.
@@ -259,24 +413,21 @@ impl SidebarApp {
         }
     }
 
-    /// `@installed` typed as a word switches the filter and leaves the
-    /// search.
+    /// `@installed` or `@outdated` typed as a word switches the filter and
+    /// leaves the search.
     fn take_filter_token(&mut self) {
         let words: Vec<&str> = self.query.split(' ').collect();
-        if !words
-            .iter()
-            .any(|word| word.eq_ignore_ascii_case(INSTALLED_TOKEN))
-        {
+        let Some(filter) = words.iter().find_map(|word| token_filter(word)) else {
             return;
-        }
+        };
         self.query = words
             .into_iter()
-            .filter(|word| !word.eq_ignore_ascii_case(INSTALLED_TOKEN))
+            .filter(|word| token_filter(word).is_none())
             .collect::<Vec<_>>()
             .join(" ")
             .trim_start()
             .to_string();
-        self.filter = Filter::Installed;
+        self.filter = filter;
     }
 
     /// A new search starts from its most relevant result, and open details
@@ -303,13 +454,20 @@ impl SidebarApp {
             .copied()
             .filter(|&index| rows[index].installed.is_some())
             .collect();
+        let updates: Vec<usize> = all
+            .iter()
+            .copied()
+            .filter(|&index| rows[index].update().is_some())
+            .collect();
         self.counts = Counts {
             all: all.len(),
             installed: installed.len(),
+            updates: updates.len(),
         };
         let visible = match self.filter {
             Filter::All => all,
             Filter::Installed => installed,
+            Filter::Updates => updates,
         };
         let first = visible
             .first()
@@ -365,4 +523,15 @@ impl SidebarApp {
             self.offset = position + 1 - self.page;
         }
     }
+}
+
+/// The filter a word typed in the search picks.
+fn token_filter(word: &str) -> Option<Filter> {
+    [
+        (INSTALLED_TOKEN, Filter::Installed),
+        (OUTDATED_TOKEN, Filter::Updates),
+    ]
+    .into_iter()
+    .find(|(token, _)| word.eq_ignore_ascii_case(token))
+    .map(|(_, filter)| filter)
 }

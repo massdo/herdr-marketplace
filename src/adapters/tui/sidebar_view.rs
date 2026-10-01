@@ -28,6 +28,8 @@ const BOX_WIDTH: usize = 8;
 pub enum Hit {
     /// This position in the list of results.
     Row(usize),
+    /// The Update button of this position.
+    Update(usize),
     Retry,
     Filter(Filter),
     /// The × that empties the search.
@@ -80,7 +82,7 @@ pub fn hit(app: &SidebarApp, width: u16, height: u16, column: u16, row: u16) -> 
         return Some(Hit::Clear);
     }
     if line == boxed && matches!(app.state, LoadState::Ready(_)) {
-        return tab_cells(app)
+        return tab_cells(app, width as usize)
             .into_iter()
             .find(|(_, start, end)| (*start..*end).contains(&cells))
             .map(|(filter, _, _)| Hit::Filter(filter));
@@ -94,7 +96,22 @@ pub fn hit(app: &SidebarApp, width: u16, height: u16, column: u16, row: u16) -> 
         LoadState::Ready(_) => {
             let shown = line / ROW_HEIGHT;
             let position = app.offset + shown;
-            (shown < app.page && position < app.visible.len()).then_some(Hit::Row(position))
+            if shown >= app.page || position >= app.visible.len() {
+                return None;
+            }
+            // The button starts the third line of a row, inside the card.
+            let plugin = &app.rows()[app.visible[position]];
+            let start = if (width as usize) < CARD_WIDTH { 0 } else { 2 };
+            let on_button = update_button(plugin, width as usize).is_some_and(|button| {
+                line % ROW_HEIGHT == 2
+                    && !app.is_updating(&plugin.entry.source)
+                    && (start..start + button.width()).contains(&(column as usize))
+            });
+            Some(if on_button {
+                Hit::Update(position)
+            } else {
+                Hit::Row(position)
+            })
         }
         LoadState::Failed(error) => {
             let retry = failure(error, width as usize).len() - 1;
@@ -144,9 +161,9 @@ fn header(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     }
     if let Some(notice) = &app.notice {
         lines.extend(
-            wrap(&clean(notice), width)
+            wrap(&clean(&notice.text), width)
                 .into_iter()
-                .map(|line| Line::styled(line, Style::default().fg(ERROR))),
+                .map(|line| Line::styled(line, Style::default().fg(notice.color))),
         );
     }
     lines.push(Line::styled("─".repeat(width), muted()));
@@ -209,10 +226,10 @@ fn tail(text: &str, width: usize) -> String {
 }
 
 /// Filter tabs and the columns each covers; the one shown is filled.
-fn tab_cells(app: &SidebarApp) -> Vec<(Filter, usize, usize)> {
+fn tab_cells(app: &SidebarApp, width: usize) -> Vec<(Filter, usize, usize)> {
     let mut cells = Vec::new();
     let mut used = 0;
-    for (filter, label) in tab_labels(app) {
+    for (filter, label) in tab_labels(app, width) {
         let start = if cells.is_empty() { 0 } else { used + 1 };
         let end = start + label.width();
         cells.push((filter, start, end));
@@ -221,20 +238,38 @@ fn tab_cells(app: &SidebarApp) -> Vec<(Filter, usize, usize)> {
     cells
 }
 
-fn tab_labels(app: &SidebarApp) -> [(Filter, String); 2] {
-    [
+/// All and Installed, then Updates while it shows: in full when the three
+/// tabs fit in `width`, else as an arrow.
+fn tab_labels(app: &SidebarApp, width: usize) -> Vec<(Filter, String)> {
+    let mut labels = vec![
         (Filter::All, format!(" All {} ", app.counts.all)),
         (
             Filter::Installed,
             format!(" Installed {} ", app.counts.installed),
         ),
-    ]
+    ];
+    if app.updates_tab() {
+        let updates = app.counts.updates;
+        let full = format!(" Updates {updates} ");
+        // Each tab is followed by a cell of space.
+        let used: usize = labels.iter().map(|(_, label)| label.width() + 1).sum();
+        let label = if used + full.width() <= width {
+            full
+        } else {
+            format!(" ↑{updates} ")
+        };
+        labels.push((Filter::Updates, label));
+    }
+    labels
 }
 
 fn tabs(app: &SidebarApp, width: usize) -> Line<'static> {
     let mut spans = Vec::new();
     let mut used = 0;
-    for ((filter, label), (_, start, end)) in tab_labels(app).into_iter().zip(tab_cells(app)) {
+    for ((filter, label), (_, start, end)) in tab_labels(app, width)
+        .into_iter()
+        .zip(tab_cells(app, width))
+    {
         if end > width {
             break;
         }
@@ -268,10 +303,10 @@ fn failure(error: &str, width: usize) -> Vec<Line<'static>> {
 
 fn list(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     if app.visible.is_empty() {
-        let empty = if app.filter == Filter::Installed && app.query.trim().is_empty() {
-            "No plugin installed from GitHub"
-        } else {
-            "No matching plugin"
+        let empty = match app.filter {
+            Filter::Installed if app.query.trim().is_empty() => "No plugin installed from GitHub",
+            Filter::Updates if app.query.trim().is_empty() => "All plugins are up to date",
+            _ => "No matching plugin",
         };
         return vec![Line::styled(ellipsize(empty, width), muted())];
     }
@@ -282,7 +317,11 @@ fn list(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
         .enumerate()
         .skip(app.offset)
         .take(app.page)
-        .flat_map(|(position, &index)| row_lines(&rows[index], width, selected == Some(position)))
+        .flat_map(|(position, &index)| {
+            let row = &rows[index];
+            let updating = app.is_updating(&row.entry.source);
+            row_lines(row, width, selected == Some(position), updating)
+        })
         .collect()
 }
 
@@ -294,9 +333,9 @@ fn more() -> Line<'static> {
 /// A plugin as a card with a light frame, blue when it is selected. The
 /// top edge carries the name and the golden star; inside, owner/repo, then
 /// the marks and the description.
-fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
+fn row_lines(row: &Row, width: usize, selected: bool, updating: bool) -> Vec<Line<'static>> {
     if width < CARD_WIDTH {
-        let mut lines = plain_row(row, width, selected);
+        let mut lines = plain_row(row, width, selected, updating);
         lines.push(Line::default());
         return lines;
     }
@@ -332,6 +371,11 @@ fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
     )];
     let mut details = Vec::new();
     let mut used = 0;
+    if let Some(button) = update_button(row, width) {
+        let update = update_span(button, updating, inner);
+        used = update.content.width();
+        details.push(update);
+    }
     for (mark, color) in marks(row) {
         if used >= inner {
             break;
@@ -376,7 +420,7 @@ fn row_lines(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
 
 /// Name and stars, owner/repo, marks and description on three plain lines,
 /// for a pane too narrow for cards.
-fn plain_row(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
+fn plain_row(row: &Row, width: usize, selected: bool, updating: bool) -> Vec<Line<'static>> {
     let entry = &row.entry;
     let stars = if row.in_catalog {
         format!(" ★ {}", entry.stars)
@@ -395,13 +439,16 @@ fn plain_row(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
             ellipsize_middle(&clean(&entry.source.to_string()), width),
             muted(),
         ),
-        Line::styled(
-            ellipsize(
-                &clean(entry.description.as_deref().unwrap_or_default()),
-                width,
+        match update_button(row, width) {
+            Some(button) => Line::from(update_span(button, updating, width)),
+            None => Line::styled(
+                ellipsize(
+                    &clean(entry.description.as_deref().unwrap_or_default()),
+                    width,
+                ),
+                muted(),
             ),
-            muted(),
-        ),
+        },
     ];
     if selected {
         for line in &mut lines {
@@ -411,9 +458,10 @@ fn plain_row(row: &Row, width: usize, selected: bool) -> Vec<Line<'static>> {
     lines
 }
 
-/// The selection's background, text kept readable on it.
+/// The selection's background, text kept readable on it. A span with a
+/// background of its own, a button, keeps its colors.
 fn highlight(spans: &mut [Span<'static>]) {
-    for span in spans {
+    for span in spans.iter_mut().filter(|span| span.style.bg.is_none()) {
         let fg = match span.style.fg {
             None | Some(MUTED) => SELECTION_FG,
             Some(color) => color,
@@ -422,9 +470,36 @@ fn highlight(spans: &mut [Span<'static>]) {
     }
 }
 
+/// The button that starts the third line of a row drawn `width` cells wide
+/// when its plugin has an update: in a card, with the version when it fits;
+/// on a plain line, cut to the line.
+fn update_button(row: &Row, width: usize) -> Option<String> {
+    let version = row.update()?;
+    if width < CARD_WIDTH {
+        return Some(ellipsize(" Update ", width));
+    }
+    let label = format!(" Update to {} ", clean(version));
+    Some(if label.width() > width - 4 {
+        " Update ".to_string()
+    } else {
+        label
+    })
+}
+
+/// The Update button, or "Updating…" while the update runs, in `room`
+/// cells.
+fn update_span(button: String, updating: bool, room: usize) -> Span<'static> {
+    if updating {
+        Span::styled(ellipsize("Updating…", room), Style::default().fg(WARN))
+    } else {
+        Span::styled(button, Tone::Primary.style())
+    }
+}
+
+/// The button of an update takes the place of the installed mark.
 fn marks(row: &Row) -> Vec<(&'static str, ratatui::style::Color)> {
     let mut marks = Vec::new();
-    if row.installed.is_some() {
+    if row.installed.is_some() && row.update().is_none() {
         marks.push(("installed", OK));
     }
     if !row.compatible {

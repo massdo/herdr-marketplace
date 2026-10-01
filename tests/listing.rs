@@ -8,6 +8,7 @@ use herdr_marketplace::application::ports::{CatalogFetcher, FetchError, Fetched}
 use herdr_marketplace::domain::compat::Platform;
 use herdr_marketplace::domain::listing::build_listing;
 use herdr_marketplace::domain::registry::{InstalledSource, parse_registry};
+use herdr_marketplace::domain::version::is_newer;
 use serde_json::json;
 use support::*;
 
@@ -252,4 +253,111 @@ fn the_registry_is_read_from_herdr_plugin_list_json() {
     assert_eq!(fixture.resolved_commit(), Some(SHA_A));
     assert!(parse_registry("not json").is_err());
     assert!(parse_registry(r#"{"id":"cli:plugin","error":{"code":"x","message":"y"}}"#).is_err());
+}
+
+#[test]
+fn a_newer_version_follows_semver_precedence() {
+    for (candidate, installed) in [
+        ("0.14.0", "0.13.0"),
+        ("v1.2.0", "1.1.0"),
+        ("1.0.0", "1.0.0-beta.4"),
+        ("1.0.0-beta.10", "1.0.0-beta.9"),
+        (" 2.0.0 ", "1.9.9"),
+    ] {
+        assert!(
+            is_newer(candidate, installed),
+            "{candidate:?} over {installed:?}"
+        );
+    }
+    for (candidate, installed) in [
+        ("0.13.0", "0.13.0"),
+        ("0.12.0", "0.13.0"),
+        ("1.0.0+build.2", "1.0.0"),
+        ("0.7.0rc4", "0.6.0"),
+        ("", "1.0.0"),
+        ("1.1.0", "unknown"),
+    ] {
+        assert!(
+            !is_newer(candidate, installed),
+            "{candidate:?} over {installed:?}"
+        );
+    }
+}
+
+/// The fixture's manifest in the catalogue, at `SHA_A`, with this version.
+fn fixture_manifest(version: &str) -> serde_json::Value {
+    let mut fixture = manifest("herdr-plugin.toml", "herdr-marketplace-fixture");
+    fixture["version"] = json!(version);
+    fixture
+}
+
+/// The fixture installed at `sha` with this version.
+fn fixture_installed(version: &str, sha: &str) -> serde_json::Value {
+    let mut plugin = github_plugin(
+        "herdr-marketplace-fixture",
+        "massdo",
+        "herdr-marketplace-fixture",
+        None,
+        sha,
+    );
+    plugin["version"] = json!(version);
+    plugin
+}
+
+/// The update the first row offers, the fixture's repository announcing
+/// `manifests`.
+fn update(manifests: Vec<serde_json::Value>, installed: Vec<serde_json::Value>) -> Option<String> {
+    let repos = if manifests.is_empty() {
+        vec![]
+    } else {
+        vec![repo("massdo", "herdr-marketplace-fixture", 1, manifests)]
+    };
+    let installed = parse_registry(&registry(installed)).unwrap();
+    build_listing(&catalog(repos), &installed, Platform::Macos, HERDR).rows[0]
+        .update()
+        .map(str::to_string)
+}
+
+#[test]
+fn an_update_is_a_newer_catalogue_version_at_another_commit() {
+    let at_b = || vec![fixture_installed("1.0.0", SHA_B)];
+    assert_eq!(
+        update(vec![fixture_manifest("1.1.0")], at_b()).as_deref(),
+        Some("1.1.0")
+    );
+    assert_eq!(
+        update(vec![fixture_manifest("1.0.0")], at_b()),
+        None,
+        "same version, another commit"
+    );
+    assert_eq!(
+        update(vec![fixture_manifest("0.9.0")], at_b()),
+        None,
+        "an older version"
+    );
+    assert_eq!(
+        update(
+            vec![fixture_manifest("1.1.0")],
+            vec![fixture_installed("1.0.0", SHA_A)]
+        ),
+        None,
+        "the same commit"
+    );
+    assert_eq!(
+        update(vec![fixture_manifest("1.1.0")], vec![]),
+        None,
+        "not installed"
+    );
+    assert_eq!(update(vec![], at_b()), None, "absent from the catalogue");
+    let mut linux = fixture_manifest("1.1.0");
+    linux["platforms"] = json!(["linux"]);
+    assert_eq!(update(vec![linux], at_b()), None, "incompatible");
+    let mut unversioned = fixture_manifest("1.1.0");
+    unversioned.as_object_mut().unwrap().remove("version");
+    assert_eq!(update(vec![unversioned], at_b()), None, "no version");
+    assert_eq!(
+        update(vec![fixture_manifest("1.1")], at_b()),
+        None,
+        "an unreadable version"
+    );
 }

@@ -1,5 +1,5 @@
-//! Install and removal operations run outside the details pane, and their kept
-//! results.
+//! Install, update and removal operations run outside the details pane, and
+//! their kept results.
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +14,9 @@ use super::source::PluginSource;
 pub enum OperationKind {
     Install,
     Uninstall,
+    /// An install that replaces an installed plugin with a newer version,
+    /// without a preview.
+    Update,
 }
 
 /// The state the user reviewed, checked again under the operation lock.
@@ -95,10 +98,11 @@ impl OperationRecord {
     }
 }
 
-/// An install succeeds when Herdr answers 0 and the registry shows the
-/// source at the commit; code 0 without that is an unconfirmed result, never
-/// a success. A removal succeeds when Herdr answers 0 and the source is
-/// gone from the registry; an unreadable registry leaves it unconfirmed.
+/// An install or an update succeeds when Herdr answers 0 and the registry
+/// shows the source at the commit; code 0 without that is an unconfirmed
+/// result, never a success. A removal succeeds when Herdr answers 0 and the
+/// source is gone from the registry; an unreadable registry leaves it
+/// unconfirmed.
 pub fn operation_status(
     exit_code: Option<i32>,
     registry: &Result<Vec<InstalledPlugin>, String>,
@@ -112,7 +116,7 @@ pub fn operation_status(
         .ok()
         .and_then(|registry| installed_from(registry, &request.source).ok());
     match request.kind {
-        OperationKind::Install => {
+        OperationKind::Install | OperationKind::Update => {
             let commit = installed
                 .flatten()
                 .and_then(InstalledPlugin::resolved_commit);

@@ -9,3 +9,4 @@ pub mod prepare_install;
 pub mod prepare_removal;
 pub mod run_operation;
 pub mod toggle_sidebar;
+pub mod update_plugin;
