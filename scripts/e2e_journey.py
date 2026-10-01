@@ -314,8 +314,8 @@ def prove_sidebar():
     type_text(sidebar, "fixture")
     shown = wait(lambda: " All 2 " in (text := read(sidebar)) and text, "the search did not filter")
     assert "Terminal Browser" not in shown, shown
-    assert "massdo/herdr-…lace-fixture" in shown, shown
-    assert "massdo/herdr-…-fixture/alt" in shown, shown
+    assert fixture_card(shown), shown
+    assert fixture_card(shown, "alt"), shown
     type_text(sidebar, "jk")
     wait(lambda: "│ fixturejk" in read(sidebar), "j and k did not reach the search")
     keys(sidebar, "backspace", "backspace")
@@ -717,11 +717,11 @@ def prove_install():
     wait(lambda: focused() == sidebar, "a click did not focus the sidebar")
     click_text(sidebar, "Installed 1")
     # The search "fixture" stays: the alt source is the one not installed.
-    shown = wait(lambda: "massdo/herdr-…-fixture/alt" not in (text := read(sidebar)) and text,
+    shown = wait(lambda: not fixture_card(text := read(sidebar), "alt") and text,
                  "the Installed filter did not apply")
-    assert "massdo/herdr-…lace-fixture" in shown and "installed · Test fixture." in shown, shown
+    assert fixture_card(shown) and "installed · Test fixture." in shown, shown
     type_text(sidebar, "\t")
-    wait(lambda: "massdo/herdr-…-fixture/alt" in read(sidebar), "Tab did not return to all plugins")
+    wait(lambda: fixture_card(read(sidebar), "alt"), "Tab did not return to all plugins")
     print("installed_filter_ok", flush=True)
     close_all(tab)
 
@@ -782,7 +782,7 @@ def prove_update_shown():
     type_text(sidebar, "fixture")
     shown = wait(lambda: " All 2 " in (text := read(sidebar)) and "Update to 1.1.0" in text and text,
                  "the card did not offer the update")
-    assert "massdo/herdr-…-fixture/alt" in shown, shown
+    assert fixture_card(shown, "alt"), shown
     assert shown.count("Update to 1.1.0") == 1, shown
     toggle()
     wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
@@ -877,9 +877,16 @@ def tabs_line(pane):
     return next((line for line in read(pane).split("\n") if listed(line)), "")
 
 
+def fixture_card(text, subdir=""):
+    """The fixture's source line, independent of the pane's middle ellipsis."""
+    suffix = "/" + subdir if subdir else ""
+    pattern = r"^│ massdo/herdr[^\n│]*fixture" + re.escape(suffix) + r"\s*│$"
+    return re.search(pattern, text, re.MULTILINE) is not None
+
+
 def only_the_update(text):
     """The list shows the root fixture's card, nothing else."""
-    return ("massdo/herdr-…lace-fixture" in text and "massdo/herdr-…-fixture/alt" not in text
+    return (fixture_card(text) and not fixture_card(text, "alt")
             and "Filler" not in text)
 
 
