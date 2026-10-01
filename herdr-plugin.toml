@@ -4,7 +4,7 @@
 
 id = "herdr-marketplace"
 name = "herdr-marketplace"
-version = "0.1.0"
+version = "0.2.0"
 description = "Search, read and install Herdr plugins from a sidebar."
 min_herdr_version = "0.9.1"
 platforms = ["linux", "macos"]
