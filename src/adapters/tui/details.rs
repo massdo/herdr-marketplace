@@ -20,7 +20,9 @@ use crate::domain::details::DetailsTarget;
 use crate::domain::install::Plan;
 use crate::domain::operation::{OperationKind, OperationRecord, Status};
 use crate::domain::readme::{LinkTarget, ReadmePlace, github_page};
+use crate::domain::text::clean;
 use crate::domain::uninstall::RemovalPlan;
+use crate::domain::version::is_newer;
 
 /// Lines the wheel scrolls per step.
 const WHEEL: isize = 3;
@@ -29,8 +31,11 @@ const WHEEL: isize = 3;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstalledView {
     Unknown,
-    /// Installed at this commit.
-    At(String),
+    /// Installed at this commit, with this version.
+    At {
+        commit: String,
+        version: String,
+    },
     NotInstalled,
     /// Registry unreadable, or several plugins installed from this source.
     Uncertain(String),
@@ -65,11 +70,22 @@ pub enum RemovalState {
     Confirm(Box<RemovalPlan>),
 }
 
+/// Update request, from the key to the launch: the preview's checks, never
+/// the preview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateState {
+    Idle,
+    Preparing,
+    Refused(String),
+}
+
 /// What a button, or the key written on it, does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     /// Build the install preview; nothing runs yet.
     Install,
+    /// Check the update, then run it without a preview.
+    Update,
     /// Ask for the removal; nothing runs yet.
     Remove,
     /// Run the install or removal on screen.
@@ -132,6 +148,10 @@ pub enum DetailsIntent {
     PrepareInstall(u64),
     /// Confirmed preview, including the state the user reviewed.
     Install(Box<InstallPreview>),
+    /// Check the update; the answer carries this request number.
+    PrepareUpdate(u64),
+    /// Checked update, run without a preview.
+    Update(Box<InstallPreview>),
     /// Read the registry; the answer carries this request number.
     ReadRegistry(u64),
     /// Find the installed plugin to remove; the answer carries this number.
@@ -198,6 +218,8 @@ pub struct DetailsApp {
     pub preview_scroll: usize,
     pub removal: RemovalState,
     pub removal_request: u64,
+    pub update: UpdateState,
+    pub update_request: u64,
     pub installed: InstalledView,
     pub registry_request: u64,
     /// Latest kept result of an operation on this source.
@@ -237,6 +259,8 @@ impl DetailsApp {
             preview_scroll: 0,
             removal: RemovalState::Idle,
             removal_request: 0,
+            update: UpdateState::Idle,
+            update_request: 0,
             installed: InstalledView::Unknown,
             registry_request: 1,
             operation: None,
@@ -421,6 +445,21 @@ impl DetailsApp {
         self.preview_scroll = 0;
     }
 
+    /// A checked update runs at once; a refused one keeps its button, to try
+    /// again.
+    pub fn update_prepared(&mut self, request: u64, result: Result<InstallPreview, String>) {
+        if request != self.update_request || self.update != UpdateState::Preparing {
+            return;
+        }
+        match result {
+            Ok(preview) => {
+                self.update = UpdateState::Idle;
+                self.intents.push(DetailsIntent::Update(Box::new(preview)));
+            }
+            Err(reason) => self.update = UpdateState::Refused(reason),
+        }
+    }
+
     pub fn set_viewport(&mut self, width: usize, page: usize) {
         if width != self.width {
             self.width = width;
@@ -437,7 +476,9 @@ impl DetailsApp {
         }
         match key.code {
             KeyCode::Esc
-                if self.install != InstallState::Idle || self.removal != RemovalState::Idle =>
+                if self.install != InstallState::Idle
+                    || self.removal != RemovalState::Idle
+                    || self.update != UpdateState::Idle =>
             {
                 self.press(Command::Cancel)
             }
@@ -445,6 +486,7 @@ impl DetailsApp {
             KeyCode::Enter if self.showing_confirmation() => self.press(Command::Confirm),
             KeyCode::Enter => self.press(Command::RetryReadme),
             KeyCode::Char('i') => self.press(Command::Install),
+            KeyCode::Char('u') => self.press(Command::Update),
             KeyCode::Char('r') => self.press(Command::Remove),
             KeyCode::Char('s') => self.press(Command::ToggleSha),
             KeyCode::Char('o') => self.press(Command::OpenGitHub),
@@ -509,11 +551,13 @@ impl DetailsApp {
     pub fn press(&mut self, command: Command) {
         match command {
             Command::Install => self.prepare_install(),
+            Command::Update => self.prepare_update(),
             Command::Remove => self.prepare_removal(),
             Command::Confirm => self.confirm(),
             Command::Cancel => {
                 self.leave_install();
                 self.removal = RemovalState::Idle;
+                self.update = UpdateState::Idle;
             }
             Command::RetryReadme => self.retry_readme(),
             Command::ToggleSha => self.full_sha = !self.full_sha,
@@ -706,7 +750,10 @@ impl DetailsApp {
                 button("Cancel", "Esc", Tone::Plain, Command::Cancel),
             ];
         }
-        if self.install == InstallState::Preparing || self.removal == RemovalState::Preparing {
+        if self.install == InstallState::Preparing
+            || self.removal == RemovalState::Preparing
+            || self.update == UpdateState::Preparing
+        {
             return vec![button("Cancel", "Esc", Tone::Plain, Command::Cancel)];
         }
         let install = if self.target.compatible {
@@ -722,11 +769,14 @@ impl DetailsApp {
                 buttons.push(button("Install", "i", install, Command::Install));
             }
             InstalledView::NotInstalled => {}
-            InstalledView::At(sha) if *sha == self.target.commit => {
+            InstalledView::At { commit, .. } if *commit == self.target.commit => {
                 buttons.push(button("Remove", "r", Tone::Plain, Command::Remove));
             }
-            InstalledView::At(_) => {
-                if catalog {
+            InstalledView::At { .. } => {
+                if let Some(version) = self.update_offered() {
+                    let label = format!("Update to {}", clean(version));
+                    buttons.push(button(&label, "u", Tone::Primary, Command::Update));
+                } else if catalog {
                     let commit: String = self.target.commit.chars().take(7).collect();
                     let label = format!("Switch to {commit}");
                     buttons.push(button(&label, "i", install, Command::Install));
@@ -750,6 +800,21 @@ impl DetailsApp {
         }
         buttons.push(github);
         buttons
+    }
+
+    /// The catalogue's version when it updates the plugin installed from this
+    /// source: another commit, a newer version.
+    pub fn update_offered(&self) -> Option<&str> {
+        let InstalledView::At { commit, version } = &self.installed else {
+            return None;
+        };
+        let target = &self.target;
+        let offered = target.version.as_deref()?;
+        (*commit != target.commit
+            && target.in_catalog
+            && target.compatible
+            && is_newer(offered, version))
+        .then_some(offered)
     }
 
     pub fn showing_preview(&self) -> bool {
@@ -792,11 +857,29 @@ impl DetailsApp {
             return;
         }
         self.removal = RemovalState::Idle;
+        self.update = UpdateState::Idle;
         self.scroll = 0;
         self.install_request += 1;
         self.install = InstallState::Preparing;
         self.intents
             .push(DetailsIntent::PrepareInstall(self.install_request));
+    }
+
+    /// Update checks what the preview checks, then runs without showing it.
+    fn prepare_update(&mut self) {
+        if self.update_offered().is_none()
+            || self.operation_running()
+            || self.update == UpdateState::Preparing
+        {
+            return;
+        }
+        self.leave_install();
+        self.removal = RemovalState::Idle;
+        self.scroll = 0;
+        self.update_request += 1;
+        self.update = UpdateState::Preparing;
+        self.intents
+            .push(DetailsIntent::PrepareUpdate(self.update_request));
     }
 
     /// Remove asks for the removal; Confirm runs it.
@@ -808,6 +891,7 @@ impl DetailsApp {
             return;
         }
         self.leave_install();
+        self.update = UpdateState::Idle;
         self.scroll = 0;
         self.removal_request += 1;
         self.removal = RemovalState::Preparing;

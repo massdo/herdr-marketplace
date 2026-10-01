@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::fmt;
 
 /// Version read the way Herdr 0.9.1 reads it (`update::Version::parse`):
@@ -38,5 +39,21 @@ impl Version {
 impl fmt::Display for Version {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// A plugin version newer than the installed one, by semver 2.0 precedence:
+/// an optional `v` prefix, build metadata ignored, a pre-release before its
+/// release. An unreadable version on either side is never newer.
+pub fn is_newer(candidate: &str, installed: &str) -> bool {
+    let parse = |value: &str| {
+        let value = value.trim();
+        semver::Version::parse(value.strip_prefix('v').unwrap_or(value)).ok()
+    };
+    match (parse(candidate), parse(installed)) {
+        (Some(candidate), Some(installed)) => {
+            candidate.cmp_precedence(&installed) == Ordering::Greater
+        }
+        _ => false,
     }
 }

@@ -180,6 +180,16 @@ def click_text(pane, text):
     CLIENT.click(*screen_cell(pane, row, column + len(text) // 2))
 
 
+def click_focused(pane, text):
+    """Clicks `text` on `pane`: a pane without the focus takes the first
+    click only as the focus, so a second click follows."""
+    had_focus = focused() == pane
+    click_text(pane, text)
+    if not had_focus:
+        wait(lambda: focused() == pane, "a click did not focus the pane")
+        click_text(pane, text)
+
+
 def drag_text(pane, first, last):
     """Drags through the attached client from the first cell of `first` to
     the last cell of `last`, where `pane` shows them, as a user selects."""
@@ -208,9 +218,9 @@ def others():
     }
 
 
-def manifest(path, plugin_id, name, description, min_herdr="0.9.1"):
+def manifest(path, plugin_id, name, description, min_herdr="0.9.1", version="1.0.0"):
     return {
-        "path": path, "id": plugin_id, "name": name, "version": "1.0.0",
+        "path": path, "id": plugin_id, "name": name, "version": version,
         "description": description, "platforms": ["linux", "macos"],
         "minHerdrVersion": min_herdr,
     }
@@ -225,12 +235,14 @@ def repo(owner, name, sha, stars, manifests, topics=()):
 
 
 def write_catalog(fixture_sha):
-    """Frozen test catalogue: the fixture at `fixture_sha`, terminal-browser,
-    one incompatible plugin and fillers long enough to scroll."""
+    """Frozen test catalogue: the fixture at `fixture_sha`, with the version
+    its root manifest declares there, terminal-browser, one incompatible
+    plugin and fillers long enough to scroll."""
+    version = {SHA_A: "1.0.0", SHA_B: "1.1.0", SHA_C: "1.2.0"}[fixture_sha]
     repos = [
         repo(*FIXTURE, fixture_sha, 50, [
             manifest("herdr-plugin.toml", "herdr-marketplace-fixture",
-                     "herdr-marketplace fixture", "Test fixture."),
+                     "herdr-marketplace fixture", "Test fixture.", version=version),
             manifest("alt/herdr-plugin.toml", "herdr-marketplace-fixture",
                      "herdr-marketplace fixture (alt)", "Second source, same id."),
         ]),
@@ -302,8 +314,8 @@ def prove_sidebar():
     type_text(sidebar, "fixture")
     shown = wait(lambda: " All 2 " in (text := read(sidebar)) and text, "the search did not filter")
     assert "Terminal Browser" not in shown, shown
-    assert "massdo/herdr-…lace-fixture" in shown, shown
-    assert "massdo/herdr-…-fixture/alt" in shown, shown
+    assert fixture_card(shown), shown
+    assert fixture_card(shown, "alt"), shown
     type_text(sidebar, "jk")
     wait(lambda: "│ fixturejk" in read(sidebar), "j and k did not reach the search")
     keys(sidebar, "backspace", "backspace")
@@ -705,11 +717,11 @@ def prove_install():
     wait(lambda: focused() == sidebar, "a click did not focus the sidebar")
     click_text(sidebar, "Installed 1")
     # The search "fixture" stays: the alt source is the one not installed.
-    shown = wait(lambda: "massdo/herdr-…-fixture/alt" not in (text := read(sidebar)) and text,
+    shown = wait(lambda: not fixture_card(text := read(sidebar), "alt") and text,
                  "the Installed filter did not apply")
-    assert "massdo/herdr-…lace-fixture" in shown and "installed · Test fixture." in shown, shown
+    assert fixture_card(shown) and "installed · Test fixture." in shown, shown
     type_text(sidebar, "\t")
-    wait(lambda: "massdo/herdr-…-fixture/alt" in read(sidebar), "Tab did not return to all plugins")
+    wait(lambda: fixture_card(read(sidebar), "alt"), "Tab did not return to all plugins")
     print("installed_filter_ok", flush=True)
     close_all(tab)
 
@@ -751,6 +763,162 @@ def prove_details_closed_during_install():
          "the reopened details pane did not show the result")
     print("details_closed_during_install_ok", flush=True)
     close_all(tab)
+
+
+def fixture_at_a():
+    """The fixture installed at A, through Herdr's command line if needed."""
+    if (*FIXTURE, "", SHA_A) not in registry():
+        herdr("plugin", "install", "/".join(FIXTURE), "--ref", SHA_A, "--yes")
+    assert (*FIXTURE, "", SHA_A) in registry(), registry()
+
+
+def prove_update_shown():
+    """A newer version in the catalogue: the card of the installed fixture
+    offers it, the card of alt/, not installed, does not."""
+    fixture_at_a()
+    write_catalog(SHA_B)
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    type_text(sidebar, "fixture")
+    shown = wait(lambda: " All 2 " in (text := read(sidebar)) and "Update to 1.1.0" in text and text,
+                 "the card did not offer the update")
+    assert fixture_card(shown, "alt"), shown
+    assert shown.count("Update to 1.1.0") == 1, shown
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+
+    write_catalog(SHA_A)
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    type_text(sidebar, "fixture")
+    shown = wait(lambda: " All 2 " in (text := read(sidebar)) and text, "search fixture did not settle")
+    assert "Update to" not in shown, shown
+    assert "installed · Test fixture." in shown, shown
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+    print("update_shown_ok", flush=True)
+
+
+def prove_update_from_details():
+    """`u` in the details pane updates the fixture from A to B, never
+    showing a preview."""
+    fixture_at_a()
+    sidebar, tab, details = fixture_details(SHA_B)
+    wait(lambda: "Update to 1.1.0 (u)" in read(details), "the details pane did not offer the update")
+    keys(details, "u")
+
+    def updated():
+        text = read(details)
+        assert "Enter: confirm" not in text, f"the update showed a preview: {text}"
+        return "Update to 1.1.0 succeeded" in text and text
+
+    shown = wait(updated, "the update did not succeed", OPERATION_TIMEOUT)
+    assert "Reopen its panes to use it." in shown, shown
+    assert (*FIXTURE, "", SHA_B) in registry(), registry()
+    marker = Path(fixture_plugin()["plugin_root"]) / "build-marker.txt"
+    assert marker.read_text().strip() == "1.1.0", marker.read_text()
+    close_all(tab)
+    fixture_at_a()
+    print("update_from_details_ok", flush=True)
+
+
+def flat(pane):
+    """The text of `pane` on one line: a notice wraps anywhere."""
+    return " ".join(read(pane).split())
+
+
+def prove_update_from_sidebar():
+    """A click on the card's Update button updates the fixture from A to B,
+    opening nothing; a failed build keeps B and brings the button back."""
+    fixture_at_a()
+    write_catalog(SHA_B)
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    tab = next(p["tab_id"] for p in panes() if p["pane_id"] == sidebar)
+    type_text(sidebar, "fixture")
+    wait(lambda: " All 2 " in (text := read(sidebar)) and "Update to 1.1.0" in text,
+         "the card did not offer the update")
+    click_focused(sidebar, "Update to 1.1.0")
+
+    def running():
+        assert not details_panes(tab), "the update opened a details pane"
+        return "Updating…" in read(sidebar)
+
+    wait(running, "the card did not show the running update")
+    wait(lambda: (*FIXTURE, "", SHA_B) in registry(), "the update did not reach the registry",
+         OPERATION_TIMEOUT)
+    marker = Path(fixture_plugin()["plugin_root"]) / "build-marker.txt"
+    assert marker.read_text().strip() == "1.1.0", marker.read_text()
+    wait(lambda: "updated to 1.1.0" in (text := flat(sidebar)) and "Reopen its panes" in text,
+         "the sidebar did not tell the update succeeded")
+    wait(lambda: "installed · Test fixture." in read(sidebar), "the card did not return to 'installed'")
+    assert not details_panes(tab), "the update opened a details pane"
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+
+    write_catalog(SHA_C)
+    sidebar = open_sidebar()
+    wait(lambda: listed(read(sidebar)), "the catalogue did not load")
+    type_text(sidebar, "fixture")
+    wait(lambda: " All 2 " in (text := read(sidebar)) and "Update to 1.2.0" in text,
+         "the card did not offer the update")
+    click_focused(sidebar, "Update to 1.2.0")
+    wait(lambda: "failed" in flat(sidebar), "the failed build was not told", OPERATION_TIMEOUT)
+    assert (*FIXTURE, "", SHA_B) in registry(), registry()
+    wait(lambda: "Update to 1.2.0" in read(sidebar), "the button did not come back")
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+    fixture_at_a()
+    print("update_from_sidebar_ok", flush=True)
+
+
+def tabs_line(pane):
+    """The line of the filters and their counts, empty while loading."""
+    return next((line for line in read(pane).split("\n") if listed(line)), "")
+
+
+def fixture_card(text, subdir=""):
+    """The fixture's source line, independent of the pane's middle ellipsis."""
+    suffix = "/" + subdir if subdir else ""
+    pattern = r"^│ massdo/herdr[^\n│]*fixture" + re.escape(suffix) + r"\s*│$"
+    return re.search(pattern, text, re.MULTILINE) is not None
+
+
+def only_the_update(text):
+    """The list shows the root fixture's card, nothing else."""
+    return (fixture_card(text) and not fixture_card(text, "alt")
+            and "Filler" not in text)
+
+
+def prove_updates_tab():
+    """While an installed plugin has an update, the Updates tab lists it
+    alone: a click or @outdated picks it, Esc leaves it."""
+    fixture_at_a()
+    write_catalog(SHA_B)
+    sidebar = open_sidebar()
+    # The full label when the three tabs fit, else the arrow.
+    label = wait(lambda: next((label for label in ("Updates 1", "↑1") if label in tabs_line(sidebar)), None),
+                 "the Updates tab did not show")
+    click_focused(sidebar, label)
+    wait(lambda: only_the_update(read(sidebar)), "the Updates tab did not list only the update")
+    keys(sidebar, "esc")
+    wait(lambda: "Filler" in read(sidebar), "Esc did not return to all plugins")
+    type_text(sidebar, "@outdated")
+    shown = wait(lambda: only_the_update(text := read(sidebar)) and text,
+                 "@outdated did not pick the Updates tab")
+    assert "@outdated" not in shown, shown
+    keys(sidebar, "esc")
+    wait(lambda: "Filler" in read(sidebar), "Esc did not return to all plugins")
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+
+    write_catalog(SHA_A)
+    sidebar = open_sidebar()
+    tabs = wait(lambda: tabs_line(sidebar), "the catalogue did not load")
+    assert "Updates" not in tabs and "↑" not in tabs, tabs
+    toggle()
+    wait(lambda: with_token(SIDEBAR_TOKEN) is None, "the action did not close the sidebar")
+    print("updates_tab_ok", flush=True)
 
 
 def remove(details):
@@ -1043,6 +1211,10 @@ def main():
     prove_switch()
     prove_failed_build()
     prove_details_closed_during_install()
+    prove_update_shown()
+    prove_update_from_details()
+    prove_update_from_sidebar()
+    prove_updates_tab()
     prove_uninstall()
     prove_full_journey()
     print("journey_ok", flush=True)

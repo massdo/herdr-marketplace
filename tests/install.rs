@@ -7,11 +7,12 @@ use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use herdr_marketplace::adapters::tui::details::{
-    DetailsApp, DetailsIntent, InstallState, InstalledView,
+    DetailsApp, DetailsIntent, InstallState, InstalledView, UpdateState,
 };
 use herdr_marketplace::adapters::tui::details_view;
 use herdr_marketplace::application::ports::{FetchError, Fetcher};
 use herdr_marketplace::application::prepare_install::{InstallPreview, Prepared, prepare_install};
+use herdr_marketplace::application::update_plugin::prepare_update;
 use herdr_marketplace::domain::compat::Platform;
 use herdr_marketplace::domain::details::DetailsTarget;
 use herdr_marketplace::domain::install::{Plan, install_args};
@@ -622,15 +623,23 @@ fn the_install_button_opens_the_preview_and_its_confirm_button_installs() {
     );
 }
 
+/// The registry shows the plugin installed at `commit`, in `version`.
+fn installed_at(commit: &str, version: &str) -> InstalledView {
+    InstalledView::At {
+        commit: commit.into(),
+        version: version.into(),
+    }
+}
+
 #[test]
 fn another_installed_commit_offers_a_switch_and_a_removal() {
     let mut app = DetailsApp::new(target(""));
-    app.registry_read(1, InstalledView::At(SHA_B.into()));
+    app.registry_read(1, installed_at(SHA_B, "1.0.0"));
     let bar = &lines(&app)[3];
     assert!(bar.starts_with(" Switch to c8268d4 (i) "), "{bar:?}");
     assert!(bar.contains(" Remove (r) "), "{bar:?}");
 
-    app.registry_read(1, InstalledView::At(SHA_A.into()));
+    app.registry_read(1, installed_at(SHA_A, "1.0.0"));
     let bar = &lines(&app)[3];
     assert!(
         bar.starts_with(" Remove (r) "),
@@ -665,7 +674,7 @@ fn a_running_operation_leaves_only_the_github_page() {
 fn buttons_look_like_buttons() {
     use herdr_marketplace::adapters::tui::style::{ACCENT, BUTTON_BG};
     let mut app = DetailsApp::new(target(""));
-    app.registry_read(1, InstalledView::At(SHA_B.into()));
+    app.registry_read(1, installed_at(SHA_B, "1.0.0"));
     let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
     terminal
         .draw(|frame| details_view::render(frame, &app))
@@ -725,4 +734,201 @@ fn preview_preserves_argument_boundaries_and_reveals_shell_newlines() {
         "{shown}"
     );
     assert_eq!(preview.manifest.build[0].command, command);
+}
+
+/// The fixture's root manifest at `SHA_A`, declaring `version`.
+fn manifest_in(version: &str) -> FakeWeb {
+    let manifest =
+        FIXTURE_MANIFEST.replace("version = \"1.0.0\"", &format!("version = \"{version}\""));
+    FakeWeb::new(&[(&manifest_url("", SHA_A), &manifest)])
+}
+
+fn update(
+    web: &FakeWeb,
+    installed: Vec<serde_json::Value>,
+    target: &DetailsTarget,
+) -> Result<InstallPreview, String> {
+    prepare_update(
+        web,
+        &FakeHerdr::with_registry(installed),
+        target,
+        Platform::Macos,
+    )
+}
+
+#[test]
+fn an_update_replaces_the_installed_plugin_with_the_newer_manifest() {
+    let preview = update(
+        &manifest_in("1.1.0"),
+        vec![fixture_installed(None, SHA_B)],
+        &target(""),
+    )
+    .unwrap();
+    assert_eq!(preview.plan, Plan::Switch { from: SHA_B.into() });
+    assert_eq!(preview.manifest.version, "1.1.0");
+    assert_eq!(preview.args, install_args(&target("").source, SHA_A));
+}
+
+#[test]
+fn an_update_is_refused_unless_it_replaces_an_older_version_from_this_source() {
+    let at_b = || vec![fixture_installed(None, SHA_B)];
+    let refused = |web: &FakeWeb, installed, target: &DetailsTarget| {
+        update(web, installed, target).unwrap_err()
+    };
+    let web = manifest_in("1.1.0");
+    assert_eq!(
+        refused(&web, vec![fixture_installed(None, SHA_A)], &target("")),
+        "already installed at this commit"
+    );
+    assert_eq!(
+        refused(&web, vec![], &target("")),
+        "not installed from this source"
+    );
+    for version in ["1.0.0", "0.9.0"] {
+        assert_eq!(
+            refused(&manifest_in(version), at_b(), &target("")),
+            format!(
+                "the manifest at this commit declares {version}, not newer than the installed 1.0.0"
+            )
+        );
+    }
+
+    // The preview's own refusals.
+    let mut renamed = target("");
+    renamed.id = "someone.else".into();
+    assert!(refused(&web, at_b(), &renamed).contains("someone.else"));
+    let linux = FakeWeb::new(&[(
+        &manifest_url("", SHA_A),
+        &FIXTURE_MANIFEST.replace("[\"linux\", \"macos\"]", "[\"linux\"]"),
+    )]);
+    assert!(refused(&linux, at_b(), &target("")).contains("incompatible"));
+    assert!(refused(&FakeWeb::new(&[]), at_b(), &target("")).contains("not found"));
+    let reason = refused(
+        &web,
+        vec![fixture_installed(Some("alt"), SHA_B)],
+        &target(""),
+    );
+    assert!(
+        reason.contains("already installed from massdo/herdr-marketplace-fixture/alt"),
+        "{reason}"
+    );
+}
+
+/// The fixture announced in 1.1.0 at `SHA_A`, installed in 1.0.0 at `SHA_B`.
+fn outdated() -> DetailsApp {
+    let mut target = target("");
+    target.version = Some("1.1.0".into());
+    let mut app = DetailsApp::new(target);
+    app.registry_read(1, installed_at(SHA_B, "1.0.0"));
+    app.set_viewport(90, details_view::page_rows(&app, 90, 30));
+    app.intents.clear();
+    app
+}
+
+/// What a switch to `SHA_A` confirms: an update's checked request.
+fn switch() -> InstallPreview {
+    preview(prepare(
+        &FakeWeb::fixture(),
+        vec![fixture_installed(None, SHA_B)],
+        &target(""),
+    ))
+}
+
+#[test]
+fn a_newer_catalogue_version_offers_an_update_instead_of_a_switch() {
+    use herdr_marketplace::adapters::tui::style::ACCENT;
+    let app = outdated();
+    let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
+    terminal
+        .draw(|frame| details_view::render(frame, &app))
+        .unwrap();
+    let bar = &lines(&app)[3];
+    assert!(bar.starts_with(" Update to 1.1.0 (u) "), "{bar:?}");
+    let remove = bar.find(" Remove (r) ").expect("Remove follows");
+    assert!(remove > bar.find("Update").unwrap(), "{bar:?}");
+    assert!(!bar.contains("Switch"), "{bar:?}");
+    assert_eq!(terminal.backend().buffer()[(1, 3)].bg, ACCENT, "blue");
+}
+
+#[test]
+fn u_or_a_click_asks_for_the_update_only_when_one_is_offered() {
+    let mut app = outdated();
+    app.handle_key(key(KeyCode::Char('u')));
+    assert_eq!(app.intents, [DetailsIntent::PrepareUpdate(1)]);
+    let screen = lines(&app);
+    assert!(screen[3].starts_with(" Cancel (Esc) "), "{screen:#?}");
+    assert!(
+        screen.iter().any(|line| line.contains("Preparing update…")),
+        "{screen:#?}"
+    );
+
+    let mut app = outdated();
+    app.handle_mouse(click(button_column(&app, "Update to 1.1.0 (u)"), 3), 90, 30);
+    assert_eq!(app.intents, [DetailsIntent::PrepareUpdate(1)]);
+
+    let mut same = DetailsApp::new(target(""));
+    same.registry_read(1, installed_at(SHA_B, "1.0.0"));
+    same.intents.clear();
+    same.handle_key(key(KeyCode::Char('u')));
+    assert!(same.intents.is_empty(), "same version: no update");
+
+    let mut running = outdated();
+    running.operation_launched(
+        "op".into(),
+        herdr_marketplace::domain::operation::OperationKind::Install,
+    );
+    running.handle_key(key(KeyCode::Char('u')));
+    assert!(running.intents.is_empty(), "an operation runs");
+}
+
+#[test]
+fn a_checked_update_runs_without_a_preview_and_a_refused_one_says_why() {
+    let mut app = outdated();
+    app.handle_key(key(KeyCode::Char('u')));
+    app.intents.clear();
+    app.update_prepared(1, Ok(switch()));
+    assert_eq!(app.intents, [DetailsIntent::Update(Box::new(switch()))]);
+    assert!(!app.showing_preview());
+    assert_eq!(app.update, UpdateState::Idle);
+
+    app.intents.clear();
+    app.handle_key(key(KeyCode::Char('u')));
+    app.update_prepared(2, Err("network error: timed out".into()));
+    let screen = lines(&app);
+    assert!(
+        screen
+            .iter()
+            .any(|line| line.contains("Update refused: network error: timed out")),
+        "{screen:#?}"
+    );
+    assert!(
+        screen[3].starts_with(" Update to 1.1.0 (u) "),
+        "the button stays, to try again: {screen:#?}"
+    );
+
+    app.handle_key(key(KeyCode::Char('u')));
+    app.intents.clear();
+    app.update_prepared(2, Ok(switch()));
+    assert_eq!(app.update, UpdateState::Preparing, "answer 2 is stale");
+    app.handle_key(key(KeyCode::Esc));
+    assert_eq!(app.update, UpdateState::Idle);
+    app.update_prepared(3, Ok(switch()));
+    assert!(app.intents.is_empty(), "an answer after Esc runs nothing");
+}
+
+#[test]
+fn i_still_opens_the_switch_preview_when_an_update_is_offered() {
+    let mut app = outdated();
+    app.handle_key(key(KeyCode::Char('i')));
+    assert_eq!(app.intents, [DetailsIntent::PrepareInstall(1)]);
+    app.install_prepared(1, Prepared::Preview(Box::new(switch())));
+    assert!(app.showing_preview());
+
+    // The last key wins: i drops an update being checked.
+    let mut app = outdated();
+    app.handle_key(key(KeyCode::Char('u')));
+    app.handle_key(key(KeyCode::Char('i')));
+    app.intents.clear();
+    app.update_prepared(1, Ok(switch()));
+    assert!(app.intents.is_empty(), "{:?}", app.intents);
 }

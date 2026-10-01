@@ -10,7 +10,9 @@ every new install compile: tag each version as soon as it reaches `main`.
 ## Steps
 
 1. On `staging`, set the new version in `Cargo.toml` and `herdr-plugin.toml`,
-   then run `cargo build` so that `Cargo.lock` follows.
+   then run `cargo build` so that `Cargo.lock` follows. The version of
+   `herdr-plugin.toml` is also the one the marketplace compares to offer its
+   users the update.
 2. Merge `staging` into `main`. `main` only accepts a linear history: use
    the rebase merge.
 3. Tag the commit `main` points to, and push the tag:
