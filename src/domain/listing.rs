@@ -5,7 +5,7 @@ use super::index::{Catalog, Entry};
 use super::registry::InstalledPlugin;
 use super::search::catalog_order;
 use super::source::PluginSource;
-use super::version::Version;
+use super::version::{Version, is_newer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
@@ -14,6 +14,21 @@ pub struct Row {
     pub installed: Option<InstalledPlugin>,
     pub compatible: bool,
     pub in_catalog: bool,
+}
+
+impl Row {
+    /// The catalogue's version when it updates the installed plugin: a
+    /// compatible entry at another commit, with a newer version. A new
+    /// commit alone is no update.
+    pub fn update(&self) -> Option<&str> {
+        let installed = self.installed.as_ref()?;
+        let version = self.entry.version.as_deref()?;
+        (self.in_catalog
+            && self.compatible
+            && installed.resolved_commit() != Some(self.entry.commit.as_str())
+            && is_newer(version, &installed.version))
+        .then_some(version)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

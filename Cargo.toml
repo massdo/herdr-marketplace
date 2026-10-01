@@ -1,6 +1,6 @@
 [package]
 name = "herdr-marketplace"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Marketplace sidebar for Herdr plugins"
@@ -26,6 +26,7 @@ percent-encoding = "2"
 pulldown-cmark = { version = "0.13", default-features = false }
 ratatui = "0.30"
 resvg = { version = "0.48", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 signal-hook = "0.3"

@@ -12,6 +12,7 @@ pub mod style;
 pub mod video;
 pub mod video_cache;
 
+use std::collections::HashSet;
 use std::io::{self, Write, stdout};
 use std::process::{Command as Process, Stdio};
 use std::sync::Arc;
@@ -46,9 +47,10 @@ use crate::application::load_listing::{LoadedListing, read_registry};
 use crate::application::load_readme::{Readme, load_readme};
 use crate::application::open_details::{Reveal, Shown, close_details, show_details_cached};
 use crate::application::ports::{HerdrCli, HerdrPort, Operations};
-use crate::application::prepare_install::{Prepared, prepare_install};
+use crate::application::prepare_install::{InstallPreview, Prepared, prepare_install};
 use crate::application::prepare_removal::prepare_removal;
 use crate::application::run_operation::current_operation;
+use crate::application::update_plugin::prepare_update;
 use crate::domain::compat::Platform;
 use crate::domain::details::DetailsTarget;
 use crate::domain::error::AppError;
@@ -64,7 +66,8 @@ use self::animation::Player;
 use self::details::{DetailsApp, DetailsIntent, InstalledView};
 use self::focus::FocusClicks;
 use self::graphics::{Graphics, Probe};
-use self::sidebar::{Intent, SidebarApp};
+use self::sidebar::{Intent, Notice, SidebarApp};
+use self::style::ERROR;
 use self::video::{Cache, FIRST_FRAME, Frames, Playback, Video, VideoEvent};
 use self::video_cache::CacheProcess;
 
@@ -75,12 +78,17 @@ enum SidebarAnswer {
     Loaded(Result<LoadedListing, String>),
     /// Registry read again after an operation ended.
     Registry(Result<Vec<InstalledPlugin>, String>),
+    /// The checks of the update a card asked for.
+    UpdatePrepared(Box<DetailsTarget>, Box<Result<InstallPreview, String>>),
+    /// The result of the update launched from a card.
+    Operation(Box<OperationRecord>),
 }
 
 /// Background answers to a details pane, tagged with their request number.
 enum DetailsAnswer {
     Readme(u64, Result<Readme, String>),
     Install(u64, Prepared),
+    Update(u64, Box<Result<InstallPreview, String>>),
     Registry(u64, InstalledView),
     Removal(u64, Box<Result<RemovalPlan, String>>),
     Operation(Box<OperationRecord>),
@@ -192,16 +200,30 @@ fn sidebar_loop(
             let latest = operations.latest_finish();
             if latest > seen_finish {
                 seen_finish = latest;
-                let sender = sender.clone();
-                thread::spawn(move || {
-                    let registry = read_registry(&HerdrCommand::new(env::herdr_bin()));
-                    let _ = sender.send(SidebarAnswer::Registry(registry));
-                });
+                spawn_registry(sender.clone());
             }
+            app.set_running_updates(running_updates(app, &operations));
         }
         for intent in std::mem::take(&mut app.intents) {
             match intent {
                 Intent::Load => start_load(app, sender.clone()),
+                Intent::Update(row) => {
+                    let sender = sender.clone();
+                    thread::spawn(move || {
+                        let target = DetailsTarget::from_row(&row);
+                        let result = prepare_update(
+                            &HttpFetcher::new(),
+                            &HerdrCommand::new(env::herdr_bin()),
+                            &target,
+                            Platform::current(),
+                        );
+                        let _ = sender.send(SidebarAnswer::UpdatePrepared(
+                            Box::new(target),
+                            Box::new(result),
+                        ));
+                    });
+                }
+
                 Intent::Open(row, reveal) => {
                     pending = None;
                     let target = DetailsTarget::from_row(&row);
@@ -230,6 +252,16 @@ fn sidebar_loop(
                 SidebarAnswer::Loaded(loaded) => app.loaded(loaded),
                 SidebarAnswer::Registry(registry) => {
                     app.registry_refreshed(registry, Platform::current())
+                }
+                SidebarAnswer::UpdatePrepared(target, result) => match *result {
+                    Ok(preview) => start_update(app, &operations, sender, *target, preview),
+                    Err(reason) => app.update_refused(&reason),
+                },
+                // Read now: the result may not have been saved for the
+                // latest finish to notice.
+                SidebarAnswer::Operation(record) => {
+                    app.update_finished(&record);
+                    spawn_registry(sender.clone());
                 }
             }
         }
@@ -280,8 +312,69 @@ fn show(
             app.notice = None;
         }
         Ok(None) => {}
-        Err(error) => app.notice = Some(format!("Details not opened: {error}")),
+        Err(error) => {
+            app.notice = Some(Notice {
+                text: format!("Details not opened: {error}"),
+                color: ERROR,
+            })
+        }
     }
+}
+
+/// Starts the update a card asked for, checked like a details pane's.
+fn start_update(
+    app: &mut SidebarApp,
+    operations: &FsOperations,
+    sender: &Sender<SidebarAnswer>,
+    target: DetailsTarget,
+    preview: InstallPreview,
+) {
+    let request = OperationRequest {
+        id: operation_id(),
+        kind: OperationKind::Update,
+        source: target.source.clone(),
+        commit: target.commit.clone(),
+        args: preview.args,
+        confirmation: Some(Confirmation::Install {
+            target,
+            manifest: Box::new(preview.manifest),
+            plan: preview.plan,
+        }),
+    };
+    let sender = sender.clone();
+    let done = move |record| {
+        let _ = sender.send(SidebarAnswer::Operation(Box::new(record)));
+    };
+    match start_operation(operations, request, done) {
+        Ok(()) => {}
+        Err(StartError::Busy) => app
+            .update_not_started("Another marketplace operation is running: update refused".into()),
+        Err(StartError::Lock(error) | StartError::Spawn(error)) => {
+            app.update_not_started(format!("Could not start the update: {error}"))
+        }
+    }
+}
+
+/// The updates of listed plugins that run now, wherever they were launched.
+fn running_updates(app: &SidebarApp, operations: &FsOperations) -> HashSet<PluginSource> {
+    app.rows()
+        .iter()
+        .filter(|row| row.update().is_some())
+        .map(|row| &row.entry.source)
+        .filter(|source| {
+            current_operation(operations, source).is_some_and(|record| {
+                record.status == Status::Running && record.request.kind == OperationKind::Update
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+fn spawn_registry(sender: Sender<SidebarAnswer>) {
+    thread::spawn(move || {
+        let registry = read_registry(&HerdrCommand::new(env::herdr_bin()));
+        let _ = sender.send(SidebarAnswer::Registry(registry));
+    });
 }
 
 fn start_load(app: &mut SidebarApp, sender: Sender<SidebarAnswer>) {
@@ -471,6 +564,32 @@ fn details_loop(
                         confirmation,
                     )
                 }
+                DetailsIntent::PrepareUpdate(request) => {
+                    thread::spawn(move || {
+                        let result = prepare_update(
+                            &HttpFetcher::new(),
+                            &HerdrCommand::new(env::herdr_bin()),
+                            &target,
+                            Platform::current(),
+                        );
+                        let _ = sender.send(DetailsAnswer::Update(request, Box::new(result)));
+                    });
+                }
+                DetailsIntent::Update(preview) => {
+                    let confirmation = Confirmation::Install {
+                        target,
+                        manifest: Box::new(preview.manifest),
+                        plan: preview.plan,
+                    };
+                    launch(
+                        app,
+                        operations,
+                        sender,
+                        OperationKind::Update,
+                        preview.args,
+                        confirmation,
+                    )
+                }
                 DetailsIntent::Uninstall(plan) => {
                     let confirmation = Confirmation::Uninstall {
                         installed: plan.installed,
@@ -574,6 +693,7 @@ fn details_loop(
                 DetailsAnswer::Install(request, prepared) => {
                     app.install_prepared(request, prepared)
                 }
+                DetailsAnswer::Update(request, result) => app.update_prepared(request, *result),
                 DetailsAnswer::Registry(request, installed) => {
                     app.registry_read(request, installed)
                 }
@@ -722,70 +842,95 @@ fn launch(
     args: Vec<String>,
     confirmation: Confirmation,
 ) {
-    let guard = match operations.try_begin() {
-        Ok(Some(guard)) => guard,
-        Ok(None) => {
-            app.operation_refused(
-                "Another marketplace operation is running: request refused".into(),
-            );
-            return;
-        }
-        Err(error) => {
-            app.operation_refused(format!("Could not reserve the operation: {error}"));
-            return;
-        }
-    };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis())
-        .unwrap_or(0);
     let request = OperationRequest {
-        id: format!("{now}-{}", std::process::id()),
+        id: operation_id(),
         kind,
         source: app.target.source.clone(),
         commit: app.target.commit.clone(),
         args,
         confirmation: Some(confirmation),
     };
-    match std::env::current_exe().and_then(|binary| spawn_operation(&request, guard, &binary)) {
-        Ok(child) => {
-            app.operation_launched(request.id.clone(), kind);
-            thread::spawn(move || {
-                let result = child
-                    .wait_with_output()
-                    .map_err(|error| error.to_string())
-                    .and_then(|output| {
-                        serde_json::from_slice::<OperationRecord>(&output.stdout).map_err(|error| {
-                            format!("{error}: {}", String::from_utf8_lossy(&output.stderr))
-                        })
-                    })
-                    .and_then(|record| {
-                        if record.request == request {
-                            Ok(record)
-                        } else {
-                            Err("worker returned another operation's result".into())
-                        }
-                    });
-                let record = result.unwrap_or_else(|error| {
-                    let mut record = OperationRecord::running(&request);
-                    record.status = Status::Unconfirmed;
-                    record.output =
-                        "the operation stopped without reporting its result; check the registry"
-                            .into();
-                    record.persistence_error = Some(error);
-                    record.finished_unix_ms = Some(
-                        SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .map(|elapsed| elapsed.as_millis() as u64)
-                            .unwrap_or(0),
-                    );
-                    record
-                });
-                let _ = sender.send(DetailsAnswer::Operation(Box::new(record)));
-            });
+    let id = request.id.clone();
+    let done = move |record| {
+        let _ = sender.send(DetailsAnswer::Operation(Box::new(record)));
+    };
+    match start_operation(operations, request, done) {
+        Ok(()) => app.operation_launched(id, kind),
+        Err(StartError::Busy) => app
+            .operation_refused("Another marketplace operation is running: request refused".into()),
+        Err(StartError::Lock(error)) => {
+            app.operation_refused(format!("Could not reserve the operation: {error}"))
         }
-        Err(error) => app.operation_refused(format!("Could not start: {error}")),
+        Err(StartError::Spawn(error)) => app.operation_refused(format!("Could not start: {error}")),
     }
+}
+
+/// Tells an operation's result from an older one of the same source.
+fn operation_id() -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    format!("{now}-{}", std::process::id())
+}
+
+/// Why a confirmed request did not start.
+enum StartError {
+    /// Another marketplace operation holds the lock.
+    Busy,
+    Lock(String),
+    Spawn(String),
+}
+
+/// Reserves the operation lock and starts the worker, which runs on even if
+/// the pane closes. `done` receives its result, or an unconfirmed one when
+/// the worker reports none.
+fn start_operation(
+    operations: &FsOperations,
+    request: OperationRequest,
+    done: impl FnOnce(OperationRecord) + Send + 'static,
+) -> Result<(), StartError> {
+    let guard = match operations.try_begin() {
+        Ok(Some(guard)) => guard,
+        Ok(None) => return Err(StartError::Busy),
+        Err(error) => return Err(StartError::Lock(error)),
+    };
+    let child = std::env::current_exe()
+        .and_then(|binary| spawn_operation(&request, guard, &binary))
+        .map_err(|error| StartError::Spawn(error.to_string()))?;
+    thread::spawn(move || {
+        let result = child
+            .wait_with_output()
+            .map_err(|error| error.to_string())
+            .and_then(|output| {
+                serde_json::from_slice::<OperationRecord>(&output.stdout).map_err(|error| {
+                    format!("{error}: {}", String::from_utf8_lossy(&output.stderr))
+                })
+            })
+            .and_then(|record| {
+                if record.request == request {
+                    Ok(record)
+                } else {
+                    Err("worker returned another operation's result".into())
+                }
+            });
+        let record = result.unwrap_or_else(|error| {
+            let mut record = OperationRecord::running(&request);
+            record.status = Status::Unconfirmed;
+            record.output =
+                "the operation stopped without reporting its result; check the registry".into();
+            record.persistence_error = Some(error);
+            record.finished_unix_ms = Some(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_millis() as u64)
+                    .unwrap_or(0),
+            );
+            record
+        });
+        done(record);
+    });
+    Ok(())
 }
 
 /// The browser opens `url`: `HERDR_MARKETPLACE_OPEN` names the command, else
@@ -819,9 +964,10 @@ fn installed_view<H: HerdrCli>(herdr: &H, source: &PluginSource) -> InstalledVie
         Err(error) => return InstalledView::Uncertain(error),
     };
     match installed_from(&registry, source) {
-        Ok(Some(plugin)) => {
-            InstalledView::At(plugin.resolved_commit().unwrap_or_default().to_string())
-        }
+        Ok(Some(plugin)) => InstalledView::At {
+            commit: plugin.resolved_commit().unwrap_or_default().to_string(),
+            version: plugin.version.clone(),
+        },
         Ok(None) => InstalledView::NotInstalled,
         Err(error) => InstalledView::Uncertain(error),
     }

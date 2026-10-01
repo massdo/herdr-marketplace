@@ -608,3 +608,176 @@ fn orphaned_operations_keep_refreshing_the_details_registry() {
         ));
     }
 }
+
+/// An update of the fixture to `commit`, confirmed with `plan` and a
+/// manifest in 1.1.0.
+fn update_request(
+    commit: &str,
+    plan: herdr_marketplace::domain::install::Plan,
+) -> OperationRequest {
+    let mut request = request(commit);
+    request.id = format!("update-{commit}");
+    request.kind = OperationKind::Update;
+    if let Some(Confirmation::Install {
+        manifest,
+        plan: confirmed,
+        ..
+    }) = &mut request.confirmation
+    {
+        manifest.version = "1.1.0".into();
+        *confirmed = plan;
+    }
+    request
+}
+
+fn from_b() -> herdr_marketplace::domain::install::Plan {
+    herdr_marketplace::domain::install::Plan::Switch { from: SHA_B.into() }
+}
+
+#[test]
+fn an_update_runs_only_as_a_confirmed_switch() {
+    let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
+    *herdr.registry.borrow_mut() = installed_at(SHA_B);
+    let record = run_operation(
+        &herdr,
+        &FsOperations::new(state_dir()),
+        &update_request(SHA_A, from_b()),
+    );
+    assert_eq!(record.status, Status::Succeeded);
+    assert_eq!(*herdr.ran.borrow(), [install_args(&source(), SHA_A)]);
+
+    let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
+    let record = run_operation(
+        &herdr,
+        &FsOperations::new(state_dir()),
+        &update_request(SHA_A, herdr_marketplace::domain::install::Plan::Install),
+    );
+    assert_eq!(record.status, Status::Refused);
+    assert_eq!(record.output, "an update only replaces an installed plugin");
+    assert!(herdr.ran.borrow().is_empty());
+
+    for confirmation in [
+        None,
+        Some(Confirmation::Uninstall {
+            installed: herdr_marketplace::domain::registry::parse_registry(
+                &installed_at(SHA_B).unwrap(),
+            )
+            .unwrap()
+            .remove(0),
+        }),
+    ] {
+        let mut request = update_request(SHA_A, from_b());
+        request.confirmation = confirmation;
+        let herdr = FakeInstall::new(Some(0), "", installed_at(SHA_A));
+        *herdr.registry.borrow_mut() = installed_at(SHA_B);
+        let record = run_operation(&herdr, &FsOperations::new(state_dir()), &request);
+        assert_eq!(record.status, Status::Refused);
+        assert_eq!(
+            record.output,
+            "missing or mismatched confirmation; open the preview again"
+        );
+        assert!(herdr.ran.borrow().is_empty());
+    }
+}
+
+#[test]
+fn an_update_succeeds_only_when_the_registry_shows_its_commit() {
+    use herdr_marketplace::domain::operation::operation_status;
+    use herdr_marketplace::domain::registry::parse_registry;
+    let request = update_request(SHA_A, from_b());
+    let registry = |sha| parse_registry(&installed_at(sha).unwrap());
+    assert_eq!(
+        operation_status(Some(0), &registry(SHA_A), &request),
+        Status::Succeeded
+    );
+    assert_eq!(
+        operation_status(Some(0), &registry(SHA_B), &request),
+        Status::Unconfirmed
+    );
+}
+
+#[test]
+fn the_details_pane_names_an_update_by_its_version() {
+    let request = update_request(SHA_A, from_b());
+    let mut app = DetailsApp::new(target());
+    app.operation_launched(request.id.clone(), OperationKind::Update);
+    app.operation_seen(None);
+    assert!(details_text(&app).contains("Updating…"));
+
+    for (status, exit_code, headline) in [
+        (Status::Running, None, "Updating to 1.1.0…"),
+        (Status::Succeeded, Some(0), "Update to 1.1.0 succeeded"),
+        (Status::Failed, Some(1), "Update to 1.1.0 failed (code 1)"),
+        (
+            Status::Failed,
+            None,
+            "Update to 1.1.0 failed (no exit code)",
+        ),
+        (
+            Status::Unconfirmed,
+            Some(0),
+            "Update to 1.1.0: result not confirmed",
+        ),
+        (Status::Refused, None, "Update to 1.1.0 refused"),
+    ] {
+        let mut record = OperationRecord::running(&request);
+        record.status = status;
+        record.exit_code = exit_code;
+        record.output = "Herdr says why".into();
+        record.registry_after = Some(format!("installed at {SHA_B}"));
+        let mut app = DetailsApp::new(target());
+        app.operation_seen(Some(record));
+        let text = details_text(&app);
+        assert!(text.contains(headline), "{text}");
+        let reopen = text.contains("Reopen its panes to use it.");
+        assert_eq!(reopen, status == Status::Succeeded, "{text}");
+        let registry = text.contains(&format!("Registry: installed at {SHA_B}"));
+        assert_eq!(
+            registry,
+            matches!(status, Status::Failed | Status::Unconfirmed),
+            "{text}"
+        );
+        let output = text.contains("Herdr says why");
+        assert_eq!(
+            output,
+            matches!(
+                status,
+                Status::Failed | Status::Unconfirmed | Status::Refused
+            ),
+            "{text}"
+        );
+    }
+
+    let mut marketplace = request.clone();
+    if let Some(Confirmation::Install { manifest, .. }) = &mut marketplace.confirmation {
+        manifest.id = "herdr-marketplace".into();
+    }
+    let mut record = OperationRecord::running(&marketplace);
+    record.status = Status::Succeeded;
+    let mut app = DetailsApp::new(target());
+    app.operation_seen(Some(record));
+    let text = details_text(&app);
+    assert!(
+        text.contains("Close and reopen the marketplace to use it."),
+        "{text}"
+    );
+    assert!(!text.contains("Reopen its panes"), "{text}");
+}
+
+#[test]
+fn an_update_result_keeps_its_kind_and_older_results_still_read() {
+    let record = OperationRecord::running(&update_request(SHA_A, from_b()));
+    let json = serde_json::to_string(&record).unwrap();
+    assert!(json.contains(r#""kind":"update""#), "{json}");
+    assert_eq!(
+        serde_json::from_str::<OperationRecord>(&json).unwrap(),
+        record
+    );
+
+    let older = format!(
+        r#"{{"request":{{"id":"old","kind":"uninstall","source":{{"owner":"massdo","repo":"herdr-marketplace-fixture","subdir":""}},"commit":"{SHA_A}","args":["plugin","uninstall","herdr-marketplace-fixture"]}},"status":"succeeded","exit_code":0,"output":"","registry_after":"not installed","finished_unix_ms":1}}"#
+    );
+    let older: OperationRecord = serde_json::from_str(&older).unwrap();
+    assert_eq!(older.request.kind, OperationKind::Uninstall);
+    assert_eq!(older.status, Status::Succeeded);
+}
