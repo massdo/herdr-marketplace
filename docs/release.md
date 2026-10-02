@@ -13,8 +13,10 @@ every new install compile: tag each version as soon as it reaches `main`.
    then run `cargo build` so that `Cargo.lock` follows. The version of
    `herdr-plugin.toml` is also the one the marketplace compares to offer its
    users the update.
-2. Merge `staging` into `main`. `main` only accepts a linear history: use
-   the rebase merge.
+2. Merge `staging` into `main` with **Create a merge commit**
+   (`gh pr merge <PR> --merge`). The protection of `main` must have
+   **Require linear history** disabled. Keep the required CI checks,
+   administrator enforcement and conversation resolution enabled.
 3. Tag the commit `main` points to, and push the tag:
 
    ```sh
