@@ -1,48 +1,59 @@
 # Publishing a release
 
-`herdr plugin install` clones the repository, then runs
-`scripts/fetch-or-build.sh`. The script installs the binary of release
-`v<version>`, where the version comes from `Cargo.toml`, only when the
-release's `SOURCE_COMMIT` is the commit being installed. Any other commit is
-built from source. A commit of `main` without its own release therefore makes
-every new install compile: tag each version as soon as it reaches `main`.
+Users install with `herdr plugin install massdo/herdr-marketplace`.
+The installer uses a verified prebuilt binary only when the release's
+`SOURCE_COMMIT` matches the installed commit. Every merge into `main`,
+including a documentation change, must therefore publish a new version.
 
-## Steps
+## Before merging into main
 
-1. On `staging`, set the new version in `Cargo.toml` and `herdr-plugin.toml`,
-   then run `cargo build` so that `Cargo.lock` follows. The version of
-   `herdr-plugin.toml` is also the one the marketplace compares to offer its
-   users the update.
-2. Merge `staging` into `main` with **Create a merge commit**
-   (`gh pr merge <PR> --merge`). The protection of `main` must have
-   **Require linear history** disabled. Keep the required CI checks,
-   administrator enforcement and conversation resolution enabled.
-3. Tag the commit `main` points to, and push the tag:
+1. Set a new stable version (`MAJOR.MINOR.PATCH`) in `Cargo.toml`,
+   `herdr-plugin.toml` and the `herdr-marketplace` entry in `Cargo.lock`.
+   It must be newer than the version on `main`, and its `v<version>` tag
+   must not exist yet. Development commits on other branches do not each
+   need a new version.
+2. Open a pull request into `main`. The existing required checks,
+   `check (ubuntu-latest)` and `check (macos-latest)`, run
+   `scripts/release-version.sh` against the PR's base commit before testing.
+   They refuse an unchanged version, a downgrade, mismatched versions or
+   a reused tag. Keep both checks required and require the branch to be
+   up to date before merging.
+3. Merge with **Create a merge commit** (`gh pr merge <PR> --merge`). Keep
+   **Require linear history** disabled, administrator enforcement and
+   conversation resolution enabled. Do not create the tag manually.
 
-   ```sh
-   git fetch origin
-   git tag -a v0.1.0 -m v0.1.0 origin/main
-   git push origin v0.1.0
-   ```
+## Automatic publication
 
-4. The `release` workflow refuses a tag that does not match the three
-   versions, runs the offline suite on macOS and Linux, builds the three
-   binaries, then publishes `herdr-marketplace-aarch64-apple-darwin`,
-   `herdr-marketplace-x86_64-apple-darwin`,
-   `herdr-marketplace-x86_64-unknown-linux-musl`, `SHA256SUMS` and
-   `SOURCE_COMMIT`. It also publishes the private FFmpeg that plays README
-   videos, `ffmpeg-aarch64-apple-darwin`, `ffmpeg-x86_64-apple-darwin` and
-   `ffmpeg-x86_64-unknown-linux-musl`, built by `scripts/build-ffmpeg.sh` and
-   checked by `scripts/check-ffmpeg.sh`. A failed run can be run again: it
-   resumes the draft and never overwrites a published release.
-5. Check an install. Herdr hides the output of a build that succeeds, so ask
-   the script for its log:
+Every push to `main` starts the `release` workflow. It validates the three
+versions, runs the offline suite on macOS and Linux, and builds the plugin
+and its private FFmpeg for Apple Silicon, Intel macOS and Linux x86_64.
 
-   ```sh
-   HERDR_MARKETPLACE_BUILD_LOG=/tmp/build.log herdr plugin install massdo/herdr-marketplace --yes
-   cat /tmp/build.log
-   ```
+After all checks and builds pass, the workflow:
 
-   It should say `installed verified prebuilt v<version>`.
+1. Creates `v<version>` on the exact commit that triggered the run. An
+   existing tag is accepted only if it points to that same commit.
+2. Creates a draft release with the three plugin binaries, three FFmpeg
+   binaries, `SHA256SUMS` and `SOURCE_COMMIT`.
+3. Downloads the uploaded assets, compares them with the local artifacts,
+   checks the tag's commit again, and publishes the release.
 
-A version is published once: to fix a release, publish the next version.
+Tag creation and publication run in the same workflow: a tag created with
+`GITHUB_TOKEN` does not trigger another workflow. If a run fails, fix its
+cause and rerun it; it can reuse its tag and resume its draft. A published
+release is never overwritten. A code fix requires a new version.
+
+Until publication finishes, installs of the new `main` commit still fall
+back to a source build. A failed release must be resolved before treating
+the version as delivered.
+
+## Verify installation
+
+Herdr hides successful build output. Ask the script for its log:
+
+```sh
+HERDR_MARKETPLACE_BUILD_LOG=/tmp/build.log herdr plugin install massdo/herdr-marketplace --yes
+cat /tmp/build.log
+```
+
+It should say `installed verified prebuilt v<version>`. README videos use
+the verified private FFmpeg installed alongside the plugin binary.

@@ -14,3 +14,4 @@ cargo clippy --locked --all-targets -- -D warnings
 echo "== test =="
 cargo test --locked
 sh scripts/test-fetch-or-build.sh
+sh scripts/test-release-version.sh
