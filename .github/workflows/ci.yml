@@ -20,6 +20,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          fetch-depth: 0
+      - name: Require a new release for main
+        if: github.event_name == 'pull_request' && github.base_ref == 'main'
+        env:
+          BASE_COMMIT: ${{ github.event.pull_request.base.sha }}
+        run: sh scripts/release-version.sh "$BASE_COMMIT"
       - name: Install Rust
         run: rustup toolchain install 1.89.0 --profile minimal --component clippy --component rustfmt
       - name: Format, lint and tests

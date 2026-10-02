@@ -7,7 +7,7 @@ name: release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
   pull_request:
     paths:
       - .github/workflows/release.yml
@@ -15,9 +15,12 @@ on:
       - scripts/fetch-or-build.sh
       - scripts/build-ffmpeg.sh
       - scripts/check-ffmpeg.sh
+      - scripts/release-version.sh
+      - scripts/test-release-version.sh
       - tests/fixtures/tiny.mp4
       - Cargo.toml
       - Cargo.lock
+      - herdr-plugin.toml
       - rust-toolchain.toml
 
 permissions:
@@ -28,24 +31,17 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       commit: ${{ steps.commit.outputs.sha }}
+      tag: ${{ steps.commit.outputs.tag }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: tag, Cargo.toml, herdr-plugin.toml and Cargo.lock agree
-        if: github.event_name == 'push'
+      - name: Check versions and pin the release commit
+        id: commit
         run: |
-          tag=${GITHUB_REF_NAME#v}
-          crate=$(awk '/^\[/ { pkg = ($0 == "[package]") } pkg && /^version *= *"/ { sub(/^version *= *"/, ""); sub(/".*/, ""); print; exit }' Cargo.toml)
-          manifest=$(awk '/^\[/ { exit } /^version *= *"/ { sub(/^version *= *"/, ""); sub(/".*/, ""); print; exit }' herdr-plugin.toml)
-          lock=$(awk '/^\[\[package\]\]$/ { own = 0 } $0 == "name = \"herdr-marketplace\"" { own = 1 } own && /^version = "/ { sub(/^version = "/, ""); sub(/".*/, ""); print; exit }' Cargo.lock)
-          echo "tag=$tag Cargo.toml=$crate herdr-plugin.toml=$manifest Cargo.lock=$lock"
-          if [ -z "$tag" ] || [ "$crate" != "$tag" ] || [ "$manifest" != "$tag" ] || [ "$lock" != "$tag" ]; then
-            echo "::error::tag $GITHUB_REF_NAME does not match the herdr-marketplace versions"
-            exit 1
-          fi
-      - id: commit
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          version=$(sh scripts/release-version.sh)
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   # Pull requests already run it in ci.yml.
   check:
@@ -61,7 +57,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: tag commit
+      - name: release commit
         env:
           COMMIT: ${{ needs.versions.outputs.commit }}
         run: test "$(git rev-parse HEAD)" = "$COMMIT"
@@ -93,7 +89,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - name: tag commit and runner architecture
+      - name: release commit and runner architecture
         env:
           COMMIT: ${{ needs.versions.outputs.commit }}
           ARCH: ${{ matrix.arch }}
@@ -156,12 +152,16 @@ jobs:
           if-no-files-found: error
 
   publish:
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [versions, check, build]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: herdr-marketplace-*
@@ -195,14 +195,23 @@ jobs:
           test "$(wc -l < SOURCE_COMMIT)" -eq 1
           grep -qxE '[0-9a-f]{40}' SOURCE_COMMIT
           cat SHA256SUMS SOURCE_COMMIT
+      # Create the tag only after checks and all builds pass. Publish in this
+      # run: a tag created with GITHUB_TOKEN does not trigger another workflow.
       # A rerun resumes the draft; a published release is never overwritten.
-      - name: draft, upload, verify, publish
+      - name: tag, draft, upload, verify, publish
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.versions.outputs.tag }}
           COMMIT: ${{ needs.versions.outputs.commit }}
         run: |
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            test "$(git rev-parse "$TAG^{commit}")" = "$COMMIT"
+          else
+            gh api "repos/$GH_REPO/git/refs" --method POST \
+              -f "ref=refs/tags/$TAG" -f "sha=$COMMIT"
+          fi
+          test "$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)" = "$COMMIT"
           if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft); then
             if [ "$draft" != true ]; then
               echo "::error::release $TAG is already published"
