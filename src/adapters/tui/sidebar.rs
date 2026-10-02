@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::style::Color;
@@ -72,6 +73,9 @@ impl Filter {
 pub const INSTALLED_TOKEN: &str = "@installed";
 pub const OUTDATED_TOKEN: &str = "@outdated";
 
+/// Half a blink of the search caret: lit that long, then hidden as long.
+pub const BLINK: Duration = Duration::from_millis(530);
+
 /// Plugins matching the query, under each filter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Counts {
@@ -97,6 +101,8 @@ pub struct SidebarApp {
     pub counts: Counts,
     /// The pane has the focus: the search box is outlined in color.
     pub focused: bool,
+    /// The search caret is in the lit half of its blink.
+    pub caret: bool,
     /// Positions in `rows()` that match the query and the filter, most
     /// relevant first.
     pub visible: Vec<usize>,
@@ -135,6 +141,7 @@ impl SidebarApp {
             filter: Filter::All,
             counts: Counts::default(),
             focused: true,
+            caret: true,
             visible: Vec::new(),
             hidden: 0,
             selected: None,
@@ -258,6 +265,15 @@ impl SidebarApp {
 
     pub fn focus(&mut self, focused: bool) {
         self.focused = focused;
+    }
+
+    /// The caret is lit for half a blink after a key or the focus, then
+    /// hidden and lit in turn: typing keeps it lit. Returns how long until
+    /// it turns.
+    pub fn blink(&mut self, since_input: Duration) -> Duration {
+        let (half, elapsed) = (BLINK.as_millis(), since_input.as_millis());
+        self.caret = (elapsed / half).is_multiple_of(2);
+        Duration::from_millis((half - elapsed % half) as u64)
     }
 
     /// An update of this source runs, launched from here or from a details
