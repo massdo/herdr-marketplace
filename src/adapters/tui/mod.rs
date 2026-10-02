@@ -185,6 +185,8 @@ fn sidebar_loop(
     let mut shown = None::<Shown>;
     // The plugin the details will show once the selection rests, and when.
     let mut pending = None::<(DetailsTarget, Reveal, Instant)>;
+    // The last key or focus: the search caret blinks from there.
+    let mut caret_lit = Instant::now();
     loop {
         if shutdown.stopped.load(Ordering::Acquire)
             || terminal_closed(libc::STDIN_FILENO)
@@ -267,11 +269,18 @@ fn sidebar_loop(
         }
         let size = terminal.size()?;
         app.set_page(sidebar_view::page_rows(app, size.width, size.height));
+        let turn = app.blink(caret_lit.elapsed());
         terminal.draw(|frame| sidebar_view::render(frame, app))?;
         let wait = pending.as_ref().map_or(POLL, |(_, _, due)| {
             due.saturating_duration_since(Instant::now()).min(POLL)
         });
-        match next_input(wait)? {
+        // A caret that shows turns on time, not at the next poll.
+        let wait = if app.focused { wait.min(turn) } else { wait };
+        let input = next_input(wait)?;
+        if let Some((Input::Key(_) | Input::FocusGained, at)) = &input {
+            caret_lit = *at;
+        }
+        match input {
             Some((Input::Key(key), _)) if app.handle_key(key) => return Ok(PaneExit::User),
             Some((Input::Mouse(mouse), at)) if !focus.swallows(&mouse, at) => {
                 app.handle_mouse(mouse, size.width, size.height)

@@ -4,7 +4,7 @@ mod support;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use herdr_marketplace::adapters::tui::sidebar::{
-    Counts, Filter, Intent, LoadState, Notice, SidebarApp,
+    BLINK, Counts, Filter, Intent, LoadState, Notice, SidebarApp,
 };
 use herdr_marketplace::adapters::tui::sidebar_view;
 use herdr_marketplace::application::load_catalog::LoadedCatalog;
@@ -22,6 +22,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use serde_json::json;
+use std::time::Duration;
 use support::*;
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -413,7 +414,7 @@ fn a_row_shows_the_name_owner_repo_marks_and_description() {
 
     assert!(text[0].starts_with("╭──"), "{screen}");
     assert!(
-        text[1].starts_with("│ Search name, topic, author") && text[1].ends_with(" │"),
+        text[1].starts_with("│▕Search name, topic, author") && text[1].ends_with(" │"),
         "{screen}"
     );
     assert!(text[2].starts_with("╰──"), "{screen}");
@@ -720,6 +721,37 @@ fn the_search_box_empties_with_its_cross_and_shows_the_focus() {
     app.handle_mouse(click(26, 1), 30, 12);
     assert_eq!(app.query, "");
     assert_eq!(app.visible.len(), 12);
+}
+
+#[test]
+fn the_search_caret_blinks_while_the_pane_has_the_focus() {
+    let mut app = installed_app();
+    let middle = |app: &SidebarApp| -> String {
+        let mut terminal = Terminal::new(TestBackend::new(30, 12)).unwrap();
+        terminal
+            .draw(|frame| sidebar_view::render(frame, app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..30).map(|x| buffer[(x, 1)].symbol()).collect()
+    };
+    // An empty search: the caret invites to type, the placeholder is whole.
+    assert_eq!(
+        app.blink(Duration::from_millis(100)),
+        BLINK - Duration::from_millis(100)
+    );
+    assert_eq!(middle(&app), "│▕Search name, topic, author │");
+    assert_eq!(app.blink(BLINK), BLINK);
+    assert_eq!(middle(&app), "│ Search name, topic, author │");
+    app.blink(BLINK * 2);
+    assert_eq!(middle(&app), "│▕Search name, topic, author │");
+    app.focus(false);
+    assert_eq!(middle(&app), "│ Search name, topic, author │");
+
+    app.focus(true);
+    type_text(&mut app, "plugin-1");
+    assert_eq!(middle(&app), "│ plugin-1▏                × │");
+    app.blink(BLINK);
+    assert_eq!(middle(&app), "│ plugin-1                 × │");
 }
 
 #[test]

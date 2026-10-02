@@ -175,21 +175,31 @@ fn box_height(width: usize) -> usize {
 }
 
 /// An input field: a frame, colored while the pane has the focus, around
-/// the placeholder, or the search with its caret and its × to empty it.
+/// the placeholder, or the search with its × to empty it. With the focus,
+/// a caret blinks where the next character goes: typing searches.
 fn search_box(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     let frame = Style::default().fg(if app.focused { ACCENT } else { MUTED });
-    let caret = Span::styled("▏", Style::default().fg(ACCENT));
+    let lit = app.focused && app.caret;
+    let caret = |glyph: &'static str| {
+        if lit {
+            Span::styled(glyph, Style::default().fg(ACCENT))
+        } else {
+            Span::raw(" ")
+        }
+    };
     if box_height(width) == 1 {
         let text = if app.query.is_empty() {
             Span::styled(ellipsize(PLACEHOLDER, width), muted())
         } else {
             Span::raw(tail(&clean(&app.query), width.saturating_sub(1)))
         };
-        return vec![Line::from(vec![text, caret])];
+        return vec![Line::from(vec![text, caret("▏")])];
     }
     let inner = width - 4;
-    let mut middle = vec![Span::styled("│ ", frame)];
+    let mut middle = vec![Span::styled("│", frame)];
     if app.query.is_empty() {
+        // Against the placeholder, in the margin: it keeps all its cells.
+        middle.push(caret("▕"));
         let placeholder = ellipsize(PLACEHOLDER, inner);
         let pad = inner.saturating_sub(placeholder.width());
         middle.push(Span::styled(placeholder, muted()));
@@ -197,8 +207,9 @@ fn search_box(app: &SidebarApp, width: usize) -> Vec<Line<'static>> {
     } else {
         let query = tail(&clean(&app.query), inner.saturating_sub(3));
         let pad = inner.saturating_sub(query.width() + 2);
+        middle.push(Span::raw(" "));
         middle.push(Span::raw(query));
-        middle.push(if app.focused { caret } else { Span::raw(" ") });
+        middle.push(caret("▏"));
         middle.push(Span::raw(" ".repeat(pad)));
         middle.push(Span::styled("×", muted()));
     }
